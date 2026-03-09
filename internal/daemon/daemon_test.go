@@ -33,7 +33,7 @@ func sendIPCCommand(t *testing.T, addr string, cmd daemon.IPCCommand) daemon.IPC
 	return resp
 }
 
-// startTestDaemon 啟動一個測試用的 Daemon（不連線 Signal Server）。
+// startTestDaemon 啟動一個測試用的 Daemon（不連線 Server）。
 func startTestDaemon(t *testing.T) (*daemon.Daemon, string) {
 	t.Helper()
 
@@ -108,7 +108,7 @@ func TestIPC_Status(t *testing.T) {
 	var status daemon.StatusInfo
 	json.Unmarshal(resp.Data, &status)
 	if status.Connected {
-		t.Error("未連線 Signal 時 Connected 應為 false")
+		t.Error("未連線 Server 時 Connected 應為 false")
 	}
 	if status.BindCount != 0 {
 		t.Errorf("BindCount = %d, 預期 0", status.BindCount)
@@ -165,7 +165,7 @@ func TestIPC_UnbindSuccess(t *testing.T) {
 	}
 }
 
-func TestIPC_BindWithoutSignal(t *testing.T) {
+func TestIPC_BindWithoutServer(t *testing.T) {
 	_, addr := startTestDaemon(t)
 
 	payload, _ := json.Marshal(daemon.BindRequest{HostID: "host1", Serial: "device1"})
@@ -174,7 +174,7 @@ func TestIPC_BindWithoutSignal(t *testing.T) {
 		Payload: payload,
 	})
 	if resp.Success {
-		t.Error("未連線 Signal 時 bind 應失敗")
+		t.Error("未連線 Server 時 bind 應失敗")
 	}
 }
 

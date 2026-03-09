@@ -30,7 +30,7 @@ func ErrorResponse(msg string) IPCResponse {
 type StatusInfo struct {
 	Connected bool   `json:"connected"`
 	ConnID    string `json:"conn_id,omitempty"`
-	SignalURL string `json:"signal_url"`
+	ServerURL string `json:"server_url"`
 	BindCount int    `json:"bind_count"`
 }
 

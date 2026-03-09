@@ -19,7 +19,7 @@ import (
 
 // Config 是 Daemon 的設定。
 type Config struct {
-	SignalURL string
+	ServerURL string
 	Token     string
 	PortStart int
 	PortEnd   int
@@ -33,7 +33,7 @@ type Daemon struct {
 	bindings *BindingTable
 	hostname string
 
-	// Signal Server 連線
+	// Server 連線
 	wsConn *ws.Conn
 	connID string
 
@@ -83,13 +83,13 @@ func (d *Daemon) Ports() *PortAllocator {
 	return d.ports
 }
 
-// Start 啟動 Daemon：連線 Signal Server、啟動 IPC 服務。
+// Start 啟動 Daemon：連線 Server、啟動 IPC 服務。
 func (d *Daemon) Start(ctx context.Context, ipcListener net.Listener) error {
-	if err := d.connectSignal(ctx); err != nil {
+	if err := d.connectServer(ctx); err != nil {
 		return err
 	}
 
-	go d.signalReadLoop(ctx)
+	go d.serverReadLoop(ctx)
 	d.requestHostList(ctx)
 
 	slog.Info("Daemon 就緒", "conn_id", d.connID, "ipc", ipcListener.Addr())
@@ -162,7 +162,7 @@ func (d *Daemon) cmdStatus() IPCResponse {
 	return SuccessResponse(StatusInfo{
 		Connected: d.wsConn != nil,
 		ConnID:    d.connID,
-		SignalURL: d.config.SignalURL,
+		ServerURL: d.config.ServerURL,
 		BindCount: d.bindings.Count(),
 	})
 }
@@ -175,7 +175,7 @@ func (d *Daemon) cmdHosts() IPCResponse {
 
 func (d *Daemon) cmdBind(ctx context.Context, payload json.RawMessage) IPCResponse {
 	if d.wsConn == nil {
-		return ErrorResponse("未連線到 Signal Server")
+		return ErrorResponse("未連線到 Server")
 	}
 
 	var req BindRequest
@@ -347,16 +347,16 @@ func (d *Daemon) cmdUnbind(ctx context.Context, payload json.RawMessage) IPCResp
 	return SuccessResponse(nil)
 }
 
-// --- Signal Server 連線 ---
+// --- Server 連線 ---
 
-func (d *Daemon) connectSignal(ctx context.Context) error {
+func (d *Daemon) connectServer(ctx context.Context) error {
 	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	url := d.config.SignalURL + "/ws"
+	url := d.config.ServerURL + "/ws"
 	conn, _, err := ws.Dial(dialCtx, url, nil)
 	if err != nil {
-		return fmt.Errorf("連線 Signal Server 失敗: %w", err)
+		return fmt.Errorf("連線 Server 失敗: %w", err)
 	}
 	d.wsConn = conn
 
@@ -386,18 +386,18 @@ func (d *Daemon) connectSignal(ctx context.Context) error {
 	}
 
 	d.connID = ackPayload.AssignID
-	slog.Info("Signal Server 認證成功", "conn_id", d.connID)
+	slog.Info("Server 認證成功", "conn_id", d.connID)
 	return nil
 }
 
-func (d *Daemon) signalReadLoop(ctx context.Context) {
+func (d *Daemon) serverReadLoop(ctx context.Context) {
 	for {
 		_, data, err := d.wsConn.Read(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			slog.Error("Signal 讀取失敗", "error", err)
+			slog.Error("Server 讀取失敗", "error", err)
 			return
 		}
 
@@ -454,6 +454,11 @@ func (d *Daemon) updateHostDevices(hostID string, devices []protocol.DeviceInfo)
 			return
 		}
 	}
+	// 未知 host，先建立記錄（hostname 待下次 host_list_resp 補全）
+	d.hosts = append(d.hosts, protocol.HostInfo{
+		HostID:  hostID,
+		Devices: devices,
+	})
 }
 
 func (d *Daemon) sendEnvelope(ctx context.Context, env protocol.Envelope) error {

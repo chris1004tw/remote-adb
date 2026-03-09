@@ -182,7 +182,5 @@ func BinaryNames() []string {
 	}
 	return []string{
 		"radb" + ext,
-		"radb-agent" + ext,
-		"radb-signal" + ext,
 	}
 }

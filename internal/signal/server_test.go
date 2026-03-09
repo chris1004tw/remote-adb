@@ -312,6 +312,50 @@ func TestServer_AgentDisconnect_RemovedFromHostList(t *testing.T) {
 	}
 }
 
+func TestServer_RegisterBroadcastsHostList(t *testing.T) {
+	wsURL := setupTestServer(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// 1. Client 先連線
+	clientWS, _ := dialAndAuth(t, wsURL, protocol.RoleClient)
+	defer clientWS.CloseNow()
+
+	// 2. Agent 後連線並註冊
+	agentWS, agentID := dialAndAuth(t, wsURL, protocol.RoleAgent)
+	defer agentWS.CloseNow()
+
+	regEnv, _ := protocol.NewEnvelope(
+		protocol.MsgTypeRegister, "lab-pc", agentID, "",
+		protocol.RegisterPayload{
+			HostID:   agentID,
+			Hostname: "new-agent",
+			Devices: []protocol.DeviceInfo{
+				{Serial: "DEV001", State: protocol.DeviceStateOnline, Lock: protocol.LockAvailable},
+			},
+		},
+	)
+	sendMsg(t, ctx, agentWS, regEnv)
+
+	// 3. Client 應自動收到 host_list_resp（不需主動查詢）
+	resp := recvMsg(t, ctx, clientWS)
+	if resp.Type != protocol.MsgTypeHostListResp {
+		t.Fatalf("預期 host_list_resp，收到 %q", resp.Type)
+	}
+
+	var payload protocol.HostListRespPayload
+	if err := resp.DecodePayload(&payload); err != nil {
+		t.Fatalf("解析失敗: %v", err)
+	}
+	if len(payload.Hosts) != 1 {
+		t.Fatalf("主機數量 = %d, 預期 1", len(payload.Hosts))
+	}
+	if payload.Hosts[0].Hostname != "new-agent" {
+		t.Errorf("Hostname = %q, 預期 %q", payload.Hosts[0].Hostname, "new-agent")
+	}
+}
+
 func TestServer_RouteToOfflineTarget_ReturnsError(t *testing.T) {
 	wsURL := setupTestServer(t)
 

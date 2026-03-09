@@ -15,9 +15,8 @@ func TestExtractTarGz(t *testing.T) {
 
 	// 建立測試用 tar.gz
 	createTestTarGz(t, archivePath, map[string]string{
-		"radb":       "radb-binary",
-		"radb-agent": "agent-binary",
-		"README.md":  "should be skipped",
+		"radb":      "radb-binary",
+		"README.md": "should be skipped",
 	})
 
 	destDir := filepath.Join(dir, "out")
@@ -28,8 +27,8 @@ func TestExtractTarGz(t *testing.T) {
 		t.Fatalf("ExtractArchive 失敗: %v", err)
 	}
 
-	if len(extracted) != 2 {
-		t.Fatalf("提取檔案數 = %d, want 2", len(extracted))
+	if len(extracted) != 1 {
+		t.Fatalf("提取檔案數 = %d, want 1", len(extracted))
 	}
 
 	// 驗證內容
@@ -53,9 +52,8 @@ func TestExtractZip(t *testing.T) {
 
 	// 建立測試用 zip
 	createTestZip(t, archivePath, map[string]string{
-		"radb.exe":       "radb-binary",
-		"radb-agent.exe": "agent-binary",
-		"other.txt":      "should be skipped",
+		"radb.exe":  "radb-binary",
+		"other.txt": "should be skipped",
 	})
 
 	destDir := filepath.Join(dir, "out")
@@ -66,8 +64,8 @@ func TestExtractZip(t *testing.T) {
 		t.Fatalf("ExtractArchive 失敗: %v", err)
 	}
 
-	if len(extracted) != 2 {
-		t.Fatalf("提取檔案數 = %d, want 2", len(extracted))
+	if len(extracted) != 1 {
+		t.Fatalf("提取檔案數 = %d, want 1", len(extracted))
 	}
 
 	content, err := os.ReadFile(filepath.Join(destDir, "radb.exe"))

@@ -13,12 +13,8 @@ import (
 
 // 允許從 archive 中提取的 binary 名稱。
 var knownBinaries = map[string]bool{
-	"radb":             true,
-	"radb-agent":       true,
-	"radb-signal":      true,
-	"radb.exe":         true,
-	"radb-agent.exe":   true,
-	"radb-signal.exe":  true,
+	"radb":     true,
+	"radb.exe": true,
 }
 
 // ExtractArchive 解壓 archive 到 destDir，只提取已知的 binary 檔案。

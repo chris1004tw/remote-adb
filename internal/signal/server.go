@@ -177,6 +177,17 @@ func (s *Server) handleRegister(conn *Conn, env protocol.Envelope) {
 		Devices:  payload.Devices,
 	}
 	s.hub.RegisterAgent(conn.ID(), info)
+
+	// 廣播最新主機列表給所有已連線的 Client
+	agents := s.hub.Agents()
+	broadcast, _ := protocol.NewEnvelope(
+		protocol.MsgTypeHostListResp,
+		hostname(),
+		"signal",
+		"",
+		protocol.HostListRespPayload{Hosts: agents},
+	)
+	s.hub.BroadcastToClients(broadcast)
 }
 
 func (s *Server) handleDeviceUpdate(conn *Conn, env protocol.Envelope) {
