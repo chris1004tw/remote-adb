@@ -24,9 +24,7 @@ cd remote-adb
 # 建置所有執行檔
 go build ./cmd/...
 
-# 或分別建置
-go build -o radb-signal ./cmd/radb-signal
-go build -o radb-agent ./cmd/radb-agent
+# 所有元件已合併至 cmd/radb，單一執行檔
 go build -o radb ./cmd/radb
 ```
 
@@ -34,16 +32,16 @@ go build -o radb ./cmd/radb
 
 ```bash
 # Windows
-GOOS=windows GOARCH=amd64 go build -o radb-agent.exe ./cmd/radb-agent
+GOOS=windows GOARCH=amd64 go build -o radb.exe ./cmd/radb
 
 # Linux
-GOOS=linux GOARCH=amd64 go build -o radb-agent ./cmd/radb-agent
+GOOS=linux GOARCH=amd64 go build -o radb ./cmd/radb
 
 # macOS (Apple Silicon)
-GOOS=darwin GOARCH=arm64 go build -o radb-agent ./cmd/radb-agent
+GOOS=darwin GOARCH=arm64 go build -o radb ./cmd/radb
 
 # macOS (Intel)
-GOOS=darwin GOARCH=amd64 go build -o radb-agent ./cmd/radb-agent
+GOOS=darwin GOARCH=amd64 go build -o radb ./cmd/radb
 ```
 
 ## 執行測試
@@ -90,11 +88,7 @@ go fmt ./...
 ```
 remote-adb/
 ├── cmd/
-│   ├── radb/                   # 本機客戶端 (CLI + Daemon)
-│   │   └── main.go
-│   ├── radb-agent/             # 遠端代理端 (Host PC)
-│   │   └── main.go
-│   └── radb-signal/            # 信令伺服器
+│   └── radb/                   # 統一入口（server / agent / daemon / CLI）
 │       └── main.go
 │
 ├── internal/                   # 私有 package（不可被外部 import）
@@ -161,8 +155,8 @@ lint:
 	golangci-lint run
 
 clean:
-	rm -f radb radb-agent radb-signal
-	rm -f radb.exe radb-agent.exe radb-signal.exe
+	rm -f radb
+	rm -f radb.exe
 
 all: lint test build
 ```

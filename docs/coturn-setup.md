@@ -90,7 +90,7 @@ denied-peer-ip=172.16.0.0-172.31.255.255
 denied-peer-ip=192.168.0.0-192.168.255.255
 ```
 
-> **例外**：如果 radb-agent 與 TURN server 在同一內網，需將該網段從 `denied-peer-ip` 中移除，否則中繼流量無法到達 Agent。
+> **例外**：如果 Agent 與 TURN server 在同一內網，需將該網段從 `denied-peer-ip` 中移除，否則中繼流量無法到達 Agent。
 
 ---
 
@@ -150,19 +150,19 @@ turnutils_uclient -u radb -w your-secret-password YOUR_PUBLIC_IP
 
 ## 整合到 radb
 
-設定 radb-agent 和 radb daemon 的 TURN 參數：
+設定 Agent 和 Daemon 的 TURN 參數：
 
 ```bash
 # Agent
-radb-agent \
-  --signal ws://signal.example.com:8080 \
+radb agent \
+  --server ws://server.example.com:8080 \
   --turn turn:YOUR_PUBLIC_IP:3478 \
   --turn-user radb \
   --turn-pass your-secret-password
 
 # Client Daemon
 radb daemon \
-  --signal ws://signal.example.com:8080 \
+  --server ws://server.example.com:8080 \
   --turn turn:YOUR_PUBLIC_IP:3478 \
   --turn-user radb \
   --turn-pass your-secret-password

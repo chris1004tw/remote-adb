@@ -12,6 +12,10 @@
 - **單一執行檔部署**，免安裝相依套件
 - **互動式 CLI**，一鍵選機、自動分配 Port
 - **支援 adb shell、scrcpy、大檔案傳輸**（100MB+ 穩定）
+- **Direct 模式**：LAN/VPN 內 TCP 直連，不需要 Signal Server
+- **mDNS 自動發現**：自動找到區域網路內的 Agent
+- **手動 SDP 配對**：跨 NAT 打洞，不需要任何 Server
+- **GUI 介面**：雙擊即開，免開 Terminal（Gio 純 Go 實作）
 
 ---
 
@@ -25,11 +29,11 @@ graph LR
     end
 
     subgraph 雲端/內網
-        Signal[radb-signal]
+        Signal[radb server]
     end
 
     subgraph 遠端主機
-        Agent[radb-agent]
+        Agent[radb agent]
         Phone1[📱 Device 1]
         Phone2[📱 Device 2]
     end
@@ -52,7 +56,7 @@ graph LR
 |---------|------|
 | Go | >= 1.22（僅建置時需要） |
 | ADB | Agent 所在主機需安裝 Android Platform Tools |
-| 網路 | Agent 與 Client 需可連線至 Signal Server |
+| 網路 | Agent 與 Client 需可連線至 Server |
 | 作業系統 | Windows / Linux / macOS |
 
 ---
@@ -64,14 +68,12 @@ graph LR
 ```bash
 git clone https://github.com/chris1004tw/remote-adb.git
 cd remote-adb
-go build ./cmd/...
+go build -o radb ./cmd/radb
 ```
 
 ### go install
 
 ```bash
-go install github.com/chris1004tw/remote-adb/cmd/radb-signal@latest
-go install github.com/chris1004tw/remote-adb/cmd/radb-agent@latest
 go install github.com/chris1004tw/remote-adb/cmd/radb@latest
 ```
 
@@ -83,22 +85,22 @@ go install github.com/chris1004tw/remote-adb/cmd/radb@latest
 
 ## 快速開始
 
-**步驟 1：啟動 Signal Server**
+**步驟 1：啟動 Server**
 
 ```bash
-RADB_TOKEN=your-secret radb-signal --port 8080
+RADB_TOKEN=your-secret radb server --port 8080
 ```
 
 **步驟 2：在遠端主機啟動 Agent**
 
 ```bash
-RADB_TOKEN=your-secret radb-agent --signal ws://your-server:8080 --host-id lab-pc-01
+RADB_TOKEN=your-secret radb agent --server ws://your-server:8080 --host-id lab-pc-01
 ```
 
 **步驟 3：啟動本機 Daemon**
 
 ```bash
-RADB_TOKEN=your-secret radb daemon --signal ws://your-server:8080
+RADB_TOKEN=your-secret radb daemon --server ws://your-server:8080
 ```
 
 **步驟 4：互動式綁定設備**
@@ -121,14 +123,77 @@ adb -s localhost:15555 push large_file.apk /sdcard/
 
 ---
 
+## Direct 模式（無需 Server）
+
+### TCP 直連（LAN/VPN 場景）
+
+```bash
+# Agent 端：啟動 direct 模式
+radb agent --direct-port 7070 --direct-token mysecret
+
+# 也可同時連線 Signal Server
+radb agent --server ws://signal:8080 --token abc --direct-port 7070
+
+# Client 端：自動發現 LAN 上的 Agent（mDNS）
+radb direct discover
+
+# 查詢設備
+radb direct list 192.168.1.100:7070 --token mysecret
+
+# TCP 直連
+radb direct connect 192.168.1.100:7070 --serial pixel-7 --token mysecret
+# → ADB 轉發 127.0.0.1:15555 → pixel-7
+```
+
+---
+
+## GUI 模式
+
+直接執行 `radb`（不帶引數）即可開啟圖形介面，包含三個分頁：
+
+- **Agent**：啟動 Direct 模式 Agent，追蹤 ADB 設備
+- **Direct Connect**：掃描 LAN / 手動輸入地址，連線遠端設備
+- **SDP 配對**：跨 NAT 手動 SDP 交換（Client / Agent 雙模式）
+
+```bash
+# GUI 模式
+radb
+
+# Windows release 建置（隱藏主控台視窗）
+go build -ldflags="-H windowsgui" ./cmd/radb
+```
+
+---
+
+### 手動 SDP 配對（跨 NAT 打洞）
+
+適用於無法部署 Server、但需要跨網路連線的場景：
+
+```bash
+# Client 端：生成 offer
+radb pair offer --serial pixel-7
+# → 複製 offer token 給 Agent 端
+
+# Agent 端：處理 offer
+radb pair answer <offer-token>
+# → 複製 answer token 回 Client 端
+
+# Client 貼上 answer → 連線建立
+# → ADB 轉發 127.0.0.1:15555 → pixel-7
+```
+
+---
+
 ## 設定說明
 
 | 環境變數 | 預設值 | 說明 |
 |---------|--------|------|
 | `RADB_TOKEN` | (必填) | PSK 驗證 Token |
-| `RADB_SIGNAL_URL` | `ws://localhost:8080` | Signal Server 位址 |
+| `RADB_SERVER_URL` | `ws://localhost:8080` | Server 位址 |
 | `RADB_STUN_URLS` | `stun:stun.l.google.com:19302` | STUN Server |
 | `RADB_TURN_URL` | (空) | TURN Server（對稱型 NAT 需要） |
+| `RADB_DIRECT_PORT` | (空) | Agent Direct TCP 監聽埠 |
+| `RADB_DIRECT_TOKEN` | (空) | Direct 連線 Token |
 | `RADB_PORT_START` | `15555` | Client 起始 Port |
 
 完整設定請參閱 [設定指南](docs/configuration.md)。
@@ -140,13 +205,14 @@ adb -s localhost:15555 push large_file.apk /sdcard/
 ```
 remote-adb/
 ├── cmd/
-│   ├── radb/              # 本機客戶端
-│   ├── radb-agent/        # 遠端代理端
-│   └── radb-signal/       # 信令伺服器
+│   └── radb/              # 統一入口（server/agent/daemon/bind/...）
 ├── internal/
+│   ├── agent/             # 遠端代理端核心邏輯
 │   ├── adb/               # ADB 協定與設備管理
 │   ├── cli/               # 互動式選單
 │   ├── daemon/            # 背景服務與 Port 管理
+│   ├── directsrv/         # TCP 直連服務 + mDNS 廣播
+│   ├── gui/               # Gio GUI 介面
 │   ├── proxy/             # TCP 代理
 │   ├── signal/            # WebSocket 信令
 │   └── webrtc/            # P2P 通道管理
@@ -163,10 +229,10 @@ remote-adb/
 
 ```bash
 # 建置
-go build ./cmd/...
+go build -o radb ./cmd/radb
 
 # 測試
-go test -race ./...
+go test ./...
 
 # Lint
 golangci-lint run
@@ -192,7 +258,7 @@ golangci-lint run
 ## FAQ
 
 **Q: 連線不上遠端設備？**
-A: 檢查 Signal Server 是否可達、Token 是否一致、防火牆是否阻擋 WebRTC 流量。若在對稱型 NAT 後方，需設定 TURN Server。
+A: 檢查 Server 是否可達、Token 是否一致、防火牆是否阻擋 WebRTC 流量。若在對稱型 NAT 後方，需設定 TURN Server。
 
 **Q: 設備顯示 offline？**
 A: 確認遠端主機的 ADB server 正在運行（`adb start-server`），且設備已授權 USB 偵錯。
