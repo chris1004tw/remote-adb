@@ -11,10 +11,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chris1004tw/remote-adb/internal/buildinfo"
 	signalpkg "github.com/chris1004tw/remote-adb/internal/signal"
 )
-
-const version = "0.1.0-dev"
 
 func main() {
 	port := flag.Int("port", envInt("RADB_SIGNAL_PORT", 8080), "HTTP/WebSocket 監聽埠")
@@ -27,7 +26,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.Info("啟動 radb-signal", "version", version, "host", *host, "port", *port)
+	slog.Info("啟動 radb-signal", "version", buildinfo.Version, "host", *host, "port", *port)
 
 	hub := signalpkg.NewHub()
 	auth := signalpkg.NewPSKAuth(*token)

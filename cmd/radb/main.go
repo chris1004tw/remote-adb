@@ -7,20 +7,27 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/chris1004tw/remote-adb/internal/buildinfo"
 	"github.com/chris1004tw/remote-adb/internal/cli"
 	"github.com/chris1004tw/remote-adb/internal/daemon"
+	"github.com/chris1004tw/remote-adb/internal/updater"
 	"github.com/chris1004tw/remote-adb/internal/webrtc"
 )
 
-const version = "0.1.0-dev"
-
 func main() {
+	// 清理上次更新留下的 .old 備份檔案
+	if selfPath, err := os.Executable(); err == nil {
+		updater.CleanupOldBinaries(filepath.Dir(selfPath))
+	}
+
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
@@ -39,8 +46,10 @@ func main() {
 		cmdStatus()
 	case "hosts":
 		cmdHosts()
+	case "update":
+		cmdUpdate(os.Args[2:])
 	case "version":
-		fmt.Printf("radb %s\n", version)
+		fmt.Printf("radb %s (commit: %s, built: %s)\n", buildinfo.Version, buildinfo.Commit, buildinfo.Date)
 	default:
 		fmt.Fprintf(os.Stderr, "未知子命令: %s\n", os.Args[1])
 		printUsage()
@@ -57,7 +66,49 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  list      列出已綁定設備\n")
 	fmt.Fprintf(os.Stderr, "  status    查詢 daemon 狀態\n")
 	fmt.Fprintf(os.Stderr, "  hosts     列出可用主機\n")
+	fmt.Fprintf(os.Stderr, "  update    檢查並更新到最新版本\n")
 	fmt.Fprintf(os.Stderr, "  version   顯示版本\n")
+}
+
+func cmdUpdate(args []string) {
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	checkOnly := fs.Bool("check", false, "只檢查是否有新版本，不執行更新")
+	fs.Parse(args)
+
+	u := updater.NewUpdater()
+	ctx := context.Background()
+
+	if *checkOnly {
+		result, err := u.Check(ctx)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "檢查更新失敗: %v\n", err)
+			os.Exit(1)
+		}
+		if !result.HasUpdate {
+			fmt.Printf("目前已是最新版本 (%s)\n", result.CurrentVersion)
+			return
+		}
+		fmt.Printf("有新版本可用！%s → %s\n", result.CurrentVersion, result.LatestVersion)
+		fmt.Println("執行 radb update 進行更新")
+		return
+	}
+
+	fmt.Println("檢查更新中...")
+	result, err := u.Update(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "更新失敗: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !result.HasUpdate {
+		fmt.Printf("目前已是最新版本 (%s)\n", result.CurrentVersion)
+		return
+	}
+
+	fmt.Printf("更新成功！%s → %s\n", result.CurrentVersion, result.LatestVersion)
+	if runtime.GOOS == "windows" {
+		fmt.Println("請重新啟動相關程式以使用新版本")
+	}
 }
 
 func cmdDaemon(args []string) {
@@ -107,7 +158,7 @@ func cmdDaemon(args []string) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	fmt.Printf("radb daemon %s 啟動中...\n", version)
+	fmt.Printf("radb daemon %s 啟動中...\n", buildinfo.Version)
 	if err := d.Start(ctx, ipcLn); err != nil && ctx.Err() == nil {
 		fmt.Fprintf(os.Stderr, "Daemon 錯誤: %v\n", err)
 		os.Exit(1)

@@ -14,12 +14,11 @@ import (
 	"time"
 
 	"github.com/chris1004tw/remote-adb/internal/adb"
+	"github.com/chris1004tw/remote-adb/internal/buildinfo"
 	"github.com/chris1004tw/remote-adb/internal/webrtc"
 	"github.com/chris1004tw/remote-adb/pkg/protocol"
 	ws "github.com/coder/websocket"
 )
-
-const version = "0.1.0-dev"
 
 func main() {
 	signalURL := flag.String("signal", envStr("RADB_SIGNAL_URL", "ws://localhost:8080"), "Signal Server WebSocket 位址")
@@ -37,7 +36,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.Info("啟動 radb-agent", "version", version, "host_id", *hostID)
+	slog.Info("啟動 radb-agent", "version", buildinfo.Version, "host_id", *hostID)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
