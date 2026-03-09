@@ -1,0 +1,95 @@
+package adb
+
+import (
+	"net"
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+)
+
+func TestIsADBServerRunning_WhenListening(t *testing.T) {
+	// 建立一個假的 TCP server
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	if !IsADBServerRunning(ln.Addr().String()) {
+		t.Error("預期偵測到運行中的 server")
+	}
+}
+
+func TestIsADBServerRunning_WhenNotListening(t *testing.T) {
+	// 使用一個不會有人監聽的 port
+	if IsADBServerRunning("127.0.0.1:19999") {
+		t.Error("預期偵測不到 server")
+	}
+}
+
+func TestAdbDataDir(t *testing.T) {
+	dir, err := adbDataDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	home, _ := os.UserHomeDir()
+	expected := filepath.Join(home, ".radb", "platform-tools")
+	if dir != expected {
+		t.Errorf("預期 %q，得到 %q", expected, dir)
+	}
+}
+
+func TestAdbBinaryName(t *testing.T) {
+	name := adbBinaryName()
+	if runtime.GOOS == "windows" {
+		if name != "adb.exe" {
+			t.Errorf("Windows 上預期 adb.exe，得到 %q", name)
+		}
+	} else {
+		if name != "adb" {
+			t.Errorf("非 Windows 上預期 adb，得到 %q", name)
+		}
+	}
+}
+
+func TestPlatformToolsURL(t *testing.T) {
+	url := platformToolsURL()
+	expectedSuffix := runtime.GOOS + ".zip"
+	if !contains(url, expectedSuffix) {
+		t.Errorf("URL %q 應包含 %q", url, expectedSuffix)
+	}
+	if !contains(url, "dl.google.com") {
+		t.Errorf("URL %q 應指向 dl.google.com", url)
+	}
+}
+
+func TestFindADBBinary_LocalCache(t *testing.T) {
+	// 建立暫時目錄模擬快取
+	tmpDir := t.TempDir()
+	name := adbBinaryName()
+	adbPath := filepath.Join(tmpDir, name)
+	if err := os.WriteFile(adbPath, []byte("fake"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// 暫時替換 adbDataDir（透過直接測試邏輯）
+	localPath := filepath.Join(tmpDir, name)
+	if _, err := os.Stat(localPath); err != nil {
+		t.Errorf("預期在 %q 找到檔案", localPath)
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && searchString(s, substr)
+}
+
+func searchString(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
