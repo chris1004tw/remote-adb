@@ -20,34 +20,77 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+      - name: 安裝 Gio GUI 依賴
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          pkg-config
+          libwayland-dev
+          libx11-dev
+          libx11-xcb-dev
+          libxkbcommon-x11-dev
+          libgles2-mesa-dev
+          libegl1-mesa-dev
+          libxcursor-dev
+          libvulkan-dev
       - run: go test ./... -timeout 60s
-        env:
-          CGO_ENABLED: "0"
 
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
         include:
           - goos: linux
             goarch: amd64
+            runner: ubuntu-latest
+            cgo: "1"
           - goos: linux
             goarch: arm64
+            runner: ubuntu-latest
+            cgo: "1"
           - goos: darwin
             goarch: amd64
+            runner: macos-13
+            cgo: "1"
           - goos: darwin
             goarch: arm64
+            runner: macos-latest
+            cgo: "1"
           - goos: windows
             goarch: amd64
+            runner: ubuntu-latest
+            cgo: "0"
           - goos: windows
             goarch: arm64
+            runner: ubuntu-latest
+            cgo: "0"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+
+      - name: 安裝 Linux GUI 依賴 (amd64)
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          pkg-config libwayland-dev libx11-dev libx11-xcb-dev
+          libxkbcommon-x11-dev libgles2-mesa-dev libegl1-mesa-dev
+          libxcursor-dev libvulkan-dev
+
+      - name: 安裝 Linux GUI 依賴 (arm64 交叉編譯)
+        if: matrix.goos == 'linux' && matrix.goarch == 'arm64'
+        run: |
+          sudo dpkg --add-architecture arm64
+          sudo sed -i 's/^Types: deb/Types: deb\nArchitectures: amd64/' /etc/apt/sources.list.d/ubuntu.sources
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports $(lsb_release -cs) main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/arm64.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports $(lsb_release -cs)-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/arm64.list
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu pkg-config \
+            libwayland-dev:arm64 libx11-dev:arm64 libx11-xcb-dev:arm64 \
+            libxkbcommon-x11-dev:arm64 libgles2-mesa-dev:arm64 libegl1-mesa-dev:arm64 \
+            libxcursor-dev:arm64 libvulkan-dev:arm64
 
       - name: 設定環境變數
         run: |
@@ -61,11 +104,17 @@ jobs:
           fi
           echo "EXT=$EXT" >> "$GITHUB_ENV"
 
+          # Linux arm64 交叉編譯器設定
+          if [ "${{ matrix.goos }}" = "linux" ] && [ "${{ matrix.goarch }}" = "arm64" ]; then
+            echo "CC=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+            echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> "$GITHUB_ENV"
+          fi
+
       - name: 編譯
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: "0"
+          CGO_ENABLED: ${{ matrix.cgo }}
         run: |
           mkdir -p dist
           SHA="${GITHUB_SHA::8}"

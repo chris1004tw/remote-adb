@@ -1,5 +1,3 @@
-//go:build windows || darwin
-
 // Package gui 實作 radb 的 Gio GUI 介面。
 package gui
 
