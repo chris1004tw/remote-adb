@@ -185,6 +185,7 @@ golangci-lint run
 | [Client 設計](docs/client-design.md) | 本機端 Daemon、CLI、TCP 代理設計 |
 | [設定指南](docs/configuration.md) | 完整環境變數與 CLI flag 參數表 |
 | [開發者指南](docs/development.md) | 建置、測試、程式碼規範 |
+| [coturn 架設指南](docs/coturn-setup.md) | TURN Server 安裝、設定與整合 |
 
 ---
 
