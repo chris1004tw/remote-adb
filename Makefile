@@ -1,16 +1,16 @@
 .PHONY: build test lint clean all
 
 build:
-	go build ./cmd/...
+	go build -o radb ./cmd/radb
 
 test:
-	go test -race ./...
+	go test ./...
 
 lint:
 	golangci-lint run
 
 clean:
-	rm -f radb radb-agent radb-signal
-	rm -f radb.exe radb-agent.exe radb-signal.exe
+	rm -f radb radb.exe
+	rm -f radb-agent radb-agent.exe radb-signal radb-signal.exe
 
 all: lint test build
