@@ -66,9 +66,12 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           mkdir -p dist
-          go build -ldflags="-s -w" -o "dist/radb${EXT}" ./cmd/radb
-          go build -ldflags="-s -w" -o "dist/radb-agent${EXT}" ./cmd/radb-agent
-          go build -ldflags="-s -w" -o "dist/radb-signal${EXT}" ./cmd/radb-signal
+          SHA="${GITHUB_SHA::8}"
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          LDFLAGS="-s -w -X github.com/chris1004tw/remote-adb/internal/buildinfo.Version=${TAG} -X github.com/chris1004tw/remote-adb/internal/buildinfo.Commit=${SHA} -X github.com/chris1004tw/remote-adb/internal/buildinfo.Date=${DATE}"
+          go build -ldflags="${LDFLAGS}" -o "dist/radb${EXT}" ./cmd/radb
+          go build -ldflags="${LDFLAGS}" -o "dist/radb-agent${EXT}" ./cmd/radb-agent
+          go build -ldflags="${LDFLAGS}" -o "dist/radb-signal${EXT}" ./cmd/radb-signal
 
       - name: 打包 (tar.gz)
         if: matrix.goos != 'windows'
@@ -78,11 +81,16 @@ jobs:
         if: matrix.goos == 'windows'
         run: cd dist && zip "../${{ env.ARCHIVE_NAME }}.zip" *
 
+      - name: 產生 checksum
+        run: sha256sum radb-*.* > checksums-${{ matrix.goos }}-${{ matrix.goarch }}.txt
+
       - name: 上傳 artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARCHIVE_NAME }}
-          path: radb-*.*
+          path: |
+            radb-*.*
+            checksums-*.txt
           retention-days: 1
 
   release:
@@ -95,6 +103,9 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+
+      - name: 合併 checksums
+        run: cat artifacts/checksums-*.txt > artifacts/checksums.txt && rm artifacts/checksums-*.txt
 
       - name: 建立 Release
         uses: softprops/action-gh-release@v2
