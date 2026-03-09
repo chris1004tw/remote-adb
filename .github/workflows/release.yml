@@ -21,6 +21,8 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
       - run: go test ./... -timeout 60s
+        env:
+          CGO_ENABLED: "0"
 
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
