@@ -51,7 +51,7 @@ jobs:
             cgo: "1"
           - goos: darwin
             goarch: amd64
-            runner: macos-13
+            runner: macos-latest
             cgo: "1"
           - goos: darwin
             goarch: arm64
