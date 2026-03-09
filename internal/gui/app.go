@@ -2,19 +2,28 @@
 package gui
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"log"
 	"os"
+	"runtime"
+	"strings"
 
 	"gioui.org/app"
+	"gioui.org/font"
+	"gioui.org/font/gofont"
+	"gioui.org/font/opentype"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/clip"
 	"gioui.org/op/paint"
+	"gioui.org/text"
 	"gioui.org/unit"
 	"gioui.org/widget"
 	"gioui.org/widget/material"
+
+	"github.com/chris1004tw/remote-adb/internal/webrtc"
 )
 
 // Run 啟動 GUI 主視窗。阻塞直到視窗關閉。
@@ -22,7 +31,7 @@ func Run() {
 	go func() {
 		w := new(app.Window)
 		w.Option(app.Title("radb — 遠端 ADB 工具"))
-		w.Option(app.Size(unit.Dp(580), unit.Dp(500)))
+		w.Option(app.Size(unit.Dp(580), unit.Dp(600)))
 		if err := eventLoop(w); err != nil {
 			log.Fatal(err)
 		}
@@ -31,29 +40,86 @@ func Run() {
 	app.Main()
 }
 
+// newThemeWithCJK 建立帶 CJK 字型的 Theme。
+// 優先載入 AppleGothic（macOS），fallback 到 Microsoft JhengHei（Windows）。
+func newThemeWithCJK() *material.Theme {
+	th := material.NewTheme()
+
+	// 依優先順序嘗試的系統 CJK 字型路徑
+	var fontPaths []string
+	switch runtime.GOOS {
+	case "darwin":
+		fontPaths = []string{
+			"/System/Library/Fonts/Supplemental/AppleGothic.ttf",
+			"/System/Library/Fonts/AppleGothic.ttf",
+		}
+	case "windows":
+		winDir := os.Getenv("WINDIR")
+		if winDir == "" {
+			winDir = `C:\Windows`
+		}
+		fontPaths = []string{
+			winDir + `\Fonts\msjh.ttc`,
+		}
+	default: // Linux
+		fontPaths = []string{
+			"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+			"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+		}
+	}
+
+	var cjkFaces []font.FontFace
+	for _, p := range fontPaths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		faces, err := opentype.ParseCollection(data)
+		if err != nil {
+			// 嘗試單一字型格式
+			face, err2 := opentype.Parse(data)
+			if err2 != nil {
+				continue
+			}
+			cjkFaces = append(cjkFaces, font.FontFace{Face: face})
+		} else {
+			cjkFaces = append(cjkFaces, faces...)
+		}
+		break // 找到一個就夠了
+	}
+
+	if len(cjkFaces) > 0 {
+		// CJK 字型放前面優先使用，Go 內建字型作為 fallback
+		allFaces := append(cjkFaces, gofont.Collection()...)
+		th.Shaper = text.NewShaper(text.NoSystemFonts(), text.WithCollection(allFaces))
+	}
+
+	return th
+}
+
 func eventLoop(w *app.Window) error {
-	theme := material.NewTheme()
+	theme := newThemeWithCJK()
 	var ops op.Ops
 
 	// 建立三個分頁
-	at := newAgentTab(w)
-	dt := newDirectTab(w)
 	pt := newPairTab(w)
+	lt := newLANTab(w)
+	st := newSignalTab(w)
 
 	tabs := &tabBar{
 		items: []tabItem{
-			{title: "Agent", layoutFn: at.layout},
-			{title: "Direct Connect", layoutFn: dt.layout},
-			{title: "SDP 配對", layoutFn: pt.layout},
+			{title: "簡易連線", layoutFn: pt.layout},
+			{title: "區網直連", layoutFn: lt.layout},
+			{title: "中央伺服器", layoutFn: st.layout},
 		},
 	}
 
 	for {
 		switch e := w.Event().(type) {
 		case app.DestroyEvent:
-			at.cleanup()
-			dt.cleanup()
 			pt.cleanup()
+			lt.cleanup()
+			st.cleanup()
 			return e.Err
 		case app.FrameEvent:
 			gtx := app.NewContext(&ops, e)
@@ -153,4 +219,22 @@ func statusText(gtx layout.Context, th *material.Theme, text string, c color.NRG
 	lbl := material.Body2(th, text)
 	lbl.Color = c
 	return lbl.Layout(gtx)
+}
+
+// parsePort 解析 port 字串，失敗時返回預設值。
+func parsePort(s string, fallback int) int {
+	var n int
+	if _, err := fmt.Sscanf(s, "%d", &n); err != nil || n <= 0 {
+		return fallback
+	}
+	return n
+}
+
+// parseICEConfig 解析 STUN URL 字串為 ICEConfig。
+func parseICEConfig(stunURLs string) webrtc.ICEConfig {
+	cfg := webrtc.ICEConfig{}
+	if stunURLs != "" {
+		cfg.STUNServers = strings.Split(stunURLs, ",")
+	}
+	return cfg
 }

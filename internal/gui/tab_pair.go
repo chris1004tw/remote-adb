@@ -174,7 +174,7 @@ func (t *pairTab) layoutClient(gtx layout.Context, th *material.Theme) []layout.
 		// Serial
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return labeledEditor(gtx, th, "Serial:", &t.serialEditor, "設備序號")
+				return labeledEditor(gtx, th, "設備序號:", &t.serialEditor, "如 emulator-5554")
 			})
 		}),
 		// STUN
@@ -192,7 +192,7 @@ func (t *pairTab) layoutClient(gtx layout.Context, th *material.Theme) []layout.
 		// 生成 Offer 按鈕
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				btn := material.Button(th, &t.genOfferBtn, "生成 Offer")
+				btn := material.Button(th, &t.genOfferBtn, "① 產生邀請碼")
 				return btn.Layout(gtx)
 			})
 		}),
@@ -202,18 +202,18 @@ func (t *pairTab) layoutClient(gtx layout.Context, th *material.Theme) []layout.
 				return layout.Dimensions{}
 			}
 			return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return labeledEditor(gtx, th, "Offer:", &t.offerOutEditor, "")
+				return labeledEditor(gtx, th, "邀請碼:", &t.offerOutEditor, "複製給對方")
 			})
 		}),
 		// Answer 輸入
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return labeledEditor(gtx, th, "Answer:", &t.answerInEditor, "貼入 answer token")
+				return labeledEditor(gtx, th, "回應碼:", &t.answerInEditor, "貼入對方給的回應碼")
 			})
 		}),
 		// 套用 Answer 按鈕
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			btn := material.Button(th, &t.applyAnswerBtn, "套用 Answer")
+			btn := material.Button(th, &t.applyAnswerBtn, "② 開始連線")
 			return btn.Layout(gtx)
 		}),
 	}
@@ -241,13 +241,13 @@ func (t *pairTab) layoutAgent(gtx layout.Context, th *material.Theme) []layout.F
 		// Offer 輸入
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return labeledEditor(gtx, th, "Offer:", &t.offerInEditor, "貼入 offer token")
+				return labeledEditor(gtx, th, "邀請碼:", &t.offerInEditor, "貼入對方給的邀請碼")
 			})
 		}),
 		// 處理 Offer 按鈕
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				btn := material.Button(th, &t.processOfferBtn, "處理 Offer")
+				btn := material.Button(th, &t.processOfferBtn, "產生回應碼")
 				return btn.Layout(gtx)
 			})
 		}),
@@ -257,7 +257,7 @@ func (t *pairTab) layoutAgent(gtx layout.Context, th *material.Theme) []layout.F
 				return layout.Dimensions{}
 			}
 			return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return labeledEditor(gtx, th, "Answer:", &t.answerOutEditor, "")
+				return labeledEditor(gtx, th, "回應碼:", &t.answerOutEditor, "複製給對方")
 			})
 		}),
 	}
@@ -271,14 +271,14 @@ func (t *pairTab) generateOffer() {
 
 	if serial == "" {
 		t.mu.Lock()
-		t.status = "請輸入 Serial"
+		t.status = "請輸入設備序號"
 		t.mu.Unlock()
 		t.window.Invalidate()
 		return
 	}
 
 	t.mu.Lock()
-	t.status = "生成 Offer 中..."
+	t.status = "正在產生邀請碼..."
 	t.mu.Unlock()
 	t.window.Invalidate()
 
@@ -324,7 +324,7 @@ func (t *pairTab) generateOffer() {
 
 		t.mu.Lock()
 		t.pm = pm
-		t.status = "Offer 已生成，等待 Answer"
+		t.status = "邀請碼已產生，請複製給對方"
 		t.mu.Unlock()
 		t.offerOutEditor.SetText(offerToken)
 		t.window.Invalidate()
@@ -342,7 +342,7 @@ func (t *pairTab) applyAnswer() {
 
 	if pm == nil {
 		t.mu.Lock()
-		t.status = "請先生成 Offer"
+		t.status = "請先產生邀請碼"
 		t.mu.Unlock()
 		t.window.Invalidate()
 		return
@@ -350,7 +350,7 @@ func (t *pairTab) applyAnswer() {
 
 	if answerToken == "" {
 		t.mu.Lock()
-		t.status = "請輸入 Answer token"
+		t.status = "請貼入對方的回應碼"
 		t.mu.Unlock()
 		t.window.Invalidate()
 		return
@@ -432,7 +432,7 @@ func (t *pairTab) processOffer() {
 
 	if offerToken == "" {
 		t.mu.Lock()
-		t.status = "請輸入 Offer token"
+		t.status = "請貼入對方的邀請碼"
 		t.mu.Unlock()
 		t.window.Invalidate()
 		return
@@ -445,7 +445,7 @@ func (t *pairTab) processOffer() {
 	}
 
 	t.mu.Lock()
-	t.status = "處理 Offer 中..."
+	t.status = "正在處理邀請碼..."
 	t.mu.Unlock()
 	t.window.Invalidate()
 
@@ -536,7 +536,7 @@ func (t *pairTab) processOffer() {
 		t.pm = pm
 		t.cancel = cancel
 		t.connected = true
-		t.status = "Answer 已生成，等待對方連線"
+		t.status = "回應碼已產生，請複製給對方"
 		t.mu.Unlock()
 		t.answerOutEditor.SetText(answerTokenStr)
 		t.window.Invalidate()
