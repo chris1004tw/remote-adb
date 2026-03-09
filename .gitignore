@@ -1,0 +1,24 @@
+# Binaries
+/radb
+/radb-agent
+/radb-signal
+*.exe
+dist/
+
+# Environment
+.env
+configs/.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+vendor/
+
+# Claude Code
+.claude/
