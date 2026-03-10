@@ -92,6 +92,10 @@ jobs:
             libxkbcommon-x11-dev:arm64 libgles2-mesa-dev:arm64 libegl1-mesa-dev:arm64 \
             libxcursor-dev:arm64 libvulkan-dev:arm64
 
+      - name: 安裝 macOS 圖示轉換工具
+        if: matrix.goos == 'darwin'
+        run: brew install librsvg
+
       - name: 設定環境變數
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
@@ -110,6 +114,17 @@ jobs:
             echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> "$GITHUB_ENV"
           fi
 
+      - name: 嵌入 Windows 圖示與版本資訊
+        if: matrix.goos == 'windows'
+        run: |
+          sudo apt-get install -y librsvg2-bin
+          rsvg-convert -w 256 -h 256 "macos/RADB.icon/Assets/RADB Icon.svg" -o icon-256.png
+          go install github.com/tc-hib/go-winres@latest
+          cd cmd/radb
+          go-winres simply --icon ../../icon-256.png --arch ${{ matrix.goarch }} \
+            --product-name "radb" \
+            --file-description "遠端 ADB P2P 轉發工具"
+
       - name: 編譯
         env:
           GOOS: ${{ matrix.goos }}
@@ -123,13 +138,31 @@ jobs:
           if [ "${{ matrix.goos }}" = "windows" ]; then
             LDFLAGS="${LDFLAGS} -H windowsgui"
           fi
-          go build -ldflags="${LDFLAGS}" -o "dist/radb${EXT}" ./cmd/radb
+          go build -trimpath -ldflags="${LDFLAGS}" -o "dist/radb${EXT}" ./cmd/radb
 
-      - name: 打包 (tar.gz)
-        if: matrix.goos != 'windows'
+      - name: UPX 壓縮（macOS 除外）
+        if: matrix.goos != 'darwin'
+        run: |
+          # 安裝 UPX
+          UPX_VERSION="4.2.4"
+          curl -sL "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_linux.tar.xz" | tar -xJ
+          UPX="./upx-${UPX_VERSION}-amd64_linux/upx"
+
+          echo "壓縮前: $(du -h dist/radb${EXT} | cut -f1)"
+          $UPX --best --lzma "dist/radb${EXT}"
+          echo "壓縮後: $(du -h dist/radb${EXT} | cut -f1)"
+
+      - name: 打包 macOS (DMG)
+        if: matrix.goos == 'darwin'
+        run: |
+          chmod +x scripts/build-dmg.sh
+          scripts/build-dmg.sh dist/radb "${TAG}" "${{ env.ARCHIVE_NAME }}.dmg"
+
+      - name: 打包 Linux (tar.gz)
+        if: matrix.goos == 'linux'
         run: tar -czf "${{ env.ARCHIVE_NAME }}.tar.gz" -C dist .
 
-      - name: 打包 (zip)
+      - name: 打包 Windows (zip)
         if: matrix.goos == 'windows'
         run: cd dist && zip "../${{ env.ARCHIVE_NAME }}.zip" *
 

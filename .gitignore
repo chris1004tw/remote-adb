@@ -17,6 +17,7 @@ Thumbs.db
 
 # Go
 vendor/
+*.syso
 
 # Claude Code
 .claude/
