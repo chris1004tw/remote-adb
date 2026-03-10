@@ -1,3 +1,19 @@
+// Package daemon 實作本機端的背景服務（Daemon），扮演開發者本機與遠端 Agent 之間的橋樑。
+//
+// 整體架構角色：
+//
+//	使用者 CLI ──IPC──▶ Daemon ──WebSocket──▶ Signal Server ──WebSocket──▶ Agent
+//	                       │                                                  │
+//	                       └──────── WebRTC DataChannel (P2P) ────────────────┘
+//	                       │
+//	  adb client ──TCP──▶ Proxy（本機 port）
+//
+// Daemon 負責：
+//  1. 與 Signal Server 建立 WebSocket 連線，進行認證與信令交換
+//  2. 為每個綁定的遠端設備建立 WebRTC PeerConnection + DataChannel
+//  3. 在本機開啟 TCP Proxy，讓 adb client 可直接連線到 127.0.0.1:<port>
+//  4. 透過 IPC（TCP/Unix Socket）接受 CLI 工具的指令（bind/unbind/list/status/hosts）
+//  5. 管理 Port 分配與 Binding 狀態追蹤
 package daemon
 
 import (
@@ -17,41 +33,52 @@ import (
 	ws "github.com/coder/websocket"
 )
 
-// Config 是 Daemon 的設定。
+// Config 是 Daemon 的啟動設定。
 type Config struct {
-	ServerURL string
-	Token     string
-	PortStart int
-	PortEnd   int
-	ICEConfig webrtc.ICEConfig
+	ServerURL string           // Signal Server 的 WebSocket URL（如 ws://example.com:8080）
+	Token     string           // PSK 認證令牌，須與 Server 端設定一致
+	PortStart int              // 本機 TCP Proxy 的 Port 分配範圍起始值（預設 15555）
+	PortEnd   int              // 本機 TCP Proxy 的 Port 分配範圍結束值（預設 15655）
+	ICEConfig webrtc.ICEConfig // WebRTC ICE 設定（STUN/TURN 伺服器等）
 }
 
-// Daemon 管理 WebRTC 連線、TCP 代理與 IPC 服務。
+// Daemon 是本機端背景服務的核心結構，管理 WebRTC 連線、TCP 代理與 IPC 服務。
+//
+// Daemon 持有三把 mutex，鎖定順序為：waiterMu → proxyMu → hostsMu。
+// 在同時需要多把鎖的場景中，必須按照此順序取鎖以避免 deadlock。
+// 實際上目前各 mutex 保護的資源是獨立操作的，不會同時持有多把鎖。
 type Daemon struct {
 	config   Config
 	ports    *PortAllocator
 	bindings *BindingTable
-	hostname string
+	hostname string // 本機主機名，用於信令訊息的 source 欄位
 
-	// Server 連線
+	// Server 連線（Signal Server 的 WebSocket 連線）
 	wsConn *ws.Conn
-	connID string
+	connID string // Server 認證成功後分配的連線 ID
 
-	// 回應等待者
-	waiterMu sync.Mutex
-	waiters  map[string]chan protocol.Envelope
+	// waiters 實作了非同步請求-回應的配對機制。
+	// 工作原理：
+	//  1. cmdBind 等方法發送請求後，呼叫 waitResponse(key) 註冊一個 channel 到 waiters map
+	//  2. serverReadLoop 收到 Server 回傳的訊息後，呼叫 deliverResponse(key) 將訊息寫入對應 channel
+	//  3. waitResponse 從 channel 收到回應或逾時返回
+	// key 的格式為 "lock_resp:<serial>" 或 "answer:<hostID>"，用於精準匹配請求與回應。
+	waiterMu sync.Mutex                       // 保護 waiters map 的讀寫
+	waiters  map[string]chan protocol.Envelope // key: 回應識別鍵 → 用於接收回應的 channel
 
-	// 活躍的 proxy 和 peer
+	// proxyMu 保護 proxies 和 peers 兩個 map 的讀寫，
+	// 這兩個 map 以本機 port 為 key，分別儲存 TCP Proxy 和 WebRTC PeerManager。
 	proxyMu sync.Mutex
-	proxies map[int]*proxy.Proxy
-	peers   map[int]*webrtc.PeerManager
+	proxies map[int]*proxy.Proxy         // key: 本機 port → TCP 代理實例
+	peers   map[int]*webrtc.PeerManager  // key: 本機 port → WebRTC 連線管理器
 
-	// 主機列表快取
+	// hostsMu 保護 hosts 快取的讀寫，使用 RWMutex 允許多個 cmdHosts 並行讀取。
 	hostsMu sync.RWMutex
-	hosts   []protocol.HostInfo
+	hosts   []protocol.HostInfo // 從 Server 取得的遠端主機與設備清單快取
 }
 
 // NewDaemon 建立一個新的 Daemon 實例。
+// 若 PortStart/PortEnd 未指定，使用預設範圍 15555~15655（共 101 個 port）。
 func NewDaemon(cfg Config) *Daemon {
 	if cfg.PortStart == 0 {
 		cfg.PortStart = 15555
@@ -83,7 +110,12 @@ func (d *Daemon) Ports() *PortAllocator {
 	return d.ports
 }
 
-// Start 啟動 Daemon：連線 Server、啟動 IPC 服務。
+// Start 啟動 Daemon，執行以下步驟：
+//  1. 連線 Signal Server 並完成 PSK 認證
+//  2. 啟動背景 goroutine 持續讀取 Server 訊息
+//  3. 主動請求一次遠端主機列表
+//  4. 進入 IPC 服務迴圈（阻塞至 ctx 取消）
+//  5. ctx 取消後執行 shutdown 清理所有資源
 func (d *Daemon) Start(ctx context.Context, ipcListener net.Listener) error {
 	if err := d.connectServer(ctx); err != nil {
 		return err
@@ -121,6 +153,8 @@ func (d *Daemon) ServeIPC(ctx context.Context, ln net.Listener) {
 	}
 }
 
+// handleIPCConn 處理單一 IPC 連線：讀取一個 JSON 指令、執行、回傳結果後關閉。
+// 每個 IPC 連線有 30 秒的整體 deadline，避免慢速或斷線的 CLI 佔住資源。
 func (d *Daemon) handleIPCConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(30 * time.Second))
@@ -137,6 +171,7 @@ func (d *Daemon) handleIPCConn(ctx context.Context, conn net.Conn) {
 	json.NewEncoder(conn).Encode(resp)
 }
 
+// handleCommand 根據 IPC 指令的 Action 分派到對應的處理方法。
 func (d *Daemon) handleCommand(ctx context.Context, cmd IPCCommand) IPCResponse {
 	switch cmd.Action {
 	case "list":
@@ -154,10 +189,12 @@ func (d *Daemon) handleCommand(ctx context.Context, cmd IPCCommand) IPCResponse 
 	}
 }
 
+// cmdList 回傳所有綁定關係的快照（對應 IPC action: "list"）。
 func (d *Daemon) cmdList() IPCResponse {
 	return SuccessResponse(d.bindings.List())
 }
 
+// cmdStatus 回傳 Daemon 目前的連線狀態（對應 IPC action: "status"）。
 func (d *Daemon) cmdStatus() IPCResponse {
 	return SuccessResponse(StatusInfo{
 		Connected: d.wsConn != nil,
@@ -167,12 +204,26 @@ func (d *Daemon) cmdStatus() IPCResponse {
 	})
 }
 
+// cmdHosts 回傳快取中的遠端主機與設備列表（對應 IPC action: "hosts"）。
 func (d *Daemon) cmdHosts() IPCResponse {
 	d.hostsMu.RLock()
 	defer d.hostsMu.RUnlock()
 	return SuccessResponse(d.hosts)
 }
 
+// cmdBind 執行設備綁定流程（對應 IPC action: "bind"），共 9 個步驟：
+//
+//	步驟 1: 分配本機 Port — 從 PortAllocator 取得一個可用 port
+//	步驟 2: 鎖定遠端設備 — 透過 Server 向 Agent 發送 lock_req，等待 lock_resp 確認
+//	步驟 3: 建立 WebRTC PeerConnection — 初始化 ICE 設定
+//	步驟 4: 開啟 DataChannel — 建立以 "adb/<serial>/<sessionID>" 命名的通道
+//	步驟 5: 建立 Offer — 產生 SDP Offer 並透過 Server 發送給 Agent
+//	步驟 6: 等待 Answer — 等待 Agent 回傳的 SDP Answer 並套用
+//	步驟 7: 建立 TCP Proxy — 在本機 port 上監聽，將 TCP 流量橋接至 DataChannel
+//	步驟 8: 記錄狀態 — 將 proxy/peer 存入 map，新增 binding 記錄
+//	步驟 9: 監聽斷線 — 註冊 WebRTC 斷線回呼，自動更新狀態為 disconnected
+//
+// 任何步驟失敗時，會回收已分配的資源（port、PeerConnection 等）並回傳錯誤。
 func (d *Daemon) cmdBind(ctx context.Context, payload json.RawMessage) IPCResponse {
 	if d.wsConn == nil {
 		return ErrorResponse("未連線到 Server")
@@ -183,18 +234,18 @@ func (d *Daemon) cmdBind(ctx context.Context, payload json.RawMessage) IPCRespon
 		return ErrorResponse("解析 bind 參數失敗")
 	}
 
-	// 檢查是否已綁定相同設備
+	// 前置檢查：同一設備不允許重複綁定
 	if _, found := d.bindings.FindBySerial(req.Serial); found {
 		return ErrorResponse(fmt.Sprintf("設備 %s 已被綁定", req.Serial))
 	}
 
-	// 1. 分配 port
+	// 步驟 1: 分配本機 port
 	port, err := d.ports.Allocate()
 	if err != nil {
 		return ErrorResponse(err.Error())
 	}
 
-	// 2. 鎖定設備
+	// 步驟 2: 向 Agent 鎖定設備（透過 Server 轉發 lock_req）
 	lockEnv, _ := protocol.NewEnvelope(
 		protocol.MsgTypeLockReq, d.hostname, d.connID, req.HostID,
 		protocol.LockReqPayload{HostID: req.HostID, Serial: req.Serial},
@@ -220,14 +271,14 @@ func (d *Daemon) cmdBind(ctx context.Context, payload json.RawMessage) IPCRespon
 		return ErrorResponse(reason)
 	}
 
-	// 3. 建立 WebRTC 連線
+	// 步驟 3: 建立 WebRTC PeerConnection
 	pm, err := webrtc.NewPeerManager(d.config.ICEConfig)
 	if err != nil {
 		d.ports.Release(port)
 		return ErrorResponse(fmt.Sprintf("建立 PeerConnection 失敗: %v", err))
 	}
 
-	// 4. 開啟 DataChannel
+	// 步驟 4: 開啟 DataChannel，label 格式 "adb/<serial>/<sessionID>"
 	sessionID := generateSessionID()
 	label := fmt.Sprintf("adb/%s/%s", req.Serial, sessionID)
 	channel, err := pm.OpenChannel(label)
@@ -237,7 +288,7 @@ func (d *Daemon) cmdBind(ctx context.Context, payload json.RawMessage) IPCRespon
 		return ErrorResponse(fmt.Sprintf("建立 DataChannel 失敗: %v", err))
 	}
 
-	// 5. 建立 Offer 並發送
+	// 步驟 5: 建立 SDP Offer 並透過 Server 發送給 Agent
 	offerSDP, err := pm.CreateOffer()
 	if err != nil {
 		pm.Close()
@@ -255,7 +306,7 @@ func (d *Daemon) cmdBind(ctx context.Context, payload json.RawMessage) IPCRespon
 		return ErrorResponse(fmt.Sprintf("發送 Offer 失敗: %v", err))
 	}
 
-	// 6. 等待 Answer
+	// 步驟 6: 等待 Agent 回傳的 SDP Answer（15 秒逾時）
 	answerEnv, err := d.waitResponse("answer:"+req.HostID, 15*time.Second)
 	if err != nil {
 		pm.Close()
@@ -276,7 +327,7 @@ func (d *Daemon) cmdBind(ctx context.Context, payload json.RawMessage) IPCRespon
 		return ErrorResponse(fmt.Sprintf("處理 Answer 失敗: %v", err))
 	}
 
-	// 7. 建立 TCP 代理
+	// 步驟 7: 建立 TCP Proxy，在本機 port 監聽並橋接至 DataChannel
 	p, err := proxy.New(port, channel)
 	if err != nil {
 		pm.Close()
@@ -285,7 +336,7 @@ func (d *Daemon) cmdBind(ctx context.Context, payload json.RawMessage) IPCRespon
 	}
 	p.Start(ctx)
 
-	// 8. 記錄
+	// 步驟 8: 記錄 proxy/peer 與 binding 狀態
 	d.proxyMu.Lock()
 	d.proxies[port] = p
 	d.peers[port] = pm
@@ -298,7 +349,7 @@ func (d *Daemon) cmdBind(ctx context.Context, payload json.RawMessage) IPCRespon
 		Status:    "active",
 	})
 
-	// 9. 監聽斷線
+	// 步驟 9: 註冊 WebRTC 斷線回呼，自動將 binding 狀態更新為 "disconnected"
 	pm.OnDisconnect(func() {
 		slog.Info("WebRTC 連線斷開", "port", port, "serial", req.Serial)
 		d.bindings.UpdateStatus(port, "disconnected")
@@ -308,6 +359,8 @@ func (d *Daemon) cmdBind(ctx context.Context, payload json.RawMessage) IPCRespon
 	return SuccessResponse(BindResult{LocalPort: port, Serial: req.Serial})
 }
 
+// cmdUnbind 解除指定 port 的設備綁定（對應 IPC action: "unbind"）：
+// 停止 TCP Proxy → 關閉 PeerConnection → 通知 Agent 解鎖 → 移除 binding → 釋放 port。
 func (d *Daemon) cmdUnbind(ctx context.Context, payload json.RawMessage) IPCResponse {
 	var req UnbindRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
@@ -331,7 +384,7 @@ func (d *Daemon) cmdUnbind(ctx context.Context, payload json.RawMessage) IPCResp
 	}
 	d.proxyMu.Unlock()
 
-	// 通知 Agent 解鎖（fire-and-forget）
+	// 通知 Agent 解鎖設備（fire-and-forget，不等待回應）
 	if d.wsConn != nil {
 		env, _ := protocol.NewEnvelope(
 			protocol.MsgTypeUnlockReq, d.hostname, d.connID, binding.HostID,
@@ -349,6 +402,8 @@ func (d *Daemon) cmdUnbind(ctx context.Context, payload json.RawMessage) IPCResp
 
 // --- Server 連線 ---
 
+// connectServer 連線到 Signal Server 並完成 PSK 認證。
+// 成功後 d.wsConn 與 d.connID 會被設定。
 func (d *Daemon) connectServer(ctx context.Context) error {
 	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -390,6 +445,8 @@ func (d *Daemon) connectServer(ctx context.Context) error {
 	return nil
 }
 
+// serverReadLoop 持續從 Server WebSocket 讀取訊息並分派處理。
+// 此方法在獨立 goroutine 中執行，直到 ctx 取消或讀取錯誤時結束。
 func (d *Daemon) serverReadLoop(ctx context.Context) {
 	for {
 		_, data, err := d.wsConn.Read(ctx)
@@ -409,6 +466,12 @@ func (d *Daemon) serverReadLoop(ctx context.Context) {
 	}
 }
 
+// handleSignalMessage 根據訊息類型分派處理：
+//   - host_list_resp: 更新主機列表快取
+//   - device_update:  更新特定主機的設備列表
+//   - lock_resp:      透過 waiters 機制回傳給等待中的 cmdBind
+//   - unlock_resp:    透過 waiters 機制回傳（目前 unbind 是 fire-and-forget，無人等待）
+//   - answer:         透過 waiters 機制回傳 SDP Answer 給等待中的 cmdBind
 func (d *Daemon) handleSignalMessage(env protocol.Envelope) {
 	switch env.Type {
 	case protocol.MsgTypeHostListResp:
@@ -445,6 +508,8 @@ func (d *Daemon) handleSignalMessage(env protocol.Envelope) {
 	}
 }
 
+// updateHostDevices 更新指定主機的設備列表。
+// 若該 hostID 不在快取中（例如 Agent 是在 Daemon 啟動後才上線），會先建立一筆空記錄。
 func (d *Daemon) updateHostDevices(hostID string, devices []protocol.DeviceInfo) {
 	d.hostsMu.Lock()
 	defer d.hostsMu.Unlock()
@@ -461,6 +526,7 @@ func (d *Daemon) updateHostDevices(hostID string, devices []protocol.DeviceInfo)
 	})
 }
 
+// sendEnvelope 將信令訊息序列化為 JSON 並透過 WebSocket 發送。
 func (d *Daemon) sendEnvelope(ctx context.Context, env protocol.Envelope) error {
 	data, err := json.Marshal(env)
 	if err != nil {
@@ -469,6 +535,8 @@ func (d *Daemon) sendEnvelope(ctx context.Context, env protocol.Envelope) error 
 	return d.wsConn.Write(ctx, ws.MessageText, data)
 }
 
+// requestHostList 向 Server 請求一次遠端主機列表（fire-and-forget）。
+// 回應會在 serverReadLoop 中由 handleSignalMessage 處理。
 func (d *Daemon) requestHostList(ctx context.Context) {
 	env, _ := protocol.NewEnvelope(
 		protocol.MsgTypeHostList, d.hostname, d.connID, "",
@@ -477,7 +545,11 @@ func (d *Daemon) requestHostList(ctx context.Context) {
 	d.sendEnvelope(ctx, env)
 }
 
+// waitResponse 註冊一個等待者並阻塞等待回應。
+// 流程：建立 buffered channel → 存入 waiters map → 等待 deliverResponse 寫入或逾時。
+// 無論成功或逾時，defer 都會清理 waiters map 中的記錄。
 func (d *Daemon) waitResponse(key string, timeout time.Duration) (protocol.Envelope, error) {
+	// 使用 buffered channel（容量 1），避免 deliverResponse 在寫入時阻塞
 	ch := make(chan protocol.Envelope, 1)
 	d.waiterMu.Lock()
 	d.waiters[key] = ch
@@ -497,6 +569,8 @@ func (d *Daemon) waitResponse(key string, timeout time.Duration) (protocol.Envel
 	}
 }
 
+// deliverResponse 將收到的回應寫入對應的等待者 channel。
+// 使用 select + default 確保即使無人等待（已逾時清理）也不會阻塞。
 func (d *Daemon) deliverResponse(key string, env protocol.Envelope) {
 	d.waiterMu.Lock()
 	ch, ok := d.waiters[key]
@@ -505,10 +579,12 @@ func (d *Daemon) deliverResponse(key string, env protocol.Envelope) {
 		select {
 		case ch <- env:
 		default:
+			// 無人等待（可能已逾時），丟棄回應
 		}
 	}
 }
 
+// shutdown 清理所有資源：停止所有 TCP Proxy、關閉所有 PeerConnection、關閉 WebSocket 連線。
 func (d *Daemon) shutdown() error {
 	slog.Info("Daemon 正在關閉...")
 
@@ -531,6 +607,7 @@ func (d *Daemon) shutdown() error {
 	return nil
 }
 
+// generateSessionID 產生 16 字元的隨機十六進位字串，用於 DataChannel label 的唯一識別。
 func generateSessionID() string {
 	b := make([]byte, 8)
 	rand.Read(b)
