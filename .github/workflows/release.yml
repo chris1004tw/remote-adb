@@ -105,11 +105,9 @@ jobs:
       - name: 嵌入 Windows 圖示與版本資訊
         if: matrix.goos == 'windows'
         run: |
-          sudo apt-get install -y librsvg2-bin
-          rsvg-convert -w 256 -h 256 "assets/RADB Icon.svg" -o icon-256.png
           go install github.com/tc-hib/go-winres@latest
           cd cmd/radb
-          go-winres simply --icon ../../icon-256.png --arch ${{ matrix.goarch }} \
+          go-winres simply --icon ../../assets/radb.ico --arch ${{ matrix.goarch }} \
             --product-name "radb" \
             --file-description "遠端 ADB P2P 轉發工具"
 
@@ -173,9 +171,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-
-      - name: 安裝圖示轉換工具
-        run: brew install librsvg
 
       - name: 設定環境變數
         run: |
