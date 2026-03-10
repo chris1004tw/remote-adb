@@ -154,12 +154,32 @@ func (p *settingsPanel) syncEditorsFromConfig() {
 
 // openWindow 開啟獨立設定子視窗。
 // 若已開啟則將既有視窗提到前景；否則建立新視窗並啟動事件迴圈 goroutine。
+//
+// 注意：Window.Perform 是阻塞呼叫（透過 Window.Run → eventLoop.Run → <-done），
+// 若在 FrameEvent handler 中同步呼叫，會與等待 Frame 回應的原生事件迴圈形成
+// 互相等待的死鎖（macOS 上因分頁合併特別容易觸發）。因此 ActionRaise 必須
+// 在獨立 goroutine 中執行，並加 recover 防護視窗已銷毀時的 nil dereference。
 func (p *settingsPanel) openWindow() {
 	p.mu.Lock()
 	if p.settingsWin != nil {
 		w := p.settingsWin
 		p.mu.Unlock()
-		w.Perform(system.ActionRaise)
+		// 在獨立 goroutine 中提升視窗，避免阻塞主視窗事件迴圈導致死鎖。
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Warn("設定視窗提升失敗", "error", r)
+					// 視窗可能已銷毀，清除參考以便下次點擊重新建立
+					p.mu.Lock()
+					if p.settingsWin == w {
+						p.settingsWin = nil
+						p.visible = false
+					}
+					p.mu.Unlock()
+				}
+			}()
+			w.Perform(system.ActionRaise)
+		}()
 		return
 	}
 	p.mu.Unlock()
@@ -189,8 +209,12 @@ func (p *settingsPanel) settingsEventLoop(w *app.Window) {
 
 	defer func() {
 		p.mu.Lock()
-		p.settingsWin = nil
-		p.visible = false
+		// 只在 settingsWin 仍為自身時才清除，避免 recover 或重新建立
+		// 後的新視窗參考被誤清。
+		if p.settingsWin == w {
+			p.settingsWin = nil
+			p.visible = false
+		}
 		p.mu.Unlock()
 		p.window.Invalidate() // 通知主視窗重繪（橫幅可能需更新）
 	}()
