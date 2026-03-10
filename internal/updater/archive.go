@@ -1,3 +1,9 @@
+// archive.go 負責從 .tar.gz 或 .zip 格式的 archive 中安全地提取 binary 檔案。
+//
+// 安全設計要點：
+//   - 使用 knownBinaries 白名單，僅提取預期的執行檔，防止 archive 中夾帶惡意檔案
+//   - 針對 path traversal 攻擊（zip slip / tar slip）進行防護，拒絕包含 ".." 的路徑
+//   - 提取的檔案一律使用 filepath.Base() 取得純檔名，不保留 archive 內的目錄結構
 package updater
 
 import (
@@ -11,10 +17,12 @@ import (
 	"strings"
 )
 
-// 允許從 archive 中提取的 binary 名稱。
+// knownBinaries 是允許從 archive 中提取的 binary 名稱白名單。
+// 設計意圖：即使 archive 中包含其他檔案（如 README、LICENSE 等），
+// 也只會提取此白名單中的執行檔，降低供應鏈攻擊風險。
 var knownBinaries = map[string]bool{
-	"radb":     true,
-	"radb.exe": true,
+	"radb":     true, // Unix 平台
+	"radb.exe": true, // Windows 平台
 }
 
 // ExtractArchive 解壓 archive 到 destDir，只提取已知的 binary 檔案。
@@ -30,6 +38,7 @@ func ExtractArchive(archivePath, destDir string) ([]string, error) {
 	return nil, fmt.Errorf("不支援的 archive 格式: %s", archivePath)
 }
 
+// extractTarGz 解壓 .tar.gz 格式的 archive，從中提取白名單內的 binary。
 func extractTarGz(archivePath, destDir string) ([]string, error) {
 	f, err := os.Open(archivePath)
 	if err != nil {
@@ -55,22 +64,25 @@ func extractTarGz(archivePath, destDir string) ([]string, error) {
 			return nil, fmt.Errorf("讀取 tar entry 失敗: %w", err)
 		}
 
-		// 只處理一般檔案
+		// 只處理一般檔案（跳過目錄、symlink 等）
 		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
 
 		name := filepath.Base(hdr.Name)
 
-		// 安全性：拒絕 path traversal
+		// tar slip 防護：拒絕路徑中包含 ".." 的 entry，
+		// 避免惡意 archive 將檔案寫入 destDir 之外的目錄
 		if strings.Contains(hdr.Name, "..") {
 			continue
 		}
 
+		// 不在白名單中的檔案直接跳過
 		if !knownBinaries[name] {
 			continue
 		}
 
+		// 輸出時只保留檔名，不重建 archive 內的目錄結構
 		destPath := filepath.Join(destDir, name)
 		if err := writeFile(destPath, tr, hdr.FileInfo().Mode()); err != nil {
 			return nil, err
@@ -81,6 +93,8 @@ func extractTarGz(archivePath, destDir string) ([]string, error) {
 	return extracted, nil
 }
 
+// extractZip 解壓 .zip 格式的 archive，從中提取白名單內的 binary。
+// 主要用於 Windows 平台的 release archive。
 func extractZip(archivePath, destDir string) ([]string, error) {
 	zr, err := zip.OpenReader(archivePath)
 	if err != nil {
@@ -93,15 +107,18 @@ func extractZip(archivePath, destDir string) ([]string, error) {
 	for _, zf := range zr.File {
 		name := filepath.Base(zf.Name)
 
-		// 安全性：拒絕 path traversal
+		// zip slip 防護：拒絕路徑中包含 ".." 的 entry，
+		// 避免惡意 archive 將檔案寫入 destDir 之外的目錄
 		if strings.Contains(zf.Name, "..") {
 			continue
 		}
 
+		// 跳過目錄 entry
 		if zf.FileInfo().IsDir() {
 			continue
 		}
 
+		// 不在白名單中的檔案直接跳過
 		if !knownBinaries[name] {
 			continue
 		}
@@ -123,8 +140,11 @@ func extractZip(archivePath, destDir string) ([]string, error) {
 	return extracted, nil
 }
 
+// writeFile 將 reader 的內容寫入指定路徑。
+// mode 參數指定檔案權限；若為 0（例如 zip 格式中某些 entry 未保留權限），
+// 則預設使用 0755（rwxr-xr-x），因為提取的對象是可執行的 binary，
+// 必須具備執行權限才能正常運行。
 func writeFile(path string, r io.Reader, mode os.FileMode) error {
-	// 確保至少有執行權限
 	if mode == 0 {
 		mode = 0755
 	}
