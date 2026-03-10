@@ -83,7 +83,7 @@ go install github.com/chris1004tw/remote-adb/cmd/radb@latest
 
 | 平台 | 格式 | 說明 |
 |------|------|------|
-| macOS | `.dmg` | 開啟後將 radb.app 拖入 Applications |
+| macOS | `.dmg`（Universal Binary） | 同時支援 Intel 與 Apple Silicon，開啟後將 radb.app 拖入 Applications |
 | Linux | `.tar.gz` | 解壓後取得 `radb` 執行檔 |
 | Windows | `.zip` / `.exe` | 解壓或直接下載獨立執行檔 |
 
@@ -180,6 +180,7 @@ radb direct connect 192.168.1.100:15555 --serial pixel-7 --token mysecret
 - **簡易連線**：跨 NAT 手動 SDP 交換（Client / Agent 雙模式）
 - **區網直連**：開啟 Agent 伺服器或掃描 LAN 自動發現，一鍵轉發全部設備
 - **Relay 伺服器**：透過中央 Signal Server 連線
+- **設定面板**（右下角齒輪）：集中管理 ADB Port、Proxy Port、Direct Port、STUN Server，支援手動檢查更新。設定以 TOML 格式持久化於 `%APPDATA%/radb/radb.toml`（Windows）或 `~/.config/radb/radb.toml`（Linux/macOS）
 - GUI 內建 ADB bridge 針對 DataChannel 採用 **16KB 分塊傳輸**，提升 `scrcpy` 視訊與大流量穩定性
 - GUI 內建 forward 攔截會將本機 `adb connect` 序號（如 `127.0.0.1:15037`）映射為遠端真實設備序號，避免 `scrcpy` forward 失配
 - ADB transport 的 host→device `WRTE` 路徑同樣採 **16KB 分塊寫入**，避免 `sync`/`scrcpy` 啟動階段的大封包失敗
@@ -276,13 +277,14 @@ remote-adb/
 │   ├── cli/               # bubbletea 互動式 bind 選單
 │   ├── daemon/            # 背景服務、Port 分配、Binding Table、IPC
 │   ├── directsrv/         # TCP 直連服務 + mDNS 廣播
-│   ├── gui/               # Gio GUI 介面（ADB transport + forward 攔截）
+│   ├── gui/               # Gio GUI 介面（設定面板 + ADB transport + forward 攔截）
 │   ├── proxy/             # TCP 代理（16KB chunking、單連線替換設計）
 │   ├── signal/            # WebSocket 信令 hub、PSK 認證
 │   ├── updater/           # 自動更新（GitHub Releases 下載 + 跨平台 binary 替換）
 │   └── webrtc/            # PeerConnection 與 DataChannel 管理（detach 模式）
 ├── pkg/protocol/          # 共用信令 JSON 格式（Envelope + Payload types）
-├── macos/                 # macOS .app bundle 資源（Info.plist、圖示）
+├── assets/                # 跨平台共用資源（應用程式 SVG 圖示）
+├── macos/                 # macOS .app bundle metadata（Info.plist）
 ├── configs/               # 設定檔範例
 ├── docs/                  # 詳細設計文件
 ├── scripts/               # 平台輔助腳本（build-dmg.sh、scrcpy 快速設定）
