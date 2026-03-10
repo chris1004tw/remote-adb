@@ -129,20 +129,20 @@ adb -s localhost:15555 push large_file.apk /sdcard/
 
 ```bash
 # Agent 端：啟動 direct 模式
-radb agent --direct-port 7070 --direct-token mysecret
+radb agent --direct-port 15555 --direct-token mysecret
 
 # 也可同時連線 Signal Server
-radb agent --server ws://signal:8080 --token abc --direct-port 7070
+radb agent --server ws://signal:8080 --token abc --direct-port 15555
 
 # Client 端：自動發現 LAN 上的 Agent（mDNS）
 radb direct discover
 
 # 查詢設備
-radb direct list 192.168.1.100:7070 --token mysecret
+radb direct list 192.168.1.100:15555 --token mysecret
 
-# TCP 直連
-radb direct connect 192.168.1.100:7070 --serial pixel-7 --token mysecret
-# → ADB 轉發 127.0.0.1:15555 → pixel-7
+# TCP 直連（轉發全部設備，本機 port 從 5555 開始遞增）
+radb direct connect 192.168.1.100:15555 --serial pixel-7 --token mysecret
+# → ADB 轉發 127.0.0.1:5555 → pixel-7
 ```
 
 ---
@@ -151,9 +151,12 @@ radb direct connect 192.168.1.100:7070 --serial pixel-7 --token mysecret
 
 直接執行 `radb`（不帶引數）即可開啟圖形介面，包含三個分頁：
 
-- **Agent**：啟動 Direct 模式 Agent，追蹤 ADB 設備
-- **Direct Connect**：掃描 LAN / 手動輸入地址，連線遠端設備
-- **SDP 配對**：跨 NAT 手動 SDP 交換（Client / Agent 雙模式）
+- **簡易連線**：跨 NAT 手動 SDP 交換（Client / Agent 雙模式）
+- **區網直連**：開啟 Agent 伺服器或掃描 LAN 自動發現，一鍵轉發全部設備
+- **Relay 伺服器**：透過中央 Signal Server 連線
+- GUI 內建 ADB bridge 針對 DataChannel 採用 **16KB 分塊傳輸**，提升 `scrcpy` 視訊與大流量穩定性
+- GUI 內建 forward 攔截會將本機 `adb connect` 序號（如 `127.0.0.1:15037`）映射為遠端真實設備序號，避免 `scrcpy` forward 失配
+- ADB transport 的 host→device `WRTE` 路徑同樣採 **16KB 分塊寫入**，避免 `sync`/`scrcpy` 啟動階段的大封包失敗
 
 ```bash
 # GUI 模式
@@ -184,6 +187,40 @@ radb pair answer <offer-token>
 
 ---
 
+## 新電腦快速設定（scrcpy）
+
+如果你的環境必須強制走 adb forward，避免每次手打參數，可執行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/windows/setup-scrcpy-radb.ps1
+```
+
+此腳本會寫入 `%APPDATA%\scrcpy\scrcpy.conf`，預設包含：
+
+- `serial=127.0.0.1:15037`
+- `force_adb_forward=true`
+
+若你也要把 `--no-audio` 設成預設：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/windows/setup-scrcpy-radb.ps1 -NoAudioDefault
+```
+
+你也可以直接用啟動器：
+
+```cmd
+scripts\windows\scrcpy-radb.cmd
+```
+
+若要改目標 serial，可先設定環境變數：
+
+```cmd
+set RADB_SERIAL=127.0.0.1:15037
+scripts\windows\scrcpy-radb.cmd
+```
+
+---
+
 ## 設定說明
 
 | 環境變數 | 預設值 | 說明 |
@@ -194,7 +231,7 @@ radb pair answer <offer-token>
 | `RADB_TURN_URL` | (空) | TURN Server（對稱型 NAT 需要） |
 | `RADB_DIRECT_PORT` | (空) | Agent Direct TCP 監聽埠 |
 | `RADB_DIRECT_TOKEN` | (空) | Direct 連線 Token |
-| `RADB_PORT_START` | `15555` | Client 起始 Port |
+| `RADB_PORT_START` | `5555` | Client 起始 Port |
 
 完整設定請參閱 [設定指南](docs/configuration.md)。
 
@@ -205,20 +242,24 @@ radb pair answer <offer-token>
 ```
 remote-adb/
 ├── cmd/
-│   └── radb/              # 統一入口（server/agent/daemon/bind/...）
+│   └── radb/              # 統一入口（server/agent/daemon/bind/direct/pair/gui/update）
 ├── internal/
+│   ├── adb/               # ADB 協定、設備管理、自動下載 platform-tools
 │   ├── agent/             # 遠端代理端核心邏輯
-│   ├── adb/               # ADB 協定與設備管理
-│   ├── cli/               # 互動式選單
-│   ├── daemon/            # 背景服務與 Port 管理
+│   ├── buildinfo/         # 編譯時注入的版本資訊（Version/Commit/Date）
+│   ├── cli/               # bubbletea 互動式 bind 選單
+│   ├── daemon/            # 背景服務、Port 分配、Binding Table、IPC
 │   ├── directsrv/         # TCP 直連服務 + mDNS 廣播
-│   ├── gui/               # Gio GUI 介面
-│   ├── proxy/             # TCP 代理
-│   ├── signal/            # WebSocket 信令
-│   └── webrtc/            # P2P 通道管理
-├── pkg/protocol/          # 共用格式定義
+│   ├── gui/               # Gio GUI 介面（ADB transport + forward 攔截）
+│   ├── proxy/             # TCP 代理（16KB chunking、單連線替換設計）
+│   ├── signal/            # WebSocket 信令 hub、PSK 認證
+│   ├── updater/           # 自動更新（GitHub Releases 下載 + 跨平台 binary 替換）
+│   └── webrtc/            # PeerConnection 與 DataChannel 管理（detach 模式）
+├── pkg/protocol/          # 共用信令 JSON 格式（Envelope + Payload types）
 ├── configs/               # 設定檔範例
-├── docs/                  # 詳細文件
+├── docs/                  # 詳細設計文件
+├── scripts/               # 平台輔助腳本（scrcpy 快速設定、啟動器）
+├── test/e2e/              # 端對端整合測試
 ├── go.mod
 └── README.md
 ```

@@ -100,8 +100,8 @@ internal/signal     internal/adb     internal/webrtc（可平行開發）
                     ↓
                 internal/daemon
                     ↓
-                internal/cli
-                    ↓
+                internal/cli     internal/gui（adb + webrtc + proxy 整合）
+                    ↓                 ↓
           cmd/radb（統一入口）
 ```
 

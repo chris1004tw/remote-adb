@@ -28,6 +28,7 @@
 - 確保大檔案傳輸（`adb push` 100MB+）穩定不中斷
 - 使用 pion/webrtc 的 DataChannel detach 模式取得 io.ReadWriteCloser
 - 直接做 stream I/O，避開 message-based 限制
+- **單連線替換設計**：ADB device transport 是單連線多工協定，同一時間只能有一條 TCP 連線使用共用的 DataChannel。新連線到達時，舊連線會被關閉並等待其寫入器完全結束，才啟動新連線，確保 channel 讀寫不會交錯
 
 ## 4. Daemon 架構
 
