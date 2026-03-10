@@ -68,7 +68,7 @@ graph LR
 ```bash
 git clone https://github.com/chris1004tw/remote-adb.git
 cd remote-adb
-go build -o radb ./cmd/radb
+go build -trimpath -o radb ./cmd/radb
 ```
 
 ### go install
@@ -79,7 +79,33 @@ go install github.com/chris1004tw/remote-adb/cmd/radb@latest
 
 ### 預編譯 Binary
 
-> 前往 [GitHub Releases](https://github.com/chris1004tw/remote-adb/releases) 下載對應平台的執行檔。
+> 前往 [GitHub Releases](https://github.com/chris1004tw/remote-adb/releases) 下載對應平台的檔案。
+
+| 平台 | 格式 | 說明 |
+|------|------|------|
+| macOS | `.dmg` | 開啟後將 radb.app 拖入 Applications |
+| Linux | `.tar.gz` | 解壓後取得 `radb` 執行檔 |
+| Windows | `.zip` / `.exe` | 解壓或直接下載獨立執行檔 |
+
+### macOS 首次執行
+
+由於未經 Apple 簽名，macOS 會阻擋首次執行。請依以下**任一方式**解除：
+
+**方式一：移除隔離屬性**
+
+```bash
+sudo xattr -dr com.apple.quarantine /Applications/radb.app
+```
+
+**方式二：本地簽名**
+
+```bash
+# 安裝 Command Line Tools for Xcode（若已安裝可跳過）
+xcode-select --install
+
+# 本地簽名
+sudo codesign --force --deep --sign - /Applications/radb.app
+```
 
 ---
 
@@ -256,9 +282,10 @@ remote-adb/
 │   ├── updater/           # 自動更新（GitHub Releases 下載 + 跨平台 binary 替換）
 │   └── webrtc/            # PeerConnection 與 DataChannel 管理（detach 模式）
 ├── pkg/protocol/          # 共用信令 JSON 格式（Envelope + Payload types）
+├── macos/                 # macOS .app bundle 資源（Info.plist、圖示）
 ├── configs/               # 設定檔範例
 ├── docs/                  # 詳細設計文件
-├── scripts/               # 平台輔助腳本（scrcpy 快速設定、啟動器）
+├── scripts/               # 平台輔助腳本（build-dmg.sh、scrcpy 快速設定）
 ├── test/e2e/              # 端對端整合測試
 ├── go.mod
 └── README.md
@@ -270,7 +297,7 @@ remote-adb/
 
 ```bash
 # 建置
-go build -o radb ./cmd/radb
+go build -trimpath -o radb ./cmd/radb
 
 # 測試
 go test ./...
