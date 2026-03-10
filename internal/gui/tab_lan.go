@@ -1,3 +1,15 @@
+// tab_lan.go 實作「區網直連」分頁的 GUI 與邏輯。
+//
+// 本分頁提供兩個子模式：
+//
+//  1. 被控端子模式（isServerMode=true）：在本機啟動 Direct TCP 服務 + mDNS 廣播，
+//     讓同一 LAN 的主控端可以自動發現並連線。不需要 Signaling Server。
+//
+//  2. 主控端子模式（isServerMode=false）：透過 mDNS 掃描或手動輸入 Agent 地址，
+//     連線後自動查詢設備清單，為每個在線設備建立獨立的 TCP proxy。
+//
+// 與 Relay 伺服器模式的差異：區網直連使用原始 TCP 連線（不經過 WebRTC），
+// 延遲更低但僅限同一區域網路。
 package gui
 
 import (
@@ -5,8 +17,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"image/color"
+	"io"
+	"log/slog"
 	"net"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gioui.org/app"
@@ -18,10 +36,11 @@ import (
 	"github.com/chris1004tw/remote-adb/internal/adb"
 	"github.com/chris1004tw/remote-adb/internal/agent"
 	"github.com/chris1004tw/remote-adb/internal/directsrv"
-	"github.com/chris1004tw/remote-adb/internal/proxy"
 )
 
-// lanTab 是「區網直連」分頁，包含「開啟伺服器」和「連線」兩個子模式。
+// lanTab 是「區網直連」分頁的完整狀態。
+// isServerMode 控制目前顯示的子模式（被控端/主控端）。
+// 被控端使用 srvMu 保護狀態，主控端使用 cliMu 保護狀態。
 type lanTab struct {
 	window *app.Window
 
@@ -42,28 +61,35 @@ type lanTab struct {
 	srvDevices []string
 	srvCancel  context.CancelFunc
 
-	// --- 連線子模式（原 directTab）---
-	scanBtn      widget.Clickable
-	addrEditor   widget.Editor
+	// --- 連線子模式 ---
+	scanBtn        widget.Clickable
+	addrEditor     widget.Editor
 	cliTokenEditor widget.Editor
-	queryBtn     widget.Clickable
-	portEditor   widget.Editor
-	connectBtn   widget.Clickable
-	serialEditor widget.Editor
+	portEditor     widget.Editor
+	connectBtn     widget.Clickable
 
-	cliMu          sync.Mutex
-	scanning       bool
-	agents         []directsrv.DiscoveredAgent
-	agentBtns      []widget.Clickable
-	devices        []directsrv.DeviceInfo
-	deviceBtns     []widget.Clickable
-	selectedSerial string
-	connected      bool
-	cliStatus      string
-	cliCancel      context.CancelFunc
-	currentProxy   *proxy.Proxy
+	cliMu     sync.Mutex
+	scanning  bool
+	agents    []directsrv.DiscoveredAgent
+	agentBtns []widget.Clickable
+	connected bool
+	cliStatus string
+	cliCancel context.CancelFunc
+
+	// 單一 ADB proxy（取代舊的 per-device proxy）
+	proxyLn    net.Listener            // 本機 ADB proxy listener
+	proxyPort  int                     // proxy 實際 port
+	remoteAddr string                  // 遠端 directsrv 地址
+	remoteToken string                 // 遠端 token
+	cliDevices []directsrv.DeviceInfo  // 遠端設備清單（connect-service 用）
+
+	// forward listener 管理（與 pairTab 相同）
+	fwdMu        sync.Mutex
+	fwdListeners map[string]*fwdListener
 }
 
+// newLANTab 建立並初始化 lanTab，設定各輸入框的預設值。
+// 預設顯示主控端子模式（isServerMode=false）。
 func newLANTab(w *app.Window) *lanTab {
 	t := &lanTab{
 		window:    w,
@@ -72,7 +98,7 @@ func newLANTab(w *app.Window) *lanTab {
 	}
 	// 伺服器子模式預設值
 	t.srvPortEditor.SingleLine = true
-	t.srvPortEditor.SetText("7070")
+	t.srvPortEditor.SetText("15555")
 	t.srvTokenEditor.SingleLine = true
 	t.srvADBPortEditor.SingleLine = true
 	t.srvADBPortEditor.SetText("5037")
@@ -80,11 +106,11 @@ func newLANTab(w *app.Window) *lanTab {
 	t.addrEditor.SingleLine = true
 	t.cliTokenEditor.SingleLine = true
 	t.portEditor.SingleLine = true
-	t.portEditor.SetText("15555")
-	t.serialEditor.SingleLine = true
+	t.portEditor.SetText("5555")
 	return t
 }
 
+// layout 繪製分頁內容：頂部兩個子模式切換按鈕（主控端/被控端）+ 對應的設定/狀態區域。
 func (t *lanTab) layout(gtx layout.Context, th *material.Theme) layout.Dimensions {
 	// 處理子模式切換
 	for t.serverModeBtn.Clicked(gtx) {
@@ -101,21 +127,21 @@ func (t *lanTab) layout(gtx layout.Context, th *material.Theme) layout.Dimension
 		return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{}.Layout(gtx,
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					btn := material.Button(th, &t.serverModeBtn, "開啟伺服器")
-					if t.isServerMode {
-						btn.Background = colorTabActive
+					btn := material.Button(th, &t.connectModeBtn, "主控端")
+					if !t.isServerMode {
+						btn.Background = colorModeActive
 					} else {
-						btn.Background = colorTabInactive
+						btn.Background = colorModeInactive
 					}
 					return btn.Layout(gtx)
 				}),
 				layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					btn := material.Button(th, &t.connectModeBtn, "連線")
-					if !t.isServerMode {
-						btn.Background = colorTabActive
+					btn := material.Button(th, &t.serverModeBtn, "被控端")
+					if t.isServerMode {
+						btn.Background = colorModeActive
 					} else {
-						btn.Background = colorTabInactive
+						btn.Background = colorModeInactive
 					}
 					return btn.Layout(gtx)
 				}),
@@ -133,8 +159,11 @@ func (t *lanTab) layout(gtx layout.Context, th *material.Theme) layout.Dimension
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 }
 
-// --- 開啟伺服器子模式 ---
+// --- 被控端子模式（開啟伺服器） ---
+// 啟動 Direct TCP 服務和 mDNS 廣播，讓 LAN 上的主控端能發現並連線。
+// 同時啟動 ADB 設備追蹤，定期輪詢設備列表。
 
+// layoutServer 繪製被控端子模式的 UI：Direct Port、Token、ADB Port + 啟動/停止按鈕。
 func (t *lanTab) layoutServer(gtx layout.Context, th *material.Theme) []layout.FlexChild {
 	t.srvMu.Lock()
 	running := t.srvRunning
@@ -155,7 +184,7 @@ func (t *lanTab) layoutServer(gtx layout.Context, th *material.Theme) []layout.F
 	// Direct Port
 	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 		return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return labeledEditor(gtx, th, "Direct Port:", &t.srvPortEditor, "7070")
+			return labeledEditor(gtx, th, "Direct Port:", &t.srvPortEditor, "15555")
 		})
 	}))
 	// Token
@@ -217,12 +246,25 @@ func (t *lanTab) layoutServer(gtx layout.Context, th *material.Theme) []layout.F
 	return children
 }
 
+// startServer 啟動被控端服務。
+// 啟動流程：
+//  1. EnsureADB：偵測/下載 ADB 並確認 ADB server 可連線
+//  2. 建立 Agent（僅用於 DeviceTable 和 Dialer，不連 Signal Server）
+//  3. 建立 directsrv.Server（TCP 直連服務 + mDNS 廣播）
+//  4. 啟動 Agent.RunDirectOnly（僅追蹤設備，不進行 WebRTC 配對）
+//  5. 啟動 pollDevices 定期更新 UI 設備列表
 func (t *lanTab) startServer() {
 	portText := t.srvPortEditor.Text()
 	tokenText := t.srvTokenEditor.Text()
 	adbPortText := t.srvADBPortEditor.Text()
 
-	directPort := parsePort(portText, 7070)
+	// 沒設 token 時自動生成臨時 token
+	if tokenText == "" {
+		tokenText = generateToken()
+		t.srvTokenEditor.SetText(tokenText)
+	}
+
+	directPort := parsePort(portText, 15555)
 	adbPort := parsePort(adbPortText, 5037)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -250,7 +292,10 @@ func (t *lanTab) startServer() {
 			return
 		}
 
-		hostname := "radb-gui"
+		hostname, _ := os.Hostname()
+		if hostname == "" {
+			hostname = "radb-gui"
+		}
 
 		a := agent.New(agent.Config{
 			ADBAddr: adbAddr,
@@ -263,6 +308,7 @@ func (t *lanTab) startServer() {
 			},
 			Hostname: hostname,
 			Token:    tokenText,
+			ADBAddr:  adbAddr,
 		})
 
 		t.srvMu.Lock()
@@ -286,6 +332,7 @@ func (t *lanTab) startServer() {
 	}()
 }
 
+// pollDevices 每 2 秒輪詢 Agent 的 DeviceTable，更新 UI 上的設備列表。
 func (t *lanTab) pollDevices(ctx context.Context, a *agent.Agent) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -321,23 +368,23 @@ func (t *lanTab) stopServer() {
 	t.window.Invalidate()
 }
 
-// --- 連線子模式 ---
+// --- 主控端子模式（連線） ---
+// 提供 mDNS 掃描 + 手動輸入 Agent 地址兩種連線方式。
+// 連線後自動查詢 Agent 上的設備清單，為每個在線設備建立獨立 proxy。
 
+// layoutConnect 繪製主控端子模式的 UI：掃描按鈕、Agent 列表、地址/Token/Port 輸入、連線按鈕。
 func (t *lanTab) layoutConnect(gtx layout.Context, th *material.Theme) []layout.FlexChild {
 	t.cliMu.Lock()
 	scanning := t.scanning
 	agents := append([]directsrv.DiscoveredAgent{}, t.agents...)
-	devices := append([]directsrv.DeviceInfo{}, t.devices...)
-	selectedSerial := t.selectedSerial
 	connected := t.connected
 	status := t.cliStatus
+	devices := append([]directsrv.DeviceInfo{}, t.cliDevices...)
+	proxyPort := t.proxyPort
 	t.cliMu.Unlock()
 
 	for len(t.agentBtns) < len(agents) {
 		t.agentBtns = append(t.agentBtns, widget.Clickable{})
-	}
-	for len(t.deviceBtns) < len(devices) {
-		t.deviceBtns = append(t.deviceBtns, widget.Clickable{})
 	}
 
 	// 處理按鈕事件
@@ -350,17 +397,9 @@ func (t *lanTab) layoutConnect(gtx layout.Context, th *material.Theme) []layout.
 		for t.agentBtns[i].Clicked(gtx) {
 			addr := fmt.Sprintf("%s:%d", agents[i].Addr, agents[i].Port)
 			t.addrEditor.SetText(addr)
-		}
-	}
-	for t.queryBtn.Clicked(gtx) {
-		t.queryDevices()
-	}
-	for i := range devices {
-		for t.deviceBtns[i].Clicked(gtx) {
-			t.cliMu.Lock()
-			t.selectedSerial = devices[i].Serial
-			t.cliMu.Unlock()
-			t.serialEditor.SetText(devices[i].Serial)
+			if agents[i].Token != "" {
+				t.cliTokenEditor.SetText(agents[i].Token)
+			}
 		}
 	}
 	for t.connectBtn.Clicked(gtx) {
@@ -414,7 +453,7 @@ func (t *lanTab) layoutConnect(gtx layout.Context, th *material.Theme) []layout.
 	// Agent 地址
 	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 		return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return labeledEditor(gtx, th, "Agent 地址:", &t.addrEditor, "192.168.1.100:7070")
+			return labeledEditor(gtx, th, "Agent 地址:", &t.addrEditor, "192.168.1.100:15555")
 		})
 	}))
 	// Token
@@ -423,55 +462,10 @@ func (t *lanTab) layoutConnect(gtx layout.Context, th *material.Theme) []layout.
 			return labeledEditor(gtx, th, "Token:", &t.cliTokenEditor, "（可選）")
 		})
 	}))
-	// 查詢設備按鈕
-	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-		return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			btn := material.Button(th, &t.queryBtn, "查詢設備")
-			return btn.Layout(gtx)
-		})
-	}))
-
-	// 設備列表
-	if len(devices) > 0 {
-		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				items := []layout.FlexChild{
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return material.Body2(th, fmt.Sprintf("設備 (%d):", len(devices))).Layout(gtx)
-					}),
-				}
-				for i, d := range devices {
-					idx := i
-					text := fmt.Sprintf("  %s [%s]", d.Serial, d.State)
-					if d.Serial == selectedSerial {
-						text = "▶ " + text
-					}
-					items = append(items, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return layout.Inset{Left: unit.Dp(8), Top: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							btn := material.Button(th, &t.deviceBtns[idx], text)
-							if d.Serial == selectedSerial {
-								btn.Background = color.NRGBA{R: 33, G: 150, B: 243, A: 255}
-							} else {
-								btn.Background = color.NRGBA{R: 96, G: 96, B: 96, A: 255}
-							}
-							return btn.Layout(gtx)
-						})
-					}))
-				}
-				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, items...)
-			})
-		}))
-	}
-
-	// 設備序號 + Port
-	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-		return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return labeledEditor(gtx, th, "設備序號:", &t.serialEditor, "如 emulator-5554")
-		})
-	}))
+	// ADB Port
 	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 		return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return labeledEditor(gtx, th, "本機 Port:", &t.portEditor, "15555")
+			return labeledEditor(gtx, th, "ADB Port:", &t.portEditor, "5555")
 		})
 	}))
 
@@ -499,9 +493,35 @@ func (t *lanTab) layoutConnect(gtx layout.Context, th *material.Theme) []layout.
 		})
 	}))
 
+	// 已連線設備列表
+	if connected && len(devices) > 0 {
+		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				items := []layout.FlexChild{
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return material.Body2(th, fmt.Sprintf("ADB Proxy: 127.0.0.1:%d（%d 個設備）:", proxyPort, len(devices))).Layout(gtx)
+					}),
+				}
+				for _, d := range devices {
+					text := fmt.Sprintf("  %s [%s]", d.Serial, d.State)
+					items = append(items, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return layout.Inset{Left: unit.Dp(16), Top: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Body2(th, text)
+							lbl.Color = color.NRGBA{R: 76, G: 175, B: 80, A: 255}
+							return lbl.Layout(gtx)
+						})
+					}))
+				}
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, items...)
+			})
+		}))
+	}
+
 	return children
 }
 
+// scan 在背景發起 mDNS 掃描（3 秒逾時），搜尋 LAN 上廣播的 radb Agent。
+// 掃描結果更新到 agents 列表，點擊 Agent 按鈕會自動填入地址和 Token。
 func (t *lanTab) scan() {
 	t.cliMu.Lock()
 	t.scanning = true
@@ -519,167 +539,524 @@ func (t *lanTab) scan() {
 	}()
 }
 
-func (t *lanTab) queryDevices() {
-	addr := t.addrEditor.Text()
-	token := t.cliTokenEditor.Text()
-	if addr == "" {
-		t.cliMu.Lock()
-		t.cliStatus = "請輸入 Agent 地址"
-		t.cliMu.Unlock()
-		t.window.Invalidate()
-		return
-	}
-
-	go func() {
-		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
-		if err != nil {
-			t.cliMu.Lock()
-			t.cliStatus = fmt.Sprintf("連線失敗: %v", err)
-			t.cliMu.Unlock()
-			t.window.Invalidate()
-			return
-		}
-		defer conn.Close()
-
-		conn.SetDeadline(time.Now().Add(10 * time.Second))
-
-		if err := json.NewEncoder(conn).Encode(directsrv.Request{Action: "list", Token: token}); err != nil {
-			t.cliMu.Lock()
-			t.cliStatus = fmt.Sprintf("發送失敗: %v", err)
-			t.cliMu.Unlock()
-			t.window.Invalidate()
-			return
-		}
-
-		var resp directsrv.Response
-		if err := json.NewDecoder(conn).Decode(&resp); err != nil {
-			t.cliMu.Lock()
-			t.cliStatus = fmt.Sprintf("讀取失敗: %v", err)
-			t.cliMu.Unlock()
-			t.window.Invalidate()
-			return
-		}
-
-		if !resp.OK {
-			t.cliMu.Lock()
-			t.cliStatus = fmt.Sprintf("查詢失敗: %s", resp.Error)
-			t.cliMu.Unlock()
-			t.window.Invalidate()
-			return
-		}
-
-		t.cliMu.Lock()
-		t.devices = resp.Devices
-		t.deviceBtns = make([]widget.Clickable, len(resp.Devices))
-		t.cliStatus = fmt.Sprintf("查詢成功，%d 個設備", len(resp.Devices))
-		t.cliMu.Unlock()
-		t.window.Invalidate()
-	}()
-}
-
+// connect 連線到 Agent，建立單一 ADB proxy。
+//
+// 新流程（複用簡易連線的智慧協定偵測）：
+//  1. TCP 連線到 Agent → 發送 "list" 請求 → 取得設備清單
+//  2. 在本機建立 ADB proxy listener
+//  3. 每個進入的 TCP 連線偵測協定：
+//     - hex prefix → connect-server 橋接到遠端 ADB server
+//     - CNXN → deviceBridge 多工處理（每個 OPEN 透過 connect-service 連到遠端設備）
 func (t *lanTab) connect() {
 	addr := t.addrEditor.Text()
 	token := t.cliTokenEditor.Text()
-	serial := t.serialEditor.Text()
 	portText := t.portEditor.Text()
 
-	if addr == "" || serial == "" {
+	if addr == "" {
 		t.cliMu.Lock()
-		t.cliStatus = "請填入 Agent 地址和設備序號"
+		t.cliStatus = "請填入 Agent 地址"
 		t.cliMu.Unlock()
 		t.window.Invalidate()
 		return
 	}
 
-	localPort := parsePort(portText, 15555)
+	proxyPort := parsePort(portText, 5555)
 
 	t.cliMu.Lock()
-	t.cliStatus = "連線中..."
+	t.cliStatus = "查詢設備中..."
 	t.cliMu.Unlock()
 	t.window.Invalidate()
 
 	go func() {
-		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+		// 1. 查詢設備清單
+		devices, err := t.queryDevices(addr, token)
 		if err != nil {
 			t.cliMu.Lock()
-			t.cliStatus = fmt.Sprintf("連線失敗: %v", err)
+			t.cliStatus = err.Error()
 			t.cliMu.Unlock()
 			t.window.Invalidate()
 			return
 		}
 
-		if err := json.NewEncoder(conn).Encode(directsrv.Request{
-			Action: "connect",
-			Serial: serial,
-			Token:  token,
-		}); err != nil {
-			conn.Close()
+		if len(devices) == 0 {
 			t.cliMu.Lock()
-			t.cliStatus = fmt.Sprintf("發送失敗: %v", err)
+			t.cliStatus = "Agent 上沒有可用設備"
 			t.cliMu.Unlock()
 			t.window.Invalidate()
 			return
 		}
 
-		conn.SetDeadline(time.Now().Add(10 * time.Second))
-		var resp directsrv.Response
-		if err := json.NewDecoder(conn).Decode(&resp); err != nil {
-			conn.Close()
-			t.cliMu.Lock()
-			t.cliStatus = fmt.Sprintf("讀取失敗: %v", err)
-			t.cliMu.Unlock()
-			t.window.Invalidate()
-			return
-		}
-		conn.SetDeadline(time.Time{})
-
-		if !resp.OK {
-			conn.Close()
-			t.cliMu.Lock()
-			t.cliStatus = fmt.Sprintf("設備連線失敗: %s", resp.Error)
-			t.cliMu.Unlock()
-			t.window.Invalidate()
-			return
-		}
-
-		p, err := proxy.New(localPort, conn)
+		// 2. 建立本機 ADB proxy listener
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort))
 		if err != nil {
-			conn.Close()
 			t.cliMu.Lock()
-			t.cliStatus = fmt.Sprintf("建立代理失敗: %v", err)
+			t.cliStatus = fmt.Sprintf("建立 proxy 失敗: %v", err)
 			t.cliMu.Unlock()
 			t.window.Invalidate()
 			return
 		}
+		actualPort := ln.Addr().(*net.TCPAddr).Port
 
 		ctx, cancel := context.WithCancel(context.Background())
-		p.Start(ctx)
 
 		t.cliMu.Lock()
 		t.connected = true
 		t.cliCancel = cancel
-		t.currentProxy = p
-		t.cliStatus = fmt.Sprintf("已連線 127.0.0.1:%d → %s", p.Port(), serial)
+		t.proxyLn = ln
+		t.proxyPort = actualPort
+		t.remoteAddr = addr
+		t.remoteToken = token
+		t.cliDevices = devices
+		t.cliStatus = fmt.Sprintf("已連線，ADB Proxy: 127.0.0.1:%d", actualPort)
 		t.cliMu.Unlock()
 		t.window.Invalidate()
+
+		slog.Info("LAN proxy 已啟動", "port", actualPort, "remote", addr, "devices", len(devices))
+
+		// 3. 接受連線，智慧協定偵測
+		go t.lanProxyAccept(ctx, ln)
+
+		// 4. 定期輪詢設備清單
+		go t.pollRemoteDevices(ctx, addr, token)
+
+		// 5. 自動 adb connect（讓本機 ADB 知道此 proxy）
+		go func() {
+			dialer := adb.NewDialer("")
+			target := fmt.Sprintf("127.0.0.1:%d", actualPort)
+			if err := dialer.Connect(target); err != nil {
+				slog.Debug("自動 adb connect 失敗", "target", target, "error", err)
+			} else {
+				slog.Debug("自動 adb connect 成功", "target", target)
+			}
+		}()
 	}()
 }
 
+// queryDevices 向 Agent 查詢設備清單。
+func (t *lanTab) queryDevices(addr, token string) ([]directsrv.DeviceInfo, error) {
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("連線失敗: %v", err)
+	}
+	defer conn.Close()
+
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	if err := json.NewEncoder(conn).Encode(directsrv.Request{Action: "list", Token: token}); err != nil {
+		return nil, fmt.Errorf("發送失敗: %v", err)
+	}
+
+	var resp directsrv.Response
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		return nil, fmt.Errorf("讀取失敗: %v", err)
+	}
+
+	if !resp.OK {
+		return nil, fmt.Errorf("查詢失敗: %s", resp.Error)
+	}
+
+	// 篩選 device 狀態
+	var online []directsrv.DeviceInfo
+	for _, d := range resp.Devices {
+		if d.State == "device" {
+			online = append(online, d)
+		}
+	}
+	return online, nil
+}
+
+// lanProxyAccept 接受本機 proxy 連線，智慧偵測協定類型。
+func (t *lanTab) lanProxyAccept(ctx context.Context, ln net.Listener) {
+	var connID atomic.Int64
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		id := connID.Add(1)
+		go t.lanHandleConn(ctx, conn, id)
+	}
+}
+
+// lanHandleConn 處理單一 proxy 連線。
+// 讀取前 4 bytes 判斷協定：CNXN → deviceBridge，hex → ADB server 橋接。
+func (t *lanTab) lanHandleConn(ctx context.Context, conn net.Conn, id int64) {
+	defer conn.Close()
+
+	var peek [4]byte
+	if _, err := io.ReadFull(conn, peek[:]); err != nil {
+		slog.Debug("LAN proxy: 讀取前 4 bytes 失敗", "id", id, "error", err)
+		return
+	}
+
+	openCh := t.makeOpenChannel()
+
+	// CNXN → device transport
+	if string(peek[:]) == "CNXN" {
+		t.cliMu.Lock()
+		var serial string
+		for _, d := range t.cliDevices {
+			if d.State == "device" {
+				serial = d.Serial
+				break
+			}
+		}
+		t.cliMu.Unlock()
+		startDeviceTransport(ctx, conn, peek[:], openCh, serial, "", nil)
+		return
+	}
+
+	// hex prefix → ADB server 協定
+	n, err := strconv.ParseInt(string(peek[:]), 16, 32)
+	if err != nil {
+		slog.Debug("LAN proxy: 無效 ADB 請求", "id", id, "first4", string(peek[:]))
+		return
+	}
+	cmdBuf := make([]byte, n)
+	if _, err := io.ReadFull(conn, cmdBuf); err != nil {
+		slog.Debug("LAN proxy: 讀取命令失敗", "id", id, "error", err)
+		return
+	}
+	raw := append(peek[:], cmdBuf...)
+	cmd := string(cmdBuf)
+
+	slog.Debug("LAN proxy ← smart socket", "id", id, "cmd", cmd)
+
+	// forward 攔截（使用 lanTab 的 fwdListeners）
+	if t.lanHandleForwardInterception(ctx, conn, cmd, openCh) {
+		return
+	}
+
+	// 一般 ADB 命令：connect-server 橋接到遠端 ADB server
+	ch, err := openCh(fmt.Sprintf("adb-server/%d", id))
+	if err != nil {
+		slog.Debug("LAN proxy: connect-server 失敗", "id", id, "error", err)
+		return
+	}
+	defer ch.Close()
+
+	if _, err := ch.Write(raw); err != nil {
+		slog.Debug("LAN proxy: 寫入命令失敗", "id", id, "error", err)
+		return
+	}
+
+	biCopy(ctx, ch, conn)
+}
+
+// makeOpenChannel 建立 LAN 用的 openChannelFunc。
+// 根據 label 前綴路由到不同的 directsrv action。
+func (t *lanTab) makeOpenChannel() openChannelFunc {
+	t.cliMu.Lock()
+	addr := t.remoteAddr
+	token := t.remoteToken
+	t.cliMu.Unlock()
+
+	return func(label string) (io.ReadWriteCloser, error) {
+		switch {
+		case strings.HasPrefix(label, "adb-server/"):
+			return t.dialDirectSrv(addr, token, "connect-server", "", "")
+
+		case strings.HasPrefix(label, "adb-stream/"):
+			parts := strings.SplitN(label, "/", 4)
+			if len(parts) < 4 {
+				return nil, fmt.Errorf("invalid stream label: %s", label)
+			}
+			conn, err := t.dialDirectSrv(addr, token, "connect-service", parts[2], parts[3])
+			if err != nil {
+				return nil, err
+			}
+			// setupStream 期待 ready signal（1 byte），connect-service 成功後連線已就緒
+			return &prefixedRWC{ch: conn, prefix: []byte{1}}, nil
+
+		case strings.HasPrefix(label, "adb-fwd/"):
+			parts := strings.SplitN(label, "/", 4)
+			if len(parts) < 4 {
+				return nil, fmt.Errorf("invalid fwd label: %s", label)
+			}
+			return t.dialDirectSrv(addr, token, "connect-service", parts[2], parts[3])
+
+		default:
+			return nil, fmt.Errorf("unknown channel: %s", label)
+		}
+	}
+}
+
+// dialDirectSrv 連線到遠端 directsrv 並發送指定 action。
+// 成功後回傳的 TCP 連線已處於 raw 資料模式。
+func (t *lanTab) dialDirectSrv(addr, token, action, serial, service string) (io.ReadWriteCloser, error) {
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("連線 Agent 失敗: %v", err)
+	}
+
+	req := directsrv.Request{
+		Action:  action,
+		Serial:  serial,
+		Service: service,
+		Token:   token,
+	}
+	if err := json.NewEncoder(conn).Encode(req); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("發送請求失敗: %v", err)
+	}
+
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	var resp directsrv.Response
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("讀取回應失敗: %v", err)
+	}
+	conn.SetDeadline(time.Time{})
+
+	if !resp.OK {
+		conn.Close()
+		return nil, fmt.Errorf("%s", resp.Error)
+	}
+
+	return conn, nil
+}
+
+// lanHandleForwardInterception 處理 LAN 模式的 forward 攔截。
+func (t *lanTab) lanHandleForwardInterception(ctx context.Context, conn net.Conn, cmd string, openCh openChannelFunc) bool {
+	if fc := parseForwardCmd(cmd); fc != nil {
+		t.lanHandleForward(ctx, conn, fc, openCh)
+		return true
+	}
+	if spec, ok := parseKillForwardCmd(cmd); ok {
+		t.lanHandleKillForward(conn, spec)
+		return true
+	}
+	if isKillForwardAll(cmd) {
+		t.lanHandleKillForwardAll(conn)
+		return true
+	}
+	if isListForward(cmd) {
+		t.lanHandleListForward(conn)
+		return true
+	}
+	return false
+}
+
+// lanHandleForward 攔截 adb forward 命令：在本機建立 listener，轉發到遠端設備。
+func (t *lanTab) lanHandleForward(ctx context.Context, conn net.Conn, fc *fwdCmd, openCh openChannelFunc) {
+	port, err := parseLocalSpec(fc.localSpec)
+	if err != nil {
+		writeADBOkay(conn)
+		writeADBFail(conn, err.Error())
+		return
+	}
+
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		writeADBOkay(conn)
+		writeADBFail(conn, fmt.Sprintf("cannot bind: %v", err))
+		return
+	}
+	actualPort := ln.Addr().(*net.TCPAddr).Port
+
+	// 解析 serial：如果只有一個 device，自動映射
+	serial := t.lanResolveSerial(fc.serial)
+	if serial == "" {
+		ln.Close()
+		writeADBOkay(conn)
+		writeADBFail(conn, "cannot resolve target device serial")
+		return
+	}
+
+	fwdCtx, fwdCancel := context.WithCancel(ctx)
+	fl := &fwdListener{
+		ln: ln, serial: serial,
+		localSpec: fc.localSpec, remoteSpec: fc.remoteSpec,
+		cancel: fwdCancel,
+	}
+
+	t.fwdMu.Lock()
+	if t.fwdListeners == nil {
+		t.fwdListeners = make(map[string]*fwdListener)
+	}
+	if old, ok := t.fwdListeners[fc.localSpec]; ok {
+		old.cancel()
+		old.ln.Close()
+	}
+	key := fc.localSpec
+	if fc.localSpec == "tcp:0" {
+		key = fmt.Sprintf("tcp:%d", actualPort)
+		fl.localSpec = key
+	}
+	t.fwdListeners[key] = fl
+	t.fwdMu.Unlock()
+
+	go t.lanFwdAcceptLoop(fwdCtx, fl, openCh)
+
+	writeADBOkay(conn)
+	if fc.localSpec == "tcp:0" {
+		portStr := fmt.Sprintf("%d", actualPort)
+		writeADBOkay(conn)
+		fmt.Fprintf(conn, "%04x%s", len(portStr), portStr)
+	} else {
+		writeADBOkay(conn)
+	}
+
+	slog.Debug("LAN forward 已建立", "local", key, "remote", fc.remoteSpec, "serial", serial)
+}
+
+// lanResolveSerial 解析 forward 的 serial，只有一台設備時自動映射。
+func (t *lanTab) lanResolveSerial(requested string) string {
+	t.cliMu.Lock()
+	defer t.cliMu.Unlock()
+
+	var devs []directsrv.DeviceInfo
+	for _, d := range t.cliDevices {
+		if d.State == "device" {
+			devs = append(devs, d)
+		}
+	}
+	if len(devs) == 0 {
+		return ""
+	}
+	if requested != "" {
+		for _, d := range devs {
+			if d.Serial == requested {
+				return requested
+			}
+		}
+	}
+	if len(devs) == 1 {
+		return devs[0].Serial
+	}
+	return ""
+}
+
+// lanFwdAcceptLoop 接受 forward listener 的連線。
+func (t *lanTab) lanFwdAcceptLoop(ctx context.Context, fl *fwdListener, openCh openChannelFunc) {
+	var connID atomic.Int64
+	for {
+		conn, err := fl.ln.Accept()
+		if err != nil {
+			return
+		}
+		id := connID.Add(1)
+		go func(c net.Conn, i int64) {
+			defer c.Close()
+			label := fmt.Sprintf("adb-fwd/%d/%s/%s", i, fl.serial, fl.remoteSpec)
+			ch, err := openCh(label)
+			if err != nil {
+				slog.Debug("LAN forward 連線失敗", "label", label, "error", err)
+				return
+			}
+			defer ch.Close()
+			biCopy(ctx, ch, c)
+		}(conn, id)
+	}
+}
+
+// lanHandleKillForward 處理 killforward 命令。
+func (t *lanTab) lanHandleKillForward(conn net.Conn, localSpec string) {
+	t.fwdMu.Lock()
+	fl, ok := t.fwdListeners[localSpec]
+	if ok {
+		fl.cancel()
+		fl.ln.Close()
+		delete(t.fwdListeners, localSpec)
+	}
+	t.fwdMu.Unlock()
+	writeADBOkay(conn)
+	if ok {
+		writeADBOkay(conn)
+	} else {
+		writeADBFail(conn, fmt.Sprintf("listener '%s' not found", localSpec))
+	}
+}
+
+// lanHandleKillForwardAll 處理 killforward-all 命令。
+func (t *lanTab) lanHandleKillForwardAll(conn net.Conn) {
+	t.fwdMu.Lock()
+	for key, fl := range t.fwdListeners {
+		fl.cancel()
+		fl.ln.Close()
+		delete(t.fwdListeners, key)
+	}
+	t.fwdMu.Unlock()
+	writeADBOkay(conn)
+	writeADBOkay(conn)
+}
+
+// lanHandleListForward 處理 list-forward 命令。
+func (t *lanTab) lanHandleListForward(conn net.Conn) {
+	t.fwdMu.Lock()
+	var lines []string
+	for _, fl := range t.fwdListeners {
+		lines = append(lines, fmt.Sprintf("%s %s %s", fl.serial, fl.localSpec, fl.remoteSpec))
+	}
+	t.fwdMu.Unlock()
+	list := strings.Join(lines, "\n")
+	if len(lines) > 0 {
+		list += "\n"
+	}
+	writeADBOkay(conn)
+	fmt.Fprintf(conn, "%04x%s", len(list), list)
+}
+
+// pollRemoteDevices 定期查詢遠端設備清單並更新 UI。
+func (t *lanTab) pollRemoteDevices(ctx context.Context, addr, token string) {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			devices, err := t.queryDevices(addr, token)
+			if err != nil {
+				slog.Debug("LAN 設備輪詢失敗", "error", err)
+				continue
+			}
+			t.cliMu.Lock()
+			t.cliDevices = devices
+			t.cliMu.Unlock()
+			t.window.Invalidate()
+		}
+	}
+}
+
+// disconnect 中斷連線，清理 proxy 和 forward listeners。
 func (t *lanTab) disconnect() {
 	t.cliMu.Lock()
 	if t.cliCancel != nil {
 		t.cliCancel()
 	}
-	if t.currentProxy != nil {
-		t.currentProxy.Stop()
-		t.currentProxy = nil
+	if t.proxyLn != nil {
+		t.proxyLn.Close()
+		t.proxyLn = nil
 	}
+	port := t.proxyPort
+	t.proxyPort = 0
 	t.connected = false
+	t.cliDevices = nil
 	t.cliStatus = "已中斷"
 	t.cliMu.Unlock()
+
+	// 清理 forward listeners
+	t.fwdMu.Lock()
+	for key, fl := range t.fwdListeners {
+		fl.cancel()
+		fl.ln.Close()
+		delete(t.fwdListeners, key)
+	}
+	t.fwdListeners = nil
+	t.fwdMu.Unlock()
+
+	// 自動 adb disconnect
+	if port > 0 {
+		go func() {
+			dialer := adb.NewDialer("")
+			dialer.Disconnect(fmt.Sprintf("127.0.0.1:%d", port))
+		}()
+	}
+
 	t.window.Invalidate()
 }
 
+// cleanup 停止被控端服務並中斷所有主控端連線。視窗關閉時呼叫。
 func (t *lanTab) cleanup() {
 	t.stopServer()
 	t.disconnect()

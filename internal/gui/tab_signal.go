@@ -1,3 +1,19 @@
+// tab_signal.go 實作「Relay 伺服器」分頁的 GUI 與邏輯。
+//
+// 本分頁提供三個子模式（透過頂部按鈕列切換）：
+//
+//  1. 伺服器子模式（signalModeServer）：在本機啟動 WebSocket Signaling Server，
+//     供 Agent 和 Client 透過 PSK Token 認證連線。
+//
+//  2. 被控端子模式（signalModeAgent）：連線到 Signaling Server，將本機 ADB 設備
+//     註冊為可用設備。主控端可透過伺服器中介建立 WebRTC P2P 通道。
+//     包含 ADB 自動偵測/下載功能（EnsureADB）。
+//
+//  3. 主控端子模式（signalModeClient）：連線到 Signaling Server，瀏覽遠端主機的
+//     設備列表，執行 Bind/Unbind 操作將遠端設備轉發到本機 port。
+//     使用 Daemon IPC 協定（JSON over TCP）與內建 Daemon 溝通。
+//
+// 每個子模式使用獨立的 sync.Mutex 保護其狀態（UI 線程與背景 goroutine 並行存取）。
 package gui
 
 import (
@@ -7,6 +23,7 @@ import (
 	"image/color"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -23,16 +40,18 @@ import (
 	"github.com/chris1004tw/remote-adb/pkg/protocol"
 )
 
-// signalMode 是中央伺服器分頁的子模式。
+// signalMode 是「Relay 伺服器」分頁的子模式列舉。
+// 三種模式各自獨立運作：伺服器/被控端/主控端，使用者一次只選一種。
 type signalMode int
 
 const (
-	signalModeServer signalMode = iota
-	signalModeAgent
-	signalModeClient
+	signalModeServer signalMode = iota // 啟動 Signaling Server
+	signalModeAgent                    // 作為 Agent（被控端）連線到 Server
+	signalModeClient                   // 作為 Client（主控端）連線到 Server
 )
 
-// signalTab 是「中央伺服器」分頁的狀態。
+// signalTab 是「Relay 伺服器」分頁的完整狀態，包含三個子模式的所有 UI 元件與背景邏輯。
+// 每個子模式使用獨立的 Mutex（srvMu/agentMu/clientMu）保護並行存取安全。
 type signalTab struct {
 	window *app.Window
 	mode   signalMode
@@ -69,21 +88,22 @@ type signalTab struct {
 	clientURLEditor   widget.Editor
 	clientTokenEditor widget.Editor
 	clientStunEditor  widget.Editor
-	clientPortEditor  widget.Editor
+	clientPortEditor  widget.Editor      // ADB proxy 的起始 port
 	clientConnectBtn  widget.Clickable
 	clientMu          sync.Mutex
 	clientRunning     bool
 	clientStatus      string
-	clientIPCAddr     string
-	clientHosts       []protocol.HostInfo
-	clientHostBtns    []widget.Clickable
-	clientSelectedHost int
-	clientDevBtns     []widget.Clickable
-	clientBindings    []daemon.Binding
-	clientUnbindBtns  []widget.Clickable
+	clientIPCAddr     string              // IPC listener 位址（隨機 port，避免和 CLI daemon 衝突）
+	clientHosts       []protocol.HostInfo // 從 Daemon 查詢到的遠端主機列表
+	clientHostBtns    []widget.Clickable  // 每個主機的展開/收起按鈕
+	clientSelectedHost int               // 目前展開的主機索引（-1 表示全部收起）
+	clientDevBtns     []widget.Clickable  // 每個設備的 Bind 按鈕
+	clientBindings    []daemon.Binding    // 目前已綁定的設備（本機 port → 遠端設備）
+	clientUnbindBtns  []widget.Clickable  // 每個綁定的 Unbind 按鈕
 	clientCancel      context.CancelFunc
 }
 
+// newSignalTab 建立並初始化 signalTab，設定各輸入框的預設值。
 func newSignalTab(w *app.Window) *signalTab {
 	t := &signalTab{
 		window:             w,
@@ -101,7 +121,11 @@ func newSignalTab(w *app.Window) *signalTab {
 	t.agentURLEditor.SetText("ws://localhost:8080")
 	t.agentTokenEditor.SingleLine = true
 	t.agentHostEditor.SingleLine = true
-	t.agentHostEditor.SetText("radb-gui")
+	if h, _ := os.Hostname(); h != "" {
+		t.agentHostEditor.SetText(h)
+	} else {
+		t.agentHostEditor.SetText("radb-gui")
+	}
 	t.agentADBEditor.SingleLine = true
 	t.agentADBEditor.SetText("5037")
 	t.agentStunEditor.SingleLine = true
@@ -113,10 +137,12 @@ func newSignalTab(w *app.Window) *signalTab {
 	t.clientStunEditor.SingleLine = true
 	t.clientStunEditor.SetText("stun:stun.l.google.com:19302")
 	t.clientPortEditor.SingleLine = true
-	t.clientPortEditor.SetText("15555")
+	t.clientPortEditor.SetText("5555")
 	return t
 }
 
+// layout 繪製分頁內容：頂部三個子模式切換按鈕 + 根據目前模式渲染對應的設定/狀態區域。
+// 子模式切換是即時的，不會影響已啟動的服務。
 func (t *signalTab) layout(gtx layout.Context, th *material.Theme) layout.Dimensions {
 	// 處理子模式切換
 	for t.serverModeBtn.Clicked(gtx) {
@@ -138,29 +164,29 @@ func (t *signalTab) layout(gtx layout.Context, th *material.Theme) layout.Dimens
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 					btn := material.Button(th, &t.serverModeBtn, "伺服器")
 					if t.mode == signalModeServer {
-						btn.Background = colorTabActive
+						btn.Background = colorModeActive
 					} else {
-						btn.Background = colorTabInactive
+						btn.Background = colorModeInactive
 					}
 					return btn.Layout(gtx)
 				}),
 				layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					btn := material.Button(th, &t.agentModeBtn, "Agent")
-					if t.mode == signalModeAgent {
-						btn.Background = colorTabActive
-					} else {
-						btn.Background = colorTabInactive
-					}
-					return btn.Layout(gtx)
-				}),
-				layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
-				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					btn := material.Button(th, &t.clientModeBtn, "Client")
+					btn := material.Button(th, &t.clientModeBtn, "主控端")
 					if t.mode == signalModeClient {
-						btn.Background = colorTabActive
+						btn.Background = colorModeActive
 					} else {
-						btn.Background = colorTabInactive
+						btn.Background = colorModeInactive
+					}
+					return btn.Layout(gtx)
+				}),
+				layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					btn := material.Button(th, &t.agentModeBtn, "被控端")
+					if t.mode == signalModeAgent {
+						btn.Background = colorModeActive
+					} else {
+						btn.Background = colorModeInactive
 					}
 					return btn.Layout(gtx)
 				}),
@@ -182,7 +208,10 @@ func (t *signalTab) layout(gtx layout.Context, th *material.Theme) layout.Dimens
 }
 
 // === 伺服器子模式 ===
+// 在本機啟動 HTTP + WebSocket Signaling Server，供 Agent/Client 連線。
+// Token 用於 PSK 認證，所有透過此伺服器溝通的 Agent/Client 必須使用相同 Token。
 
+// layoutServer 繪製伺服器子模式的 UI：Port 輸入、Token 輸入、啟動/停止按鈕、狀態。
 func (t *signalTab) layoutServer(gtx layout.Context, th *material.Theme) []layout.FlexChild {
 	t.srvMu.Lock()
 	running := t.srvRunning
@@ -235,6 +264,9 @@ func (t *signalTab) layoutServer(gtx layout.Context, th *material.Theme) []layou
 	}
 }
 
+// startSignalServer 啟動 Signaling Server。
+// 建立 signal.Hub（管理連線）和 PSK 認證，在背景 goroutine 中啟動 HTTP 伺服器。
+// 使用 context 控制生命週期，stopSignalServer() 會觸發 cancel 來優雅關閉。
 func (t *signalTab) startSignalServer() {
 	port := parsePort(t.srvPortEditor.Text(), 8080)
 	token := t.srvTokenEditor.Text()
@@ -292,8 +324,11 @@ func (t *signalTab) stopSignalServer() {
 	t.window.Invalidate()
 }
 
-// === Agent 子模式 ===
+// === Agent 子模式（被控端） ===
+// 連線到 Signaling Server，將本機 ADB 上的 Android 設備註冊為可供遠端使用。
+// 啟動流程：EnsureADB（自動偵測/下載 ADB）→ 建立 Agent → 連線到 Server → 輪詢設備。
 
+// layoutAgent 繪製被控端子模式的 UI：Server URL、Token、主機名稱、ADB Port、STUN 設定。
 func (t *signalTab) layoutAgent(gtx layout.Context, th *material.Theme) []layout.FlexChild {
 	t.agentMu.Lock()
 	running := t.agentRunning
@@ -325,7 +360,7 @@ func (t *signalTab) layoutAgent(gtx layout.Context, th *material.Theme) []layout
 		// Host ID
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return labeledEditor(gtx, th, "主機名稱:", &t.agentHostEditor, "radb-gui")
+				return labeledEditor(gtx, th, "主機名稱:", &t.agentHostEditor, "自動偵測")
 			})
 		}),
 		// ADB Port
@@ -342,9 +377,9 @@ func (t *signalTab) layoutAgent(gtx layout.Context, th *material.Theme) []layout
 		}),
 		// 啟動/停止
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			label := "啟動 Agent"
+			label := "啟動被控端"
 			if running {
-				label = "停止 Agent"
+				label = "停止被控端"
 			}
 			btn := material.Button(th, &t.agentStartBtn, label)
 			if running {
@@ -389,6 +424,9 @@ func (t *signalTab) layoutAgent(gtx layout.Context, th *material.Theme) []layout
 	return children
 }
 
+// startSignalAgent 啟動被控端 Agent。
+// 啟動流程：驗證輸入 → EnsureADB → 建立 Agent → Agent.Run（阻塞）。
+// 並行啟動 pollAgentDevices 每 2 秒輪詢設備列表更新 UI。
 func (t *signalTab) startSignalAgent() {
 	url := t.agentURLEditor.Text()
 	token := t.agentTokenEditor.Text()
@@ -462,6 +500,8 @@ func (t *signalTab) startSignalAgent() {
 	}()
 }
 
+// pollAgentDevices 定期輪詢 Agent 的 DeviceTable，更新 UI 上的設備清單。
+// 先等待 2 秒讓 Agent 完成 WebSocket 握手，之後每 2 秒查詢一次直到 ctx 取消。
 func (t *signalTab) pollAgentDevices(ctx context.Context, a *agent.Agent) {
 	// 等待 Agent 連線完成
 	time.Sleep(2 * time.Second)
@@ -507,8 +547,13 @@ func (t *signalTab) stopSignalAgent() {
 	t.window.Invalidate()
 }
 
-// === Client 子模式 ===
+// === Client 子模式（主控端） ===
+// 連線到 Signaling Server 後啟動內建 Daemon，透過 IPC 查詢主機列表、
+// 執行 Bind（將遠端設備轉發到本機 port）/ Unbind 操作。
+// pollClientState 負責定期透過 IPC 更新 UI 上的主機和綁定資訊。
 
+// layoutClient 繪製主控端子模式的 UI。
+// 包含：Server URL、Token、STUN、ADB Port 輸入 + 連線按鈕 + 主機/設備/綁定列表。
 func (t *signalTab) layoutClient(gtx layout.Context, th *material.Theme) []layout.FlexChild {
 	t.clientMu.Lock()
 	running := t.clientRunning
@@ -600,7 +645,7 @@ func (t *signalTab) layoutClient(gtx layout.Context, th *material.Theme) []layou
 	// Port 起始
 	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 		return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return labeledEditor(gtx, th, "Port 起始:", &t.clientPortEditor, "15555")
+			return labeledEditor(gtx, th, "ADB Port:", &t.clientPortEditor, "5555")
 		})
 	}))
 	// 連線/中斷按鈕
@@ -723,11 +768,14 @@ func (t *signalTab) layoutClient(gtx layout.Context, th *material.Theme) []layou
 	return children
 }
 
+// startClient 啟動主控端 Daemon。
+// 建立 Daemon 物件 + 隨機 port 的 IPC listener（避免和 CLI daemon 衝突），
+// 在背景啟動 Daemon 並開始 pollClientState 輪詢。
 func (t *signalTab) startClient() {
 	url := t.clientURLEditor.Text()
 	token := t.clientTokenEditor.Text()
 	stunURLs := t.clientStunEditor.Text()
-	portStart := parsePort(t.clientPortEditor.Text(), 15555)
+	portStart := parsePort(t.clientPortEditor.Text(), 5555)
 
 	if url == "" || token == "" {
 		t.clientMu.Lock()
@@ -782,6 +830,12 @@ func (t *signalTab) startClient() {
 	go t.pollClientState(ctx)
 }
 
+// pollClientState 定期透過 IPC 查詢 Daemon 狀態並更新 UI。
+// 每 3 秒查詢一次，包含兩個 IPC 請求：
+//   - "hosts"：取得遠端主機及其設備列表（包含 HostID、Hostname、設備序號/狀態/鎖定資訊）
+//   - "list"：取得目前已綁定的 port → 設備映射列表
+//
+// 查詢結果會更新 clientHosts、clientBindings 及對應的 UI 按鈕 slice。
 func (t *signalTab) pollClientState(ctx context.Context) {
 	// 等待 Daemon 連線完成
 	time.Sleep(2 * time.Second)
@@ -837,6 +891,8 @@ func (t *signalTab) pollClientState(ctx context.Context) {
 	}
 }
 
+// sendIPC 向內建 Daemon 發送 IPC 命令並等待回應。
+// 使用 JSON over TCP 協定，連線逾時 5 秒、讀寫逾時 30 秒。
 func (t *signalTab) sendIPC(cmd daemon.IPCCommand) daemon.IPCResponse {
 	t.clientMu.Lock()
 	addr := t.clientIPCAddr
@@ -864,6 +920,8 @@ func (t *signalTab) sendIPC(cmd daemon.IPCCommand) daemon.IPCResponse {
 	return resp
 }
 
+// bindDevice 透過 IPC 發送 bind 命令，將遠端設備綁定到本機 port。
+// 成功後 Daemon 會建立 WebRTC DataChannel + TCP proxy。
 func (t *signalTab) bindDevice(hostID, serial string) {
 	go func() {
 		payload, _ := json.Marshal(daemon.BindRequest{HostID: hostID, Serial: serial})
@@ -882,6 +940,7 @@ func (t *signalTab) bindDevice(hostID, serial string) {
 	}()
 }
 
+// unbindDevice 透過 IPC 發送 unbind 命令，解除本機 port 的設備綁定。
 func (t *signalTab) unbindDevice(localPort int) {
 	go func() {
 		payload, _ := json.Marshal(daemon.UnbindRequest{LocalPort: localPort})
@@ -912,6 +971,7 @@ func (t *signalTab) stopClient() {
 	t.window.Invalidate()
 }
 
+// cleanup 停止所有子模式的服務，釋放資源。視窗關閉時呼叫。
 func (t *signalTab) cleanup() {
 	t.stopSignalServer()
 	t.stopSignalAgent()
