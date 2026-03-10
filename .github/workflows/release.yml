@@ -49,14 +49,6 @@ jobs:
             goarch: arm64
             runner: ubuntu-latest
             cgo: "1"
-          - goos: darwin
-            goarch: amd64
-            runner: macos-latest
-            cgo: "1"
-          - goos: darwin
-            goarch: arm64
-            runner: macos-latest
-            cgo: "1"
           - goos: windows
             goarch: amd64
             runner: ubuntu-latest
@@ -92,10 +84,6 @@ jobs:
             libxkbcommon-x11-dev:arm64 libgles2-mesa-dev:arm64 libegl1-mesa-dev:arm64 \
             libxcursor-dev:arm64 libvulkan-dev:arm64
 
-      - name: 安裝 macOS 圖示轉換工具
-        if: matrix.goos == 'darwin'
-        run: brew install librsvg
-
       - name: 設定環境變數
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
@@ -118,7 +106,7 @@ jobs:
         if: matrix.goos == 'windows'
         run: |
           sudo apt-get install -y librsvg2-bin
-          rsvg-convert -w 256 -h 256 "macos/RADB.icon/Assets/RADB Icon.svg" -o icon-256.png
+          rsvg-convert -w 256 -h 256 "assets/RADB Icon.svg" -o icon-256.png
           go install github.com/tc-hib/go-winres@latest
           cd cmd/radb
           go-winres simply --icon ../../icon-256.png --arch ${{ matrix.goarch }} \
@@ -140,8 +128,8 @@ jobs:
           fi
           go build -trimpath -ldflags="${LDFLAGS}" -o "dist/radb${EXT}" ./cmd/radb
 
-      - name: UPX 壓縮（macOS 及 Windows ARM64 除外）
-        if: matrix.goos != 'darwin' && !(matrix.goos == 'windows' && matrix.goarch == 'arm64')
+      - name: UPX 壓縮（Windows ARM64 除外）
+        if: "!(matrix.goos == 'windows' && matrix.goarch == 'arm64')"
         run: |
           # 安裝 UPX
           UPX_VERSION="4.2.4"
@@ -151,12 +139,6 @@ jobs:
           echo "壓縮前: $(du -h dist/radb${EXT} | cut -f1)"
           $UPX --best --lzma "dist/radb${EXT}"
           echo "壓縮後: $(du -h dist/radb${EXT} | cut -f1)"
-
-      - name: 打包 macOS (DMG)
-        if: matrix.goos == 'darwin'
-        run: |
-          chmod +x scripts/build-dmg.sh
-          scripts/build-dmg.sh dist/radb "${TAG}" "${{ env.ARCHIVE_NAME }}.dmg"
 
       - name: 打包 Linux (tar.gz)
         if: matrix.goos == 'linux'
@@ -182,9 +164,63 @@ jobs:
             checksums-*.txt
           retention-days: 1
 
+  build-macos-universal:
+    name: Build darwin/universal
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: 安裝圖示轉換工具
+        run: brew install librsvg
+
+      - name: 設定環境變數
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "ARCHIVE_NAME=radb-${TAG}-darwin-universal" >> "$GITHUB_ENV"
+
+      - name: 編譯雙架構並合併 Universal Binary
+        run: |
+          mkdir -p dist
+          SHA="${GITHUB_SHA::8}"
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          LDFLAGS="-s -w -X github.com/chris1004tw/remote-adb/internal/buildinfo.Version=${TAG} -X github.com/chris1004tw/remote-adb/internal/buildinfo.Commit=${SHA} -X github.com/chris1004tw/remote-adb/internal/buildinfo.Date=${DATE}"
+
+          # 分別編譯 amd64 和 arm64
+          CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="${LDFLAGS}" -o dist/radb-amd64 ./cmd/radb
+          CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="${LDFLAGS}" -o dist/radb-arm64 ./cmd/radb
+
+          # 使用 lipo 合併為 Universal Binary
+          lipo -create -output dist/radb dist/radb-amd64 dist/radb-arm64
+          lipo -info dist/radb
+
+          # 清理單架構檔案
+          rm dist/radb-amd64 dist/radb-arm64
+
+      - name: 打包 macOS (DMG)
+        run: |
+          chmod +x scripts/build-dmg.sh
+          scripts/build-dmg.sh dist/radb "${TAG}" "${{ env.ARCHIVE_NAME }}.dmg"
+
+      - name: 產生 checksum
+        run: sha256sum radb-*.* > checksums-darwin-universal.txt
+
+      - name: 上傳 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE_NAME }}
+          path: |
+            radb-*.*
+            checksums-*.txt
+          retention-days: 1
+
   release:
     name: Create Release
-    needs: build
+    needs: [build, build-macos-universal]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

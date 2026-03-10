@@ -17,8 +17,15 @@ func TestGitHubSource_LatestRelease(t *testing.T) {
 	ext := ".tar.gz"
 	if goos == "windows" {
 		ext = ".zip"
+	} else if goos == "darwin" {
+		ext = ".dmg"
 	}
-	assetName := fmt.Sprintf("radb-v1.0.0-%s-%s%s", goos, goarch, ext)
+	// macOS 使用 Universal Binary，asset 名稱中架構部分為 "universal"
+	archPart := goarch
+	if goos == "darwin" {
+		archPart = "universal"
+	}
+	assetName := fmt.Sprintf("radb-v1.0.0-%s-%s%s", goos, archPart, ext)
 
 	release := githubRelease{
 		TagName: "v1.0.0",

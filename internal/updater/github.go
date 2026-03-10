@@ -108,16 +108,24 @@ func (g *GitHubSource) LatestRelease(ctx context.Context) (*ReleaseInfo, error) 
 
 	info := &ReleaseInfo{TagName: release.TagName}
 
-	// 依據當前平台決定 archive 格式：Windows 用 .zip，其他平台用 .tar.gz
+	// 依據當前平台決定 archive 格式：Windows 用 .zip，macOS 用 .dmg，其他用 .tar.gz
 	goos := runtime.GOOS
 	goarch := runtime.GOARCH
 	ext := ".tar.gz"
 	if goos == "windows" {
 		ext = ".zip"
+	} else if goos == "darwin" {
+		ext = ".dmg"
 	}
 
-	// 組出預期的 asset 檔名 suffix，例如 "-darwin-arm64.tar.gz"
-	expectedSuffix := fmt.Sprintf("-%s-%s%s", goos, goarch, ext)
+	// 組出預期的 asset 檔名 suffix
+	// macOS 使用 Universal Binary，suffix 為 "-darwin-universal.dmg"
+	// 其他平台依架構區分，例如 "-linux-amd64.tar.gz"
+	archPart := goarch
+	if goos == "darwin" {
+		archPart = "universal"
+	}
+	expectedSuffix := fmt.Sprintf("-%s-%s%s", goos, archPart, ext)
 
 	// 遍歷所有 asset，找到匹配平台的 archive 和 checksums.txt
 	for _, a := range release.Assets {
