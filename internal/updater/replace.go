@@ -11,6 +11,7 @@ package updater
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -36,8 +37,8 @@ func replaceUnix(targetPath, newPath string) error {
 	if err := os.Chmod(newPath, 0755); err != nil {
 		return fmt.Errorf("設定權限失敗: %w", err)
 	}
-	// os.Rename 在同一檔案系統上對應 rename(2)，保證原子性
-	if err := os.Rename(newPath, targetPath); err != nil {
+	// moveFile 先嘗試 os.Rename（原子操作），失敗時 fallback 到 copy+remove
+	if err := moveFile(newPath, targetPath); err != nil {
 		return fmt.Errorf("替換 %s 失敗: %w", targetPath, err)
 	}
 	return nil
@@ -67,12 +68,51 @@ func replaceWindows(targetPath, newPath string) error {
 		}
 	}
 
-	// 將新 binary 移入目標路徑
-	if err := os.Rename(newPath, targetPath); err != nil {
+	// 將新 binary 移入目標路徑（moveFile 支援跨磁碟機）
+	if err := moveFile(newPath, targetPath); err != nil {
 		// 移入失敗，嘗試將 .old 回滾到原始路徑以恢復原狀
 		os.Rename(oldPath, targetPath)
 		return fmt.Errorf("替換 %s 失敗: %w", targetPath, err)
 	}
+	return nil
+}
+
+// moveFile 將 src 移動到 dst，先嘗試 os.Rename（同磁碟機/檔案系統時為原子操作），
+// 若失敗（例如跨磁碟機）則 fallback 到 copy + remove。
+//
+// 背景：Windows 的 os.Rename 無法跨磁碟機移動檔案（錯誤訊息為
+// "The system cannot move the file to a different disk drive."），
+// 而暫存目錄（os.TempDir）與執行檔可能不在同一磁碟機上。
+// Unix 的 rename(2) 同樣不支援跨檔案系統移動（回傳 EXDEV）。
+func moveFile(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+
+	// fallback: 以 copy + remove 實現跨磁碟機/檔案系統移動
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("開啟來源檔案失敗: %w", err)
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return fmt.Errorf("建立目標檔案失敗: %w", err)
+	}
+
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return fmt.Errorf("複製檔案失敗: %w", err)
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(dst)
+		return fmt.Errorf("關閉目標檔案失敗: %w", err)
+	}
+
+	// 複製成功後才移除來源
+	os.Remove(src)
 	return nil
 }
 

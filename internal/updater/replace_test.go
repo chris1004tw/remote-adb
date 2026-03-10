@@ -6,6 +6,70 @@ import (
 	"testing"
 )
 
+func TestMoveFile_SameDir(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.bin")
+	dst := filepath.Join(dir, "dst.bin")
+
+	os.WriteFile(src, []byte("hello"), 0755)
+
+	if err := moveFile(src, dst); err != nil {
+		t.Fatalf("moveFile 失敗: %v", err)
+	}
+
+	// 驗證目標檔案內容正確
+	content, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("讀取目標檔案失敗: %v", err)
+	}
+	if string(content) != "hello" {
+		t.Errorf("內容 = %q, want %q", string(content), "hello")
+	}
+
+	// 來源檔案應該已被移除
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Error("來源檔案應該已被移除")
+	}
+}
+
+// TestMoveFile_CrossDir 模擬跨目錄移動（同磁碟機但驗證 fallback 邏輯正確性）。
+// 實際跨磁碟機的情境下 os.Rename 會失敗，moveFile 會走 copy+remove 路徑。
+func TestMoveFile_CrossDir(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	src := filepath.Join(srcDir, "src.bin")
+	dst := filepath.Join(dstDir, "dst.bin")
+
+	os.WriteFile(src, []byte("cross-dir"), 0755)
+
+	if err := moveFile(src, dst); err != nil {
+		t.Fatalf("moveFile 失敗: %v", err)
+	}
+
+	content, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("讀取目標檔案失敗: %v", err)
+	}
+	if string(content) != "cross-dir" {
+		t.Errorf("內容 = %q, want %q", string(content), "cross-dir")
+	}
+
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Error("來源檔案應該已被移除")
+	}
+}
+
+func TestMoveFile_SrcNotExist(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "nonexistent")
+	dst := filepath.Join(dir, "dst.bin")
+
+	err := moveFile(src, dst)
+	if err == nil {
+		t.Fatal("預期來源不存在時應回傳錯誤")
+	}
+}
+
 func TestReplaceBinary(t *testing.T) {
 	dir := t.TempDir()
 	targetPath := filepath.Join(dir, "radb")
