@@ -10,10 +10,11 @@
 //     WebSocket 信令交換 + WebRTC P2P 連線，適合跨網路的正式部署。
 //
 // CJK 字型策略：
-//   - Windows：載入微軟正黑體（msjh.ttc），路徑從 %WINDIR%\Fonts 取得
-//   - macOS：載入 AppleGothic.ttf
-//   - Linux：嘗試 Noto Sans CJK（多個常見路徑）
-//   - 若系統字型不可用，退回 Go 內建字型（gofont），此時中文會顯示為方框
+//   - macOS：不手動載入，由 go-text/typesetting 的 fontscan 自動掃描系統字型目錄
+//     （/System/Library/Fonts 含 PingFang.ttc），確保完整字形覆蓋
+//   - Windows：手動載入微軟正黑體（msjh.ttc），路徑從 %WINDIR%\Fonts 取得
+//   - Linux：手動嘗試 Noto Sans CJK（多個常見路徑）
+//   - Windows/Linux 若系統字型不可用，退回 Go 內建字型（gofont），此時中文會顯示為方框
 package gui
 
 import (
@@ -61,65 +62,65 @@ func Run() {
 
 // newThemeWithCJK 建立帶 CJK（中日韓）字型的 Gio Theme。
 //
-// 策略：根據 runtime.GOOS 嘗試載入系統 CJK 字型，找到第一個可用的即停止。
-// CJK 字型放在字型集合的前方優先使用，Go 內建 gofont 作為 Latin 字元的 fallback。
-// 支援 .ttf（單字型）和 .ttc（字型集合）兩種格式。
+// CJK 字型策略：
+//   - macOS：不手動載入，由 go-text/typesetting 的 fontscan 自動掃描
+//     /System/Library/Fonts（含 PingFang.ttc），確保完整字形覆蓋。
+//   - Windows：手動載入微軟正黑體（msjh.ttc），搭配 NoSystemFonts 避免掃描延遲。
+//   - Linux：手動載入 Noto Sans CJK，搭配 NoSystemFonts。
+//
+// Windows/Linux 手動載入時，CJK 字型放在集合前方優先使用，
+// Go 內建 gofont 作為 Latin 字元的 fallback。
 func newThemeWithCJK() *material.Theme {
 	th := material.NewTheme()
 
-	// 依優先順序嘗試的系統 CJK 字型路徑
-	var fontPaths []string
-	switch runtime.GOOS {
-	case "darwin":
-		// 蘋方（PingFang）為 macOS 預設繁中字體，AppleGothic 作為舊系統 fallback
-		fontPaths = []string{
-			"/System/Library/Fonts/PingFang.ttc",
-			"/System/Library/Fonts/Supplemental/AppleGothic.ttf",
-			"/System/Library/Fonts/AppleGothic.ttf",
+	// macOS：讓預設 Shaper 的系統字型掃描自動處理 CJK，不需手動載入
+	if runtime.GOOS != "darwin" {
+		var fontPaths []string
+		switch runtime.GOOS {
+		case "windows":
+			winDir := os.Getenv("WINDIR")
+			if winDir == "" {
+				winDir = `C:\Windows`
+			}
+			fontPaths = []string{
+				winDir + `\Fonts\msjh.ttc`,
+			}
+		default: // Linux
+			// 優先使用 Noto Sans CJK TC（繁體中文）OTF，找不到才 fallback 到通用 TTC
+			fontPaths = []string{
+				"/usr/share/fonts/opentype/noto/NotoSansCJKTC-Regular.otf",
+				"/usr/share/fonts/noto-cjk/NotoSansCJKTC-Regular.otf",
+				"/usr/share/fonts/google-noto-cjk-tc/NotoSansCJKTC-Regular.otf",
+				"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+				"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+			}
 		}
-	case "windows":
-		winDir := os.Getenv("WINDIR")
-		if winDir == "" {
-			winDir = `C:\Windows`
-		}
-		fontPaths = []string{
-			winDir + `\Fonts\msjh.ttc`,
-		}
-	default: // Linux
-		// 優先使用 Noto Sans CJK TC（繁體中文）OTF，找不到才 fallback 到通用 TTC
-		fontPaths = []string{
-			"/usr/share/fonts/opentype/noto/NotoSansCJKTC-Regular.otf",
-			"/usr/share/fonts/noto-cjk/NotoSansCJKTC-Regular.otf",
-			"/usr/share/fonts/google-noto-cjk-tc/NotoSansCJKTC-Regular.otf",
-			"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-			"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-		}
-	}
 
-	var cjkFaces []font.FontFace
-	for _, p := range fontPaths {
-		data, err := os.ReadFile(p)
-		if err != nil {
-			continue
-		}
-		faces, err := opentype.ParseCollection(data)
-		if err != nil {
-			// 嘗試單一字型格式
-			face, err2 := opentype.Parse(data)
-			if err2 != nil {
+		var cjkFaces []font.FontFace
+		for _, p := range fontPaths {
+			data, err := os.ReadFile(p)
+			if err != nil {
 				continue
 			}
-			cjkFaces = append(cjkFaces, font.FontFace{Face: face})
-		} else {
-			cjkFaces = append(cjkFaces, faces...)
+			faces, err := opentype.ParseCollection(data)
+			if err != nil {
+				// 嘗試單一字型格式
+				face, err2 := opentype.Parse(data)
+				if err2 != nil {
+					continue
+				}
+				cjkFaces = append(cjkFaces, font.FontFace{Face: face})
+			} else {
+				cjkFaces = append(cjkFaces, faces...)
+			}
+			break // 找到一個就夠了
 		}
-		break // 找到一個就夠了
-	}
 
-	if len(cjkFaces) > 0 {
-		// CJK 字型放前面優先使用，Go 內建字型作為 fallback
-		allFaces := append(cjkFaces, gofont.Collection()...)
-		th.Shaper = text.NewShaper(text.NoSystemFonts(), text.WithCollection(allFaces))
+		if len(cjkFaces) > 0 {
+			// CJK 字型放前面優先使用，Go 內建字型作為 fallback
+			allFaces := append(cjkFaces, gofont.Collection()...)
+			th.Shaper = text.NewShaper(text.NoSystemFonts(), text.WithCollection(allFaces))
+		}
 	}
 
 	// 全域暗色模式
