@@ -106,10 +106,43 @@ jobs:
         if: matrix.goos == 'windows'
         run: |
           go install github.com/tc-hib/go-winres@latest
+          # 將 TAG (如 v0.2.3) 轉為 Windows 四段版本號 (如 0.2.3.0)
+          WIN_VER="${TAG#v}"
+          WIN_VER="${WIN_VER%%-*}"
+          IFS='.' read -ra PARTS <<< "$WIN_VER"
+          while [ ${#PARTS[@]} -lt 4 ]; do PARTS+=("0"); done
+          WIN_VER="${PARTS[0]}.${PARTS[1]}.${PARTS[2]}.${PARTS[3]}"
+          # 建立 go-winres 設定（繁體中文 locale 0404）
+          mkdir -p cmd/radb/winres
+          cat > cmd/radb/winres/winres.json << EOF
+          {
+            "RT_GROUP_ICON": {
+              "#APPICON": {
+                "0000": ["../../../assets/radb.ico"]
+              }
+            },
+            "RT_VERSION": {
+              "#1": {
+                "0000": {
+                  "fixed": {
+                    "file_version": "${WIN_VER}",
+                    "product_version": "${WIN_VER}"
+                  },
+                  "info": {
+                    "0404": {
+                      "FileDescription": "遠端 ADB P2P 轉發工具",
+                      "ProductName": "radb",
+                      "FileVersion": "${TAG}",
+                      "ProductVersion": "${TAG}"
+                    }
+                  }
+                }
+              }
+            }
+          }
+          EOF
           cd cmd/radb
-          go-winres simply --icon ../../assets/radb.ico --arch ${{ matrix.goarch }} \
-            --product-name "radb" \
-            --file-description "遠端 ADB P2P 轉發工具"
+          go-winres make --arch ${{ matrix.goarch }}
 
       - name: 編譯
         env:
