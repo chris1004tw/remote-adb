@@ -253,7 +253,7 @@ func (t *signalTab) layoutServer(gtx layout.Context, th *material.Theme) []layou
 		}),
 		// 狀態
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			c := color.NRGBA{R: 100, G: 100, B: 100, A: 255}
+			c := colorPanelHint
 			if running {
 				c = color.NRGBA{R: 76, G: 175, B: 80, A: 255}
 			}
@@ -389,7 +389,7 @@ func (t *signalTab) layoutAgent(gtx layout.Context, th *material.Theme) []layout
 		}),
 		// 狀態
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			c := color.NRGBA{R: 100, G: 100, B: 100, A: 255}
+			c := colorPanelHint
 			if running {
 				c = color.NRGBA{R: 76, G: 175, B: 80, A: 255}
 			}
@@ -663,7 +663,7 @@ func (t *signalTab) layoutClient(gtx layout.Context, th *material.Theme) []layou
 
 	// 狀態
 	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-		c := color.NRGBA{R: 100, G: 100, B: 100, A: 255}
+		c := colorPanelHint
 		if running {
 			c = color.NRGBA{R: 76, G: 175, B: 80, A: 255}
 		}

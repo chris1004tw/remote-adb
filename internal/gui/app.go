@@ -122,6 +122,10 @@ func newThemeWithCJK() *material.Theme {
 		th.Shaper = text.NewShaper(text.NoSystemFonts(), text.WithCollection(allFaces))
 	}
 
+	// 全域暗色模式
+	th.Palette.Bg = colorPanelBg
+	th.Palette.Fg = colorPanelText
+
 	return th
 }
 
@@ -143,11 +147,14 @@ func eventLoop(w *app.Window) error {
 
 	tabs := &tabBar{
 		items: []tabItem{
-			{title: "簡易連線", layoutFn: pt.layout},
+			{title: "P2P 直連", layoutFn: pt.layout},
 			{title: "區網直連", layoutFn: lt.layout},
 			{title: "Relay 伺服器", layoutFn: st.layout},
 		},
 	}
+
+	// 啟動時自動檢查更新（背景 goroutine，不阻塞 UI）
+	sp.startCheckUpdate()
 
 	// 齒輪按鈕（右下角）
 	var gearBtn widget.Clickable
@@ -167,28 +174,34 @@ func eventLoop(w *app.Window) error {
 		case app.FrameEvent:
 			gtx := app.NewContext(&ops, e)
 
-			// 處理齒輪按鈕點擊
+			// 處理齒輪按鈕點擊 → 開啟獨立設定子視窗
 			for gearBtn.Clicked(gtx) {
-				sp.open()
+				sp.openWindow()
 			}
 
-			// 使用 Stack 疊加：底層=分頁內容，上層=齒輪按鈕+設定面板
+			// 深色背景
+			paint.FillShape(gtx.Ops, colorPanelBg,
+				clip.Rect{Max: gtx.Constraints.Max}.Op())
+
+			// 使用 Stack 疊加：底層=分頁內容，上層=齒輪按鈕+橫幅
 			layout.Stack{}.Layout(gtx,
 				// 底層：分頁內容
 				layout.Expanded(func(gtx layout.Context) layout.Dimensions {
 					return tabs.layout(gtx, theme)
 				}),
-				// 齒輪按鈕（右下角，設定面板未開啟時顯示）
+				// 齒輪按鈕（右下角）
 				layout.Stacked(func(gtx layout.Context) layout.Dimensions {
-					if sp.visible {
-						return layout.Dimensions{}
-					}
 					// Stacked 子元素的 Min=0，需設為 Max 才能讓 SE 定位正確
 					gtx.Constraints.Min = gtx.Constraints.Max
+					// 更新橫幅可見時，齒輪往上移避免被遮住
+					bottomInset := unit.Dp(12)
+					if sp.bannerVisible() {
+						bottomInset = unit.Dp(56)
+					}
 					return layout.SE.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 						return layout.Inset{
 							Right:  unit.Dp(12),
-							Bottom: unit.Dp(12),
+							Bottom: bottomInset,
 						}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 							btn := material.IconButton(theme, &gearBtn, icons.Gear, "設定")
 							btn.Size = unit.Dp(24)
@@ -199,9 +212,9 @@ func eventLoop(w *app.Window) error {
 						})
 					})
 				}),
-				// 設定面板 overlay
+				// 更新通知橫幅（底部）
 				layout.Stacked(func(gtx layout.Context) layout.Dimensions {
-					return sp.layout(gtx, theme)
+					return sp.layoutBanner(gtx, theme)
 				}),
 			)
 
@@ -229,11 +242,16 @@ type tabBar struct {
 
 // 分頁按鈕的顏色
 var (
-	colorTabActive   = color.NRGBA{R: 33, G: 150, B: 243, A: 255} // 藍色
-	colorTabInactive = color.NRGBA{R: 96, G: 96, B: 96, A: 255}   // 灰色
-	colorModeActive  = color.NRGBA{R: 0, G: 121, B: 107, A: 255}  // 深青色（子模式選擇）
+	colorTabActive    = color.NRGBA{R: 33, G: 150, B: 243, A: 255}  // 藍色
+	colorTabInactive  = color.NRGBA{R: 96, G: 96, B: 96, A: 255}    // 灰色
+	colorModeActive   = color.NRGBA{R: 0, G: 121, B: 107, A: 255}   // 深青色（子模式選擇）
 	colorModeInactive = color.NRGBA{R: 158, G: 158, B: 158, A: 255} // 淺灰色（子模式未選）
-	colorDivider     = color.NRGBA{R: 200, G: 200, B: 200, A: 255}
+	colorDivider      = color.NRGBA{R: 200, G: 200, B: 200, A: 255}
+	colorEditorBg     = color.NRGBA{R: 64, G: 64, B: 64, A: 255}    // 輸入框背景（深色面板上稍亮）
+	colorPanelBg      = color.NRGBA{R: 45, G: 45, B: 45, A: 255}    // 設定面板背景
+	colorPanelText    = color.NRGBA{R: 240, G: 240, B: 240, A: 255} // 面板主要文字
+	colorPanelHint    = color.NRGBA{R: 200, G: 200, B: 200, A: 255} // 面板次要文字 / 區塊標題
+	colorPanelDivider = color.NRGBA{R: 80, G: 80, B: 80, A: 255}    // 面板分隔線
 )
 
 func (t *tabBar) layout(gtx layout.Context, th *material.Theme) layout.Dimensions {
@@ -265,7 +283,7 @@ func (t *tabBar) layout(gtx layout.Context, th *material.Theme) layout.Dimension
 		// 分隔線
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			size := image.Pt(gtx.Constraints.Max.X, gtx.Dp(unit.Dp(1)))
-			paint.FillShape(gtx.Ops, colorDivider, clip.Rect{Max: size}.Op())
+			paint.FillShape(gtx.Ops, colorPanelDivider, clip.Rect{Max: size}.Op())
 			return layout.Dimensions{Size: size}
 		}),
 
@@ -285,6 +303,7 @@ func (t *tabBar) layout(gtx layout.Context, th *material.Theme) layout.Dimension
 // 以下函式提供各分頁共用的 UI 繪製元件。
 
 // labeledEditor 繪製「標籤 + 輸入框」的一列。
+// 輸入框使用深色背景 + 藍色底線，讓使用者一眼辨識可編輯區域。
 func labeledEditor(gtx layout.Context, th *material.Theme, label string, editor *widget.Editor, hint string) layout.Dimensions {
 	return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -295,9 +314,28 @@ func labeledEditor(gtx layout.Context, th *material.Theme, label string, editor 
 			})
 		}),
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-			ed := material.Editor(th, editor, hint)
-			ed.TextSize = unit.Sp(14)
-			return ed.Layout(gtx)
+			// 深色背景 + 藍色底線，明確標示可編輯區域
+			return layout.Background{}.Layout(gtx,
+				func(gtx layout.Context) layout.Dimensions {
+					sz := gtx.Constraints.Min
+					paint.FillShape(gtx.Ops,
+						colorEditorBg,
+						clip.Rect{Max: sz}.Op())
+					lineH := gtx.Dp(unit.Dp(2))
+					paint.FillShape(gtx.Ops, colorTabActive,
+						clip.Rect{Min: image.Pt(0, sz.Y-lineH), Max: sz}.Op())
+					return layout.Dimensions{Size: sz}
+				},
+				func(gtx layout.Context) layout.Dimensions {
+					return layout.UniformInset(unit.Dp(6)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						ed := material.Editor(th, editor, hint)
+						ed.TextSize = unit.Sp(14)
+						ed.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+						ed.HintColor = color.NRGBA{R: 160, G: 160, B: 160, A: 255}
+						return ed.Layout(gtx)
+					})
+				},
+			)
 		}),
 	)
 }
@@ -331,13 +369,15 @@ func tokenBox(gtx layout.Context, th *material.Theme, label string, editor *widg
 			return layout.Background{}.Layout(gtx,
 				func(gtx layout.Context) layout.Dimensions {
 					rect := clip.Rect{Max: gtx.Constraints.Min}
-					paint.FillShape(gtx.Ops, color.NRGBA{R: 240, G: 240, B: 240, A: 255}, rect.Op())
+					paint.FillShape(gtx.Ops, colorEditorBg, rect.Op())
 					return layout.Dimensions{Size: gtx.Constraints.Min}
 				},
 				func(gtx layout.Context) layout.Dimensions {
 					return layout.UniformInset(unit.Dp(6)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 						ed := material.Editor(th, editor, hint)
 						ed.TextSize = unit.Sp(12)
+						ed.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+						ed.HintColor = color.NRGBA{R: 160, G: 160, B: 160, A: 255}
 						return ed.Layout(gtx)
 					})
 				},

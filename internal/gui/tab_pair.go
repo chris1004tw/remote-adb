@@ -714,7 +714,7 @@ func (t *pairTab) layout(gtx layout.Context, th *material.Theme) layout.Dimensio
 		return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{}.Layout(gtx,
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					btn := material.Button(th, &t.clientBtn, "主控模式")
+					btn := material.Button(th, &t.clientBtn, "主控端")
 					if !isServer {
 						btn.Background = colorModeActive
 					} else {
@@ -724,7 +724,7 @@ func (t *pairTab) layout(gtx layout.Context, th *material.Theme) layout.Dimensio
 				}),
 				layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					btn := material.Button(th, &t.serverBtn, "被控模式")
+					btn := material.Button(th, &t.serverBtn, "被控端")
 					if isServer {
 						btn.Background = colorModeActive
 					} else {
@@ -749,7 +749,7 @@ func (t *pairTab) layout(gtx layout.Context, th *material.Theme) layout.Dimensio
 
 	// 狀態
 	widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
-		c := color.NRGBA{R: 100, G: 100, B: 100, A: 255}
+		c := colorPanelHint
 		if connected {
 			c = color.NRGBA{R: 76, G: 175, B: 80, A: 255}
 		}
