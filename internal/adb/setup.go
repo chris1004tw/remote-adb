@@ -1,3 +1,9 @@
+// setup.go 提供 ADB 環境的自動偵測、下載與啟動功能。
+//
+// 目的：讓使用者不需手動安裝 Android Platform Tools，radb 會自動處理。
+// 下載的 ADB 會快取在 ~/.radb/platform-tools/ 目錄下，避免重複下載。
+// 此功能主要供 GUI 模式使用（CLI 使用者通常已有 ADB 環境）。
+
 package adb
 
 import (
@@ -198,7 +204,8 @@ func extractADBFromZip(zipPath, destDir string) error {
 		return fmt.Errorf("建立目錄失敗: %w", err)
 	}
 
-	// 只解壓 adb 相關檔案
+	// 只解壓 adb 執行所需的檔案（白名單），忽略其他如 fastboot 等工具。
+	// Windows 需要額外的 DLL 才能運行 adb。
 	needFiles := map[string]bool{
 		"adb":              true,
 		"adb.exe":          true,
@@ -212,7 +219,8 @@ func extractADBFromZip(zipPath, destDir string) error {
 		if !needFiles[base] {
 			continue
 		}
-		// 防止 zip slip
+		// 防止 zip slip 攻擊：惡意 zip 可能包含 "../" 路徑，
+		// 嘗試將檔案解壓到目標目錄之外（如覆蓋系統檔案）。
 		if strings.Contains(f.Name, "..") {
 			continue
 		}

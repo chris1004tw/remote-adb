@@ -4,23 +4,31 @@ import (
 	"sync"
 )
 
-// DeviceInfo 單一設備的完整資訊（含鎖定狀態）。
+// DeviceInfo 單一設備的完整資訊（含鎖定狀態），用於對外暴露的快照。
 type DeviceInfo struct {
 	Serial   string
-	State    string // "device", "offline"
-	Lock     string // "available", "locked"
-	LockedBy string
+	State    string // "device"（可用）, "offline"（離線）
+	Lock     string // "available"（可綁定）, "locked"（已被某 client 獨佔）
+	LockedBy string // 鎖定者的 ID（Client 連線 ID 或 IP 位址）
 }
 
 // DeviceTable 執行緒安全的設備狀態表。
 // 以設備序號 (Serial Number) 為鍵值，記錄硬體狀態與鎖定狀態。
+//
+// 設計目的：防止多個 Client 同時控制同一支手機，造成 ADB 指令交錯。
+// 一個設備同一時間只能被一個 Client 鎖定（排他鎖）。
+// 當 Client 斷線時，Agent 會呼叫 UnlockAll 自動釋放該 Client 持有的所有鎖。
+//
+// 此表由 Agent 端維護，被 Signal Server 模式和 Direct 模式共享。
 type DeviceTable struct {
 	mu      sync.RWMutex
 	devices map[string]*deviceEntry
 }
 
+// deviceEntry 內部使用的設備記錄。
+// 使用私有結構避免外部直接修改鎖定狀態，必須透過 Lock/Unlock 方法操作。
 type deviceEntry struct {
-	state    string // 硬體狀態
+	state    string // 硬體狀態（來自 ADB track-devices）
 	locked   bool
 	lockedBy string
 }

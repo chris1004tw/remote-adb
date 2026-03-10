@@ -1,4 +1,15 @@
 // Package adb 實作 ADB server protocol 通訊、設備追蹤與狀態管理。
+//
+// ADB（Android Debug Bridge）protocol 使用簡單的文字格式與 TCP 傳輸：
+//   - 所有指令以「4 位 hex 長度 + 指令字串」格式發送（例如 "000chost:version"）
+//   - 回應以 4 byte 狀態碼開頭："OKAY" 或 "FAIL"
+//   - "FAIL" 後接 4 位 hex 長度 + 錯誤訊息
+//
+// 本 package 提供以下功能：
+//   - Tracker：透過 host:track-devices 長連線即時監聽設備插拔
+//   - DeviceTable：執行緒安全的設備狀態表，支援鎖定機制防止多用戶端競爭
+//   - Dialer：透過 ADB server 建立與指定設備的 TCP tunnel
+//   - EnsureADB：自動偵測/下載/啟動 ADB 環境
 package adb
 
 import (
@@ -105,7 +116,8 @@ func (t *Tracker) connectAndTrack(ctx context.Context, ch chan<- []DeviceEvent) 
 
 	slog.Info("已連接 ADB server，開始追蹤設備", "addr", t.addr)
 
-	// 持續讀取設備列表更新
+	// host:track-devices 是長連線：ADB server 在每次設備列表變動時
+	// 會主動推送完整的設備清單（而非差異）。連線保持直到任一端關閉。
 	reader := bufio.NewReader(conn)
 	for {
 		if ctx.Err() != nil {
@@ -125,7 +137,10 @@ func (t *Tracker) connectAndTrack(ctx context.Context, ch chan<- []DeviceEvent) 
 	}
 }
 
-// sendADBCommand 發送 ADB protocol 格式的指令：4 位 hex 長度 + 指令字串。
+// sendADBCommand 發送 ADB protocol 格式的指令。
+// ADB wire format：4 位 hex 長度前綴 + ASCII 指令字串。
+// 例如 "host:version"（長度 12）→ "000chost:version"。
+// 這是 ADB server 原生採用的編碼方式（非 radb 自訂），所有 ADB client 都使用此格式。
 func sendADBCommand(conn net.Conn, command string) error {
 	msg := fmt.Sprintf("%04x%s", len(command), command)
 	_, err := conn.Write([]byte(msg))
