@@ -140,8 +140,8 @@ jobs:
           fi
           go build -trimpath -ldflags="${LDFLAGS}" -o "dist/radb${EXT}" ./cmd/radb
 
-      - name: UPX 壓縮（macOS 除外）
-        if: matrix.goos != 'darwin'
+      - name: UPX 壓縮（macOS 及 Windows ARM64 除外）
+        if: matrix.goos != 'darwin' && !(matrix.goos == 'windows' && matrix.goarch == 'arm64')
         run: |
           # 安裝 UPX
           UPX_VERSION="4.2.4"
