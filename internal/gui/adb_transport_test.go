@@ -926,6 +926,72 @@ func TestBiCopyChunkedWrite(t *testing.T) {
 	}
 }
 
+// TestLocalAbstractConnectionOrdering 驗證同一 abstract socket 路徑的多條連線
+// 會按 OPEN 順序依序建立 DataChannel，避免 scrcpy audio/control stream 交叉。
+//
+// 背景：scrcpy 透過同一個 localabstract socket 開啟 video/audio/control 三條連線，
+// 依靠 accept() 順序對應功能。若 DataChannel 非同步到達導致亂序，
+// 會造成串流交叉（如音訊資料被當成控制訊息：Unknown device message type: 111）。
+func TestLocalAbstractConnectionOrdering(t *testing.T) {
+	pwCh := make(chan *io.PipeWriter, 10)
+	openCalled := make(chan struct{}, 10)
+
+	openCh := func(label string) (io.ReadWriteCloser, error) {
+		pr, pw := io.Pipe()
+		pwCh <- pw
+		openCalled <- struct{}{}
+		return &testRWC{r: pr, w: nopRWC{}}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	bridge := &deviceBridge{
+		conn:              &mockConn{},
+		openCh:            openCh,
+		serial:            "test",
+		streams:           make(map[uint32]*dStream),
+		localAbstractPrev: make(map[string]<-chan struct{}),
+	}
+	bridge.nextID.Store(0)
+
+	service := "localabstract:scrcpy_test\x00"
+	bridge.handleOPEN(ctx, &adbMsg{command: aOPEN, arg0: 100, data: []byte(service)})
+	bridge.handleOPEN(ctx, &adbMsg{command: aOPEN, arg0: 101, data: []byte(service)})
+
+	// 第一個 openCh 應立即被呼叫
+	select {
+	case <-openCalled:
+	case <-time.After(time.Second):
+		t.Fatal("逾時：第一個 openCh 未被呼叫")
+	}
+
+	// 第二個 openCh 不應在第一個就緒前被呼叫（序列化保護）
+	select {
+	case <-openCalled:
+		t.Fatal("第一個就緒前，第二個 openCh 不應被呼叫")
+	case <-time.After(200 * time.Millisecond):
+		// 預期行為：第二個被序列化，等待第一個就緒
+	}
+
+	// 送出第一個的就緒信號並關閉（讓 readFromRemote 立即 EOF 退出）
+	pw1 := <-pwCh
+	pw1.Write([]byte{1})
+	pw1.Close()
+
+	// 第二個 openCh 應在第一個就緒後被呼叫
+	select {
+	case <-openCalled:
+	case <-time.After(time.Second):
+		t.Fatal("逾時：第一個就緒後，第二個 openCh 未被呼叫")
+	}
+
+	// 清理第二個
+	pw2 := <-pwCh
+	pw2.Write([]byte{1})
+	pw2.Close()
+}
+
 // mockConn 是不阻塞的 net.Conn 模擬，Write 寫入 buffer，不會阻塞。
 type mockConn struct {
 	bytes.Buffer

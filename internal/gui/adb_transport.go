@@ -272,6 +272,14 @@ type deviceBridge struct {
 	streamsMu sync.Mutex          // 保護 streams map 的並行存取
 	streams   map[uint32]*dStream // 活躍串流，key 為我方分配的 deviceID
 	nextID    atomic.Uint32       // 遞增的 deviceID 分配器
+
+	// localAbstractPrev 追蹤每個 localabstract 路徑的前一個連線完成信號。
+	// 用於序列化同一 abstract socket 的 DataChannel 建立順序，
+	// 確保遠端 agent 的 accept() 順序與客戶端 OPEN 順序一致。
+	// 背景：scrcpy 等工具透過同一 abstract socket 開啟多條連線（video/audio/control），
+	// 依靠 accept() 順序對應功能。DataChannel 非同步到達可能導致串流交叉。
+	// key = service 名稱（如 "localabstract:scrcpy_XXXX"），value = 前次就緒完成的信號。
+	localAbstractPrev map[string]<-chan struct{}
 }
 
 // dStream 追蹤一條多工串流的完整狀態。
@@ -367,11 +375,12 @@ func startDeviceTransport(ctx context.Context, conn net.Conn, firstBytes []byte,
 	}
 
 	bridge := &deviceBridge{
-		conn:    conn,
-		openCh:  openCh,
-		serial:  serial,
-		tab:     tab,
-		streams: make(map[uint32]*dStream),
+		conn:              conn,
+		openCh:            openCh,
+		serial:            serial,
+		tab:               tab,
+		streams:           make(map[uint32]*dStream),
+		localAbstractPrev: make(map[string]<-chan struct{}),
 	}
 	bridge.nextID.Store(1)
 
@@ -452,6 +461,43 @@ func (b *deviceBridge) handleOPEN(ctx context.Context, msg *adbMsg) {
 		return
 	}
 
+	// localabstract: 服務需序列化 DataChannel 建立與 setupStream。
+	// scrcpy 等工具透過同一 abstract socket 開啟多條連線（video/audio/control），
+	// 依靠 accept() 順序對應功能。若 DataChannel 非同步到達導致亂序，
+	// 會造成串流交叉（如音訊資料被當成控制訊息）。
+	// 序列化確保：前一條連線完成就緒信號後，才建立下一條的 DataChannel。
+	if strings.HasPrefix(service, "localabstract:") {
+		prevDone := b.localAbstractPrev[service]
+		done := make(chan struct{})
+		b.localAbstractPrev[service] = done
+
+		go func() {
+			var doneOnce sync.Once
+			signalDone := func() { doneOnce.Do(func() { close(done) }) }
+			defer signalDone() // 安全網：確保任何路徑都會解除後續等待
+
+			// 等待前一條同路徑連線的就緒階段完成
+			if prevDone != nil {
+				select {
+				case <-prevDone:
+				case <-ctx.Done():
+					return
+				}
+			}
+
+			label := fmt.Sprintf("adb-stream/%d/%s/%s", deviceID, b.serial, service)
+			ch, err := b.openCh(label)
+			if err != nil {
+				slog.Debug("OPEN: DataChannel 建立失敗", "deviceID", deviceID, "error", err)
+				b.writeMsg(&adbMsg{command: aCLSE, arg0: 0, arg1: serverID})
+				return
+			}
+
+			b.setupStream(ctx, ch, serverID, deviceID, signalDone)
+		}()
+		return
+	}
+
 	label := fmt.Sprintf("adb-stream/%d/%s/%s", deviceID, b.serial, service)
 	ch, err := b.openCh(label)
 	if err != nil {
@@ -461,7 +507,7 @@ func (b *deviceBridge) handleOPEN(ctx context.Context, msg *adbMsg) {
 	}
 
 	// 非同步等待遠端就緒，避免阻塞主迴圈
-	go b.setupStream(ctx, ch, serverID, deviceID)
+	go b.setupStream(ctx, ch, serverID, deviceID, nil)
 }
 
 // handleReverseOPEN 攔截 reverse:* 命令，在客戶端本地處理（不轉發到遠端）。
@@ -564,12 +610,15 @@ func (b *deviceBridge) sendOneShot(serverID, deviceID uint32, data []byte) {
 // 就緒信號協定：遠端 handleADBStreamConn 完成 transport + service 命令後，
 // 寫入 1 byte（1=成功, 0=失敗）。成功後資料雙向流動。
 //
+// onSetup 為可選回調（可為 nil）：在就緒信號處理完成後、readFromRemote 啟動前呼叫。
+// 用於 localabstract 連線序列化——通知下一條等待中的連線可以開始建立 DataChannel。
+//
 // 特別注意（pion/datachannel detach 模式的陷阱）：
 // 首次 Read 的 buffer 必須 >= 4 bytes，因為 pion 的 ReadDataChannel 會在
 // 內部消費 DCEP ACK（4 bytes），buffer 太小會得到 io.ErrShortBuffer。
 // 若就緒信號和第一筆資料黏在同一個 SCTP 訊息中，多餘的 bytes 會用
 // prefixedRWC 包裝保留，避免掉包。
-func (b *deviceBridge) setupStream(ctx context.Context, ch io.ReadWriteCloser, serverID, deviceID uint32) {
+func (b *deviceBridge) setupStream(ctx context.Context, ch io.ReadWriteCloser, serverID, deviceID uint32, onSetup func()) {
 	// 等待遠端就緒信號（1 byte: 1=成功, 0=失敗）
 	// 注意：buffer 必須 >= 4 bytes，因為 pion/datachannel detach 模式下
 	// 首次 Read 需要容納 DCEP ACK（4 bytes），ReadDataChannel 內部會消費它後
@@ -607,7 +656,16 @@ func (b *deviceBridge) setupStream(ctx context.Context, ch io.ReadWriteCloser, s
 	case <-ctx.Done():
 		slog.Debug("setupStream: context 取消", "deviceID", deviceID)
 		ch.Close()
+		if onSetup != nil {
+			onSetup()
+		}
 		return
+	}
+
+	// 通知序列化鏈：本連線的就緒階段已完成（無論成功或失敗）。
+	// 這讓下一條等待中的 localabstract 連線可以開始建立 DataChannel。
+	if onSetup != nil {
+		onSetup()
 	}
 
 	if !ready {

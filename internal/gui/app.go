@@ -70,7 +70,9 @@ func newThemeWithCJK() *material.Theme {
 	var fontPaths []string
 	switch runtime.GOOS {
 	case "darwin":
+		// 蘋方（PingFang）為 macOS 預設繁中字體，AppleGothic 作為舊系統 fallback
 		fontPaths = []string{
+			"/System/Library/Fonts/PingFang.ttc",
 			"/System/Library/Fonts/Supplemental/AppleGothic.ttf",
 			"/System/Library/Fonts/AppleGothic.ttf",
 		}
@@ -83,7 +85,11 @@ func newThemeWithCJK() *material.Theme {
 			winDir + `\Fonts\msjh.ttc`,
 		}
 	default: // Linux
+		// 優先使用 Noto Sans CJK TC（繁體中文）OTF，找不到才 fallback 到通用 TTC
 		fontPaths = []string{
+			"/usr/share/fonts/opentype/noto/NotoSansCJKTC-Regular.otf",
+			"/usr/share/fonts/noto-cjk/NotoSansCJKTC-Regular.otf",
+			"/usr/share/fonts/google-noto-cjk-tc/NotoSansCJKTC-Regular.otf",
 			"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
 			"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
 		}
