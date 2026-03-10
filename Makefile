@@ -1,7 +1,7 @@
 .PHONY: build test lint clean all
 
 build:
-	go build -o radb ./cmd/radb
+	go build -trimpath -o radb ./cmd/radb
 
 test:
 	go test ./...
