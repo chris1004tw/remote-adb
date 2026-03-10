@@ -118,7 +118,12 @@ jobs:
           {
             "RT_GROUP_ICON": {
               "#APPICON": {
-                "0000": ["../../../assets/radb.ico"]
+                "0000": [
+                  "../../../assets/radb-256x256.png",
+                  "../../../assets/radb-48x48.png",
+                  "../../../assets/radb-32x32.png",
+                  "../../../assets/radb-16x16.png"
+                ]
               }
             },
             "RT_VERSION": {
