@@ -1,6 +1,6 @@
 module github.com/chris1004tw/remote-adb
 
-go 1.25.0
+go 1.26
 
 require (
 	gioui.org v0.9.0

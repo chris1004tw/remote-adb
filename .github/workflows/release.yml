@@ -120,6 +120,9 @@ jobs:
           SHA="${GITHUB_SHA::8}"
           DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           LDFLAGS="-s -w -X github.com/chris1004tw/remote-adb/internal/buildinfo.Version=${TAG} -X github.com/chris1004tw/remote-adb/internal/buildinfo.Commit=${SHA} -X github.com/chris1004tw/remote-adb/internal/buildinfo.Date=${DATE}"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            LDFLAGS="${LDFLAGS} -H windowsgui"
+          fi
           go build -ldflags="${LDFLAGS}" -o "dist/radb${EXT}" ./cmd/radb
 
       - name: 打包 (tar.gz)

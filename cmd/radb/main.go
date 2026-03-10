@@ -1,3 +1,31 @@
+// Package main 是 radb 的統一入口。
+//
+// radb 支援三種主要運作模式，透過子命令切換：
+//
+//   Signal Server 模式（需要中央伺服器）：
+//     server  — 啟動 WebSocket 信令伺服器
+//     agent   — 啟動遠端 Agent（掛載手機的主機）
+//     daemon  — 啟動本機背景服務（管理 WebRTC 連線與 TCP 代理）
+//     bind    — 綁定遠端設備到本機 port（互動式 TUI 或 CLI flag）
+//     unbind  — 解除設備綁定
+//     list    — 列出已綁定的設備
+//     status  — 查詢 daemon 連線狀態
+//     hosts   — 列出可用的遠端主機與設備
+//
+//   Direct 模式（無需 Server，適用 LAN / VPN）：
+//     direct discover — mDNS 掃描區網 Agent
+//     direct list     — 查詢 Agent 設備列表
+//     direct connect  — TCP 直連 ADB 轉發
+//
+//   Pair 模式（手動 SDP 交換，跨 NAT 打洞）：
+//     pair offer  — 生成 WebRTC Offer token（Client 端）
+//     pair answer — 處理 Offer 並回傳 Answer（Agent 端）
+//
+//   其他：
+//     update  — 從 GitHub Releases 下載最新版本並替換自身
+//     version — 顯示版本資訊
+//
+// 無引數執行時進入 GUI 模式（Gio 圖形介面）。
 package main
 
 import (
@@ -14,11 +42,12 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "github.com/charmbracelet/bubbletea" // TUI 互動式選單框架
 
 	"github.com/chris1004tw/remote-adb/internal/adb"
 	"github.com/chris1004tw/remote-adb/internal/agent"
@@ -28,7 +57,7 @@ import (
 	"github.com/chris1004tw/remote-adb/internal/directsrv"
 	"github.com/chris1004tw/remote-adb/internal/gui"
 	"github.com/chris1004tw/remote-adb/internal/proxy"
-	signalpkg "github.com/chris1004tw/remote-adb/internal/signal"
+	signalpkg "github.com/chris1004tw/remote-adb/internal/signal" // 別名避免與 os/signal 衝突
 	"github.com/chris1004tw/remote-adb/internal/updater"
 	"github.com/chris1004tw/remote-adb/internal/webrtc"
 )
@@ -40,6 +69,9 @@ func main() {
 	}
 
 	if len(os.Args) < 2 {
+		if f := setupGUILog(); f != nil {
+			defer f.Close()
+		}
 		gui.Run() // 無引數 → 啟動 GUI
 		return
 	}
@@ -98,6 +130,9 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  version   顯示版本\n")
 }
 
+// cmdServer 啟動 WebSocket 信令伺服器。
+// 提供 /ws 端點供 Agent 和 Client 連線，透過 PSK Token 認證。
+// 監聽 SIGINT/SIGTERM 收到信號後優雅關閉（10 秒超時）。
 func cmdServer(args []string) {
 	fs := flag.NewFlagSet("server", flag.ExitOnError)
 	port := fs.Int("port", envInt("RADB_SERVER_PORT", 8080), "HTTP/WebSocket 監聽埠")
@@ -144,6 +179,11 @@ func cmdServer(args []string) {
 	slog.Info("Server 已關閉")
 }
 
+// cmdAgent 啟動遠端代理端。
+// 支援同時啟用 Signal Server 模式和 Direct 模式：
+//   - 有 --token → 連線到 Signal Server，接收 Client 的設備綁定請求
+//   - 有 --direct-port → 開啟 TCP 直連服務 + mDNS 廣播
+//   - 兩者皆有 → 混合模式，共享同一個 DeviceTable
 func cmdAgent(args []string) {
 	fs := flag.NewFlagSet("agent", flag.ExitOnError)
 	serverURL := fs.String("server", envStrFallback("RADB_SERVER_URL", "RADB_SIGNAL_URL", "ws://localhost:8080"), "Server WebSocket 位址")
@@ -226,6 +266,8 @@ func localHostname() string {
 	return h
 }
 
+// cmdUpdate 檢查 GitHub Releases 是否有新版本，並自動下載替換。
+// --check 僅檢查不更新。更新流程：下載 → SHA256 校驗 → 解壓 → 替換 binary。
 func cmdUpdate(args []string) {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
 	checkOnly := fs.Bool("check", false, "只檢查是否有新版本，不執行更新")
@@ -267,6 +309,10 @@ func cmdUpdate(args []string) {
 	}
 }
 
+// cmdDaemon 啟動本機背景服務。
+// Daemon 負責：連線到 Signal Server → 維護可用主機列表 → 透過 IPC 接受 CLI 指令（bind/unbind/list/status/hosts）
+// → 建立 WebRTC P2P 連線 → 啟動 TCP 代理供本機 ADB 使用。
+// IPC 在 Windows 上使用 TCP 127.0.0.1:15554，在 Unix 上使用 ~/.radb/daemon.sock。
 func cmdDaemon(args []string) {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
 	serverURL := fs.String("server", envStrFallback("RADB_SERVER_URL", "RADB_SIGNAL_URL", "ws://localhost:8080"), "Server 位址")
@@ -327,7 +373,7 @@ func cmdBind(args []string) {
 	serial := fs.String("serial", "", "設備序號")
 	fs.Parse(args)
 
-	// 無 flag 時啟動互動式 TUI
+	// 無指定 host/serial 時啟動互動式 TUI（bubbletea），引導使用者逐步選擇主機→設備
 	if *hostID == "" || *serial == "" {
 		m := cli.NewModel(ipcSender)
 		p := tea.NewProgram(m)
@@ -479,7 +525,10 @@ func sendIPCCommand(cmd daemon.IPCCommand) daemon.IPCResponse {
 }
 
 // --- Direct 模式指令 ---
+// Direct 模式不需要 Signal Server，適用於 LAN / VPN 可直接到達的場景。
+// Agent 端開啟 TCP 服務，Client 端透過 TCP 直接連線並進行 ADB 轉發。
 
+// cmdDirect 分派 direct 子命令：discover（mDNS 掃描）、list（查詢設備）、connect（TCP 直連轉發）。
 func cmdDirect(args []string) {
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "用法: radb direct <discover|list|connect> [選項]")
@@ -640,8 +689,12 @@ func cmdDirectConnect(args []string) {
 }
 
 // --- Pair 模式指令（手動 SDP 交換） ---
+//
+// Pair 模式不需要任何 Server，透過手動複製貼上 SDP token 完成 WebRTC 打洞。
+// 流程：Client 生成 Offer token → 人工傳遞給 Agent → Agent 回傳 Answer token → 連線建立。
+// 與 Direct 模式不同，Pair 模式能跨 NAT（藉由 STUN/TURN ICE 穿透）。
 
-// PairOffer 是 Client 生成的 offer token 結構。
+// PairOffer 是 Client 生成的 offer token 結構，包含 SDP、目標設備序號及 session ID。
 type PairOffer struct {
 	SDP       string `json:"sdp"`
 	Serial    string `json:"serial"`
@@ -856,6 +909,10 @@ func cmdPairAnswer(args []string) {
 	fmt.Fprintln(os.Stderr, "\n已停止")
 }
 
+// --- 環境變數讀取輔助函式 ---
+// 所有 flag 的預設值皆可透過環境變數覆蓋（如 RADB_TOKEN、RADB_SERVER_URL 等）。
+
+// envStr 從環境變數讀取字串，不存在時回傳 fallback。
 func envStr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -863,6 +920,8 @@ func envStr(key, fallback string) string {
 	return fallback
 }
 
+// envStrFallback 先嘗試 key，再嘗試 fallbackKey，最後回傳 fallback。
+// 用於支援環境變數改名的向後相容（例如 RADB_SERVER_URL 取代舊的 RADB_SIGNAL_URL）。
 func envStrFallback(key, fallbackKey, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -871,6 +930,33 @@ func envStrFallback(key, fallbackKey, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// setupGUILog 在 GUI 模式下設置 crash log。
+// 將 slog 和 panic 輸出重導到執行檔同目錄的 radb.log。
+func setupGUILog() *os.File {
+	exePath, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	logPath := filepath.Join(filepath.Dir(exePath), "radb.log")
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return nil
+	}
+
+	// slog 寫入 log 檔
+	slog.SetDefault(slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	// Go runtime panic 輸出寫入 log 檔
+	if err := debug.SetCrashOutput(f, debug.CrashOptions{}); err != nil {
+		slog.Warn("SetCrashOutput 失敗", "error", err)
+	}
+
+	// 讓 fmt.Fprintf(os.Stderr, ...) 也寫入 log 檔
+	os.Stderr = f
+
+	return f
 }
 
 func envInt(key string, fallback int) int {
