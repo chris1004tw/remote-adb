@@ -756,7 +756,7 @@ func TestWriteToRemoteChunked(t *testing.T) {
 		deviceID: 2,
 		ch:       ch,
 		ready:    make(chan struct{}, 1),
-		writeCh:  make(chan []byte, 1),
+		writeCh:  make(chan []byte), // unbuffered：send 完成 = goroutine 已收到
 		doneCh:   make(chan struct{}),
 	}
 
@@ -766,6 +766,8 @@ func TestWriteToRemoteChunked(t *testing.T) {
 		close(done)
 	}()
 
+	// unbuffered send：回傳時保證 writeToRemote 已從 writeCh 取出資料，
+	// 避免 close(doneCh) 與 writeCh 在 select 中競態。
 	stream.writeCh <- bytes.Repeat([]byte("y"), 40*1024)
 	close(stream.doneCh)
 

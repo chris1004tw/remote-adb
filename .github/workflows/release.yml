@@ -133,6 +133,10 @@ jobs:
         if: matrix.goos == 'windows'
         run: cd dist && zip "../${{ env.ARCHIVE_NAME }}.zip" *
 
+      - name: 複製 Windows 獨立執行檔
+        if: matrix.goos == 'windows'
+        run: cp "dist/radb.exe" "${{ env.ARCHIVE_NAME }}.exe"
+
       - name: 產生 checksum
         run: sha256sum radb-*.* > checksums-${{ matrix.goos }}-${{ matrix.goarch }}.txt
 
@@ -150,6 +154,78 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 產生版本說明
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          PREV_TAG=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || echo "")
+
+          if [ -z "$PREV_TAG" ]; then
+            RANGE="${TAG}"
+          else
+            RANGE="${PREV_TAG}..${TAG}"
+          fi
+
+          # 依 commit type 分類，轉為口語化 release notes
+          declare -A SECTIONS
+          SECTIONS[feat]=""
+          SECTIONS[fix]=""
+          SECTIONS[refactor]=""
+          SECTIONS[docs]=""
+          SECTIONS[ci]=""
+          SECTIONS[other]=""
+
+          while IFS= read -r msg; do
+            # 取出 type 和描述（格式：type: 描述）
+            if [[ "$msg" =~ ^([a-z]+):\ (.+)$ ]]; then
+              TYPE="${BASH_REMATCH[1]}"
+              DESC="${BASH_REMATCH[2]}"
+            else
+              TYPE="other"
+              DESC="$msg"
+            fi
+
+            case "$TYPE" in
+              feat)     SECTIONS[feat]+="- ${DESC}"$'\n' ;;
+              fix)      SECTIONS[fix]+="- ${DESC}"$'\n' ;;
+              refactor) SECTIONS[refactor]+="- ${DESC}"$'\n' ;;
+              docs)     SECTIONS[docs]+="- ${DESC}"$'\n' ;;
+              ci|build) SECTIONS[ci]+="- ${DESC}"$'\n' ;;
+              *)        SECTIONS[other]+="- ${DESC}"$'\n' ;;
+            esac
+          done < <(git log --format="%s" "$RANGE")
+
+          # 輸出分類後的 release notes
+          {
+            if [ -n "${SECTIONS[feat]}" ]; then
+              echo "### 🚀 新功能"
+              echo "${SECTIONS[feat]}"
+            fi
+            if [ -n "${SECTIONS[fix]}" ]; then
+              echo "### 🐛 修復"
+              echo "${SECTIONS[fix]}"
+            fi
+            if [ -n "${SECTIONS[refactor]}" ]; then
+              echo "### 🔧 改進"
+              echo "${SECTIONS[refactor]}"
+            fi
+            if [ -n "${SECTIONS[docs]}" ]; then
+              echo "### 📝 文件"
+              echo "${SECTIONS[docs]}"
+            fi
+            if [ -n "${SECTIONS[ci]}" ]; then
+              echo "### ⚙️ CI / 建置"
+              echo "${SECTIONS[ci]}"
+            fi
+            if [ -n "${SECTIONS[other]}" ]; then
+              echo "### 其他"
+              echo "${SECTIONS[other]}"
+            fi
+          } > release_notes.md
+
       - name: 下載所有 artifact
         uses: actions/download-artifact@v4
         with:
@@ -162,5 +238,6 @@ jobs:
       - name: 建立 Release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: release_notes.md
           generate_release_notes: true
           files: artifacts/*
