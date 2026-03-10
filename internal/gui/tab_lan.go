@@ -43,6 +43,7 @@ import (
 // 被控端使用 srvMu 保護狀態，主控端使用 cliMu 保護狀態。
 type lanTab struct {
 	window *app.Window
+	config *AppConfig // 共用設定（Port 等），來自設定面板
 
 	// 子模式切換
 	serverModeBtn  widget.Clickable
@@ -50,9 +51,7 @@ type lanTab struct {
 	isServerMode   bool
 
 	// --- 開啟伺服器子模式（原 agentTab）---
-	srvPortEditor    widget.Editor
 	srvTokenEditor   widget.Editor
-	srvADBPortEditor widget.Editor
 	srvStartBtn      widget.Clickable
 
 	srvMu      sync.Mutex
@@ -65,7 +64,6 @@ type lanTab struct {
 	scanBtn        widget.Clickable
 	addrEditor     widget.Editor
 	cliTokenEditor widget.Editor
-	portEditor     widget.Editor
 	connectBtn     widget.Clickable
 
 	cliMu     sync.Mutex
@@ -90,23 +88,18 @@ type lanTab struct {
 
 // newLANTab 建立並初始化 lanTab，設定各輸入框的預設值。
 // 預設顯示主控端子模式（isServerMode=false）。
-func newLANTab(w *app.Window) *lanTab {
+func newLANTab(w *app.Window, cfg *AppConfig) *lanTab {
 	t := &lanTab{
 		window:    w,
+		config:    cfg,
 		srvStatus: "已停止",
 		cliStatus: "未連線",
 	}
 	// 伺服器子模式預設值
-	t.srvPortEditor.SingleLine = true
-	t.srvPortEditor.SetText("15555")
 	t.srvTokenEditor.SingleLine = true
-	t.srvADBPortEditor.SingleLine = true
-	t.srvADBPortEditor.SetText("5037")
 	// 連線子模式預設值
 	t.addrEditor.SingleLine = true
 	t.cliTokenEditor.SingleLine = true
-	t.portEditor.SingleLine = true
-	t.portEditor.SetText("5555")
 	return t
 }
 
@@ -181,22 +174,10 @@ func (t *lanTab) layoutServer(gtx layout.Context, th *material.Theme) []layout.F
 
 	var children []layout.FlexChild
 
-	// Direct Port
-	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-		return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return labeledEditor(gtx, th, "Direct Port:", &t.srvPortEditor, "15555")
-		})
-	}))
 	// Token
 	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-		return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return labeledEditor(gtx, th, "Token:", &t.srvTokenEditor, "（可選）")
-		})
-	}))
-	// ADB Port
-	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 		return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return labeledEditor(gtx, th, "ADB Port:", &t.srvADBPortEditor, "5037")
+			return labeledEditor(gtx, th, "Token:", &t.srvTokenEditor, "（可選）")
 		})
 	}))
 	// 啟動/停止按鈕
@@ -254,9 +235,7 @@ func (t *lanTab) layoutServer(gtx layout.Context, th *material.Theme) []layout.F
 //  4. 啟動 Agent.RunDirectOnly（僅追蹤設備，不進行 WebRTC 配對）
 //  5. 啟動 pollDevices 定期更新 UI 設備列表
 func (t *lanTab) startServer() {
-	portText := t.srvPortEditor.Text()
 	tokenText := t.srvTokenEditor.Text()
-	adbPortText := t.srvADBPortEditor.Text()
 
 	// 沒設 token 時自動生成臨時 token
 	if tokenText == "" {
@@ -264,8 +243,8 @@ func (t *lanTab) startServer() {
 		t.srvTokenEditor.SetText(tokenText)
 	}
 
-	directPort := parsePort(portText, 15555)
-	adbPort := parsePort(adbPortText, 5037)
+	directPort := t.config.DirectPort
+	adbPort := t.config.ADBPort
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -462,13 +441,6 @@ func (t *lanTab) layoutConnect(gtx layout.Context, th *material.Theme) []layout.
 			return labeledEditor(gtx, th, "Token:", &t.cliTokenEditor, "（可選）")
 		})
 	}))
-	// ADB Port
-	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-		return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return labeledEditor(gtx, th, "ADB Port:", &t.portEditor, "5555")
-		})
-	}))
-
 	// 連線/斷線按鈕
 	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 		label := "連線"
@@ -550,7 +522,6 @@ func (t *lanTab) scan() {
 func (t *lanTab) connect() {
 	addr := t.addrEditor.Text()
 	token := t.cliTokenEditor.Text()
-	portText := t.portEditor.Text()
 
 	if addr == "" {
 		t.cliMu.Lock()
@@ -560,7 +531,7 @@ func (t *lanTab) connect() {
 		return
 	}
 
-	proxyPort := parsePort(portText, 5555)
+	proxyPort := t.config.ProxyPort
 
 	t.cliMu.Lock()
 	t.cliStatus = "查詢設備中..."

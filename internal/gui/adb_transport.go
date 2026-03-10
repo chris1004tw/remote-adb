@@ -46,8 +46,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/chris1004tw/remote-adb/internal/webrtc"
 )
 
 // openChannelFunc 是開啟命名 channel 的函式類型。
@@ -325,23 +323,6 @@ func (b *deviceBridge) cleanupStream(stream *dStream) {
 	} else {
 		slog.Debug("transport → CLSE", "deviceID", stream.deviceID, "serverID", stream.serverID)
 	}
-}
-
-// handleDeviceTransport 是 pairTab 的包裝：從 cliDevices 取得第一個可用設備的
-// serial 和 features，再委託 startDeviceTransport 處理 transport 協定。
-func (t *pairTab) handleDeviceTransport(ctx context.Context, conn net.Conn, pm *webrtc.PeerManager, firstBytes []byte) {
-	t.mu.Lock()
-	var serial, features string
-	for _, d := range t.cliDevices {
-		if d.State == "device" {
-			serial = d.Serial
-			features = d.Features
-			break
-		}
-	}
-	t.mu.Unlock()
-
-	startDeviceTransport(ctx, conn, firstBytes, pm.OpenChannel, serial, features, t)
 }
 
 // startDeviceTransport 處理完整的 ADB device transport 連線（來自 `adb connect`）。

@@ -596,6 +596,7 @@ func decodeToken(token string) (compactSDP, error) {
 // 透過 control channel 推送設備清單。
 type pairTab struct {
 	window *app.Window
+	config *AppConfig // 共用設定（Port、STUN 等），來自設定面板
 
 	// 角色選擇
 	clientBtn widget.Clickable
@@ -603,16 +604,12 @@ type pairTab struct {
 	isServer  bool // false=客戶端, true=伺服器
 
 	// --- 客戶端模式 ---
-	cliProxyPortEditor widget.Editor // ADB Proxy Port
-	cliStunEditor      widget.Editor
 	cliGenOfferBtn     widget.Clickable
 	cliOfferOutEditor  widget.Editor // 顯示邀請碼（唯讀）
 	cliAnswerInEditor  widget.Editor // 貼入回應碼
 	cliApplyBtn        widget.Clickable
 
 	// --- 被控模式 ---
-	srvAdbPortEditor   widget.Editor
-	srvStunEditor      widget.Editor
 	srvOfferInEditor   widget.Editor // 貼入邀請碼
 	srvAnswerOutEditor widget.Editor // 顯示回應碼（唯讀）
 	srvProcessedOffer  string        // 上次已處理的 offer，用於自動偵測變更
@@ -635,7 +632,8 @@ type pairTab struct {
 	// 客戶端模式
 	proxyPort  int          // ADB server proxy 實際 port
 	proxyLn    net.Listener // proxy TCP listener
-	cliDevices []ctrlDevice // 遠端設備清單（control channel 推送）
+	cliDevices    []ctrlDevice    // 遠端設備清單（control channel 推送）
+	deviceReadyCh chan struct{}   // CNXN 等待信號：有設備時 close，無設備時重建
 
 	// Forward 攔截（客戶端模式）
 	// scrcpy 等工具會執行 `adb forward tcp:PORT localabstract:scrcpy`，
@@ -663,23 +661,16 @@ type pairTab struct {
 
 // newPairTab 建立並初始化 pairTab，設定各輸入框的預設值。
 // 預設顯示主控模式（isServer=false）。
-func newPairTab(w *app.Window) *pairTab {
+func newPairTab(w *app.Window, cfg *AppConfig) *pairTab {
 	t := &pairTab{
 		window: w,
+		config: cfg,
 		status: "未開始",
 	}
 	// 客戶端模式
-	t.cliProxyPortEditor.SingleLine = true
-	t.cliProxyPortEditor.SetText("5555")
-	t.cliStunEditor.SingleLine = true
-	t.cliStunEditor.SetText("stun:stun.l.google.com:19302")
 	t.cliOfferOutEditor.ReadOnly = true
 
 	// 伺服器模式
-	t.srvAdbPortEditor.SingleLine = true
-	t.srvAdbPortEditor.SetText("5037")
-	t.srvStunEditor.SingleLine = true
-	t.srvStunEditor.SetText("stun:stun.l.google.com:19302")
 	t.srvAnswerOutEditor.ReadOnly = true
 
 	t.list.Axis = layout.Vertical
@@ -879,18 +870,6 @@ func (t *pairTab) layoutClientWidgets(gtx layout.Context, th *material.Theme) []
 	}
 
 	widgets := []layout.Widget{
-		// STUN
-		func(gtx layout.Context) layout.Dimensions {
-			return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return labeledEditor(gtx, th, "STUN:", &t.cliStunEditor, "stun:stun.l.google.com:19302")
-			})
-		},
-		// ADB Port
-		func(gtx layout.Context) layout.Dimensions {
-			return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return labeledEditor(gtx, th, "ADB Port:", &t.cliProxyPortEditor, "5555")
-			})
-		},
 		// 產生邀請碼按鈕
 		func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
@@ -991,12 +970,6 @@ func (t *pairTab) layoutServerWidgets(gtx layout.Context, th *material.Theme) []
 
 	var widgets []layout.Widget
 
-	// STUN
-	widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
-		return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return labeledEditor(gtx, th, "STUN:", &t.srvStunEditor, "stun:stun.l.google.com:19302")
-		})
-	})
 	// 邀請碼輸入
 	widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
 		return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
@@ -1051,7 +1024,7 @@ func (t *pairTab) layoutServerWidgets(gtx layout.Context, th *material.Theme) []
 // 流程：建立 PeerConnection → 建立 control DataChannel → 建立 Offer →
 // SDP 壓縮編碼 → 顯示在 UI 並自動複製到剪貼簿。
 func (t *pairTab) clientGenerateOffer() {
-	stunURLs := t.cliStunEditor.Text()
+	stunURLs := t.config.STUNServer
 
 	t.mu.Lock()
 	t.status = "正在產生邀請碼..."
@@ -1117,7 +1090,7 @@ func (t *pairTab) clientGenerateOffer() {
 // 啟動 RTT 輪詢 → 啟動 controlReadLoop（接收設備清單）。
 func (t *pairTab) clientApplyAnswer() {
 	answerToken := t.cliAnswerInEditor.Text()
-	proxyPort := parsePort(t.cliProxyPortEditor.Text(), 5555)
+	proxyPort := t.config.ProxyPort
 
 	t.mu.Lock()
 	pm := t.pm
@@ -1195,6 +1168,7 @@ func (t *pairTab) clientApplyAnswer() {
 		t.cancel = cancel
 		t.proxyPort = actualPort
 		t.proxyLn = ln
+		t.deviceReadyCh = make(chan struct{}) // CNXN 等待信號：控制通道收到設備時 close
 		t.status = fmt.Sprintf("P2P 已連線，ADB Proxy: 127.0.0.1:%d", actualPort)
 		t.mu.Unlock()
 		t.window.Invalidate()
@@ -1279,6 +1253,26 @@ func (t *pairTab) controlReadLoop(ctx context.Context, controlCh io.ReadWriteClo
 				count++
 			}
 		}
+		// 更新設備就緒信號：有設備時 close（通知等待中的 CNXN），
+		// 設備消失時重建 channel（讓後續 CNXN 繼續等待）。
+		if t.deviceReadyCh != nil {
+			if hasDevice {
+				select {
+				case <-t.deviceReadyCh:
+					// 已 close，不需重複操作
+				default:
+					close(t.deviceReadyCh)
+				}
+			} else {
+				select {
+				case <-t.deviceReadyCh:
+					// 之前有設備但現在消失，重建 channel
+					t.deviceReadyCh = make(chan struct{})
+				default:
+					// 尚未有設備，channel 仍開啟，繼續等待
+				}
+			}
+		}
 		shouldConnect := hasDevice && !t.autoConnected && t.proxyPort > 0
 		if shouldConnect {
 			t.autoConnected = true
@@ -1312,8 +1306,8 @@ func (t *pairTab) controlReadLoop(ctx context.Context, controlCh io.ReadWriteClo
 // 注意：不在此時設定 connected=true，而是等 control DataChannel 真正開啟後才切換。
 func (t *pairTab) serverProcessOffer() {
 	offerToken := t.srvOfferInEditor.Text()
-	adbPort := parsePort(t.srvAdbPortEditor.Text(), 5037)
-	stunURLs := t.srvStunEditor.Text()
+	adbPort := t.config.ADBPort
+	stunURLs := t.config.STUNServer
 
 	if offerToken == "" {
 		t.mu.Lock()
@@ -1672,6 +1666,15 @@ func (t *pairTab) cleanup() {
 	t.autoConnected = false
 	t.cliDevices = nil
 	t.srvDevices = nil
+	// 關閉 deviceReadyCh 以解除等待中的 CNXN handler
+	if t.deviceReadyCh != nil {
+		select {
+		case <-t.deviceReadyCh:
+		default:
+			close(t.deviceReadyCh)
+		}
+		t.deviceReadyCh = nil
+	}
 	t.mu.Unlock()
 
 	// 清理 adb connect

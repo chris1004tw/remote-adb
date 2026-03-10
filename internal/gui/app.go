@@ -40,6 +40,7 @@ import (
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 
+	"github.com/chris1004tw/remote-adb/internal/gui/icons"
 	"github.com/chris1004tw/remote-adb/internal/webrtc"
 )
 
@@ -132,9 +133,12 @@ func eventLoop(w *app.Window) error {
 	theme := newThemeWithCJK()
 	var ops op.Ops
 
-	// 建立三個分頁
-	pt := newPairTab(w)
-	lt := newLANTab(w)
+	// 建立設定面板（載入持久化設定）
+	sp := newSettingsPanel(w)
+
+	// 建立三個分頁，傳入共用設定
+	pt := newPairTab(w, sp.config)
+	lt := newLANTab(w, sp.config)
 	st := newSignalTab(w)
 
 	tabs := &tabBar{
@@ -144,6 +148,9 @@ func eventLoop(w *app.Window) error {
 			{title: "Relay 伺服器", layoutFn: st.layout},
 		},
 	}
+
+	// 齒輪按鈕（右下角）
+	var gearBtn widget.Clickable
 
 	for {
 		switch e := w.Event().(type) {
@@ -159,7 +166,45 @@ func eventLoop(w *app.Window) error {
 			return e.Err
 		case app.FrameEvent:
 			gtx := app.NewContext(&ops, e)
-			tabs.layout(gtx, theme)
+
+			// 處理齒輪按鈕點擊
+			for gearBtn.Clicked(gtx) {
+				sp.open()
+			}
+
+			// 使用 Stack 疊加：底層=分頁內容，上層=齒輪按鈕+設定面板
+			layout.Stack{}.Layout(gtx,
+				// 底層：分頁內容
+				layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+					return tabs.layout(gtx, theme)
+				}),
+				// 齒輪按鈕（右下角，設定面板未開啟時顯示）
+				layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+					if sp.visible {
+						return layout.Dimensions{}
+					}
+					// Stacked 子元素的 Min=0，需設為 Max 才能讓 SE 定位正確
+					gtx.Constraints.Min = gtx.Constraints.Max
+					return layout.SE.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return layout.Inset{
+							Right:  unit.Dp(12),
+							Bottom: unit.Dp(12),
+						}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							btn := material.IconButton(theme, &gearBtn, icons.Gear, "設定")
+							btn.Size = unit.Dp(24)
+							btn.Background = colorTabInactive
+							btn.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+							btn.Inset = layout.UniformInset(unit.Dp(8))
+							return btn.Layout(gtx)
+						})
+					})
+				}),
+				// 設定面板 overlay
+				layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+					return sp.layout(gtx, theme)
+				}),
+			)
+
 			e.Frame(&ops)
 		}
 	}
@@ -279,6 +324,9 @@ func tokenBox(gtx layout.Context, th *material.Theme, label string, editor *widg
 			if gtx.Constraints.Max.Y > maxH {
 				gtx.Constraints.Max.Y = maxH
 			}
+			// 設定最小高度 = 最大高度，確保空白時文字框仍有固定大小，
+			// 不會因為沒有內容而縮成一行高度。
+			gtx.Constraints.Min.Y = gtx.Constraints.Max.Y
 			// 邊框背景
 			return layout.Background{}.Layout(gtx,
 				func(gtx layout.Context) layout.Dimensions {

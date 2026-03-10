@@ -1,7 +1,9 @@
 package gui
 
 import (
+	"context"
 	"testing"
+	"time"
 )
 
 func TestResolveForwardSerial(t *testing.T) {
@@ -185,6 +187,115 @@ func TestIsListForward(t *testing.T) {
 		if got := isListForward(tt.cmd); got != tt.want {
 			t.Errorf("isListForward(%q): got %v, want %v", tt.cmd, got, tt.want)
 		}
+	}
+}
+
+// TestGetDeviceOrWait_ImmediateReturn 測試 getDeviceOrWait 在已有設備時立即回傳。
+func TestGetDeviceOrWait_ImmediateReturn(t *testing.T) {
+	tab := &pairTab{
+		cliDevices: []ctrlDevice{
+			{Serial: "R58X40L07QP", State: "device", Features: "shell_v2,cmd"},
+		},
+	}
+	serial, features := tab.getDeviceOrWait(context.Background(), time.Second)
+	if serial != "R58X40L07QP" {
+		t.Errorf("serial: got %q, want %q", serial, "R58X40L07QP")
+	}
+	if features != "shell_v2,cmd" {
+		t.Errorf("features: got %q, want %q", features, "shell_v2,cmd")
+	}
+}
+
+// TestGetDeviceOrWait_WaitsForDevice 測試 getDeviceOrWait 在無設備時等待 deviceReadyCh，
+// 模擬 PeerConnection 尚在 connecting 時 CNXN 到達的場景。
+func TestGetDeviceOrWait_WaitsForDevice(t *testing.T) {
+	readyCh := make(chan struct{})
+	tab := &pairTab{
+		deviceReadyCh: readyCh,
+	}
+
+	done := make(chan struct{})
+	var serial, features string
+	go func() {
+		serial, features = tab.getDeviceOrWait(context.Background(), 5*time.Second)
+		close(done)
+	}()
+
+	// 短暫延遲後模擬 control channel 推送設備清單
+	time.Sleep(100 * time.Millisecond)
+	tab.mu.Lock()
+	tab.cliDevices = []ctrlDevice{
+		{Serial: "R58X40L07QP", State: "device", Features: "shell_v2"},
+	}
+	close(readyCh)
+	tab.mu.Unlock()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("getDeviceOrWait 應在 deviceReadyCh 信號後回傳，但逾時")
+	}
+
+	if serial != "R58X40L07QP" {
+		t.Errorf("serial: got %q, want %q", serial, "R58X40L07QP")
+	}
+	if features != "shell_v2" {
+		t.Errorf("features: got %q, want %q", features, "shell_v2")
+	}
+}
+
+// TestGetDeviceOrWait_Timeout 測試 getDeviceOrWait 在逾時後回傳空值。
+func TestGetDeviceOrWait_Timeout(t *testing.T) {
+	readyCh := make(chan struct{})
+	tab := &pairTab{
+		deviceReadyCh: readyCh,
+	}
+
+	start := time.Now()
+	serial, _ := tab.getDeviceOrWait(context.Background(), 200*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if serial != "" {
+		t.Errorf("逾時後 serial 應為空，got %q", serial)
+	}
+	if elapsed < 150*time.Millisecond {
+		t.Errorf("回傳過快，僅 %v", elapsed)
+	}
+}
+
+// TestGetDeviceOrWait_ContextCancel 測試 context 取消時 getDeviceOrWait 立即回傳。
+func TestGetDeviceOrWait_ContextCancel(t *testing.T) {
+	readyCh := make(chan struct{})
+	tab := &pairTab{
+		deviceReadyCh: readyCh,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		tab.getDeviceOrWait(ctx, 30*time.Second)
+		close(done)
+	}()
+
+	// 取消 context
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("context 取消後 getDeviceOrWait 應立即回傳")
+	}
+}
+
+// TestGetDeviceOrWait_NilReadyCh 測試 deviceReadyCh 為 nil 時（非客戶端模式）直接回傳。
+func TestGetDeviceOrWait_NilReadyCh(t *testing.T) {
+	tab := &pairTab{} // deviceReadyCh = nil, cliDevices = nil
+
+	serial, _ := tab.getDeviceOrWait(context.Background(), time.Second)
+	if serial != "" {
+		t.Errorf("deviceReadyCh 為 nil 時應直接回傳空值，got %q", serial)
 	}
 }
 

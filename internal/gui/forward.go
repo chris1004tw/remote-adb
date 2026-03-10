@@ -37,6 +37,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
 // fwdListener 追蹤一個 adb forward 的本機 TCP listener。
@@ -214,6 +215,49 @@ func parseLocalSpec(spec string) (int, error) {
 // 以下函式在客戶端（主控端）的 ADB proxy listener 上運作，
 // 攔截 forward 相關命令並在本機建立 listener，非 forward 命令則透過 DataChannel 轉發。
 
+// getDeviceOrWait 取得第一個可用遠端設備的 serial 和 features。
+// 若目前無設備（PeerConnection 仍在建立中、或遠端尚未插入手機），
+// 等待 deviceReadyCh 信號（最多 timeout）。這避免了 CNXN 到達時
+// 因設備清單尚未就緒而立即拒絕，導致 ADB server 每 250ms 重試的忙碌迴圈。
+//
+// 回傳值：serial 為空字串表示逾時或 context 取消，呼叫方應拒絕 CNXN。
+func (t *pairTab) getDeviceOrWait(ctx context.Context, timeout time.Duration) (serial, features string) {
+	t.mu.Lock()
+	for _, d := range t.cliDevices {
+		if d.State == "device" {
+			t.mu.Unlock()
+			return d.Serial, d.Features
+		}
+	}
+	readyCh := t.deviceReadyCh
+	t.mu.Unlock()
+
+	// deviceReadyCh 為 nil 表示不在客戶端模式（或已清理），直接回傳
+	if readyCh == nil {
+		return "", ""
+	}
+
+	slog.Debug("CNXN 等待遠端設備就緒")
+	select {
+	case <-readyCh:
+	case <-ctx.Done():
+		return "", ""
+	case <-time.After(timeout):
+		slog.Debug("等待遠端設備逾時，拒絕 CNXN")
+		return "", ""
+	}
+
+	// deviceReadyCh 已關閉（設備就緒），重新讀取設備清單
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, d := range t.cliDevices {
+		if d.State == "device" {
+			return d.Serial, d.Features
+		}
+	}
+	return "", ""
+}
+
 // handleProxyConn 處理單一 proxy TCP 連線。
 // 協定識別：先讀取前 4 bytes 判斷是 device transport 還是 server 協定。
 //   - "CNXN"（二進位 0x43, 0x4e, 0x58, 0x4e）→ ADB device transport（`adb connect` 觸發）
@@ -234,17 +278,7 @@ func (t *pairTab) handleProxyConn(ctx context.Context, conn net.Conn, openCh ope
 
 	// ADB device transport（來自 `adb connect`）
 	if string(peek[:]) == "CNXN" {
-		// 從 cliDevices 取得設備資訊
-		t.mu.Lock()
-		var serial, features string
-		for _, d := range t.cliDevices {
-			if d.State == "device" {
-				serial = d.Serial
-				features = d.Features
-				break
-			}
-		}
-		t.mu.Unlock()
+		serial, features := t.getDeviceOrWait(ctx, 30*time.Second)
 		startDeviceTransport(ctx, conn, peek[:], openCh, serial, features, t)
 		return
 	}
