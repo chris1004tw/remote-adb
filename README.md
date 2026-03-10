@@ -181,6 +181,7 @@ radb direct connect 192.168.1.100:15555 --serial pixel-7 --token mysecret
 - **區網直連**：開啟 Agent 伺服器或掃描 LAN 自動發現，一鍵轉發全部設備
 - **Relay 伺服器**：透過中央 Signal Server 連線
 - **設定面板**（右下角齒輪）：集中管理 ADB Port、Proxy Port、Direct Port、STUN Server，支援手動檢查更新。設定以 TOML 格式持久化於 `%APPDATA%/radb/radb.toml`（Windows）或 `~/.config/radb/radb.toml`（Linux/macOS）
+- **啟動自動檢查更新**：程式啟動後背景檢查新版本，有更新時在主畫面底部顯示通知橫幅，使用者可選擇「立即更新」或「稍後再說」
 - GUI 內建 ADB bridge 針對 DataChannel 採用 **16KB 分塊傳輸**，提升 `scrcpy` 視訊與大流量穩定性
 - GUI 內建 forward 攔截會將本機 `adb connect` 序號（如 `127.0.0.1:15037`）映射為遠端真實設備序號，避免 `scrcpy` forward 失配
 - ADB transport 的 host→device `WRTE` 路徑同樣採 **16KB 分塊寫入**，避免 `sync`/`scrcpy` 啟動階段的大封包失敗
