@@ -49,7 +49,7 @@ chmod +x "${APP_DIR}/Contents/MacOS/radb"
 # --- 4. 產生圖示 ---
 # 優先使用預建 .icns，否則從 SVG 自動轉換
 ICNS_PATH="${PROJECT_ROOT}/macos/radb.icns"
-SVG_PATH="${PROJECT_ROOT}/macos/RADB.icon/Assets/RADB Icon.svg"
+SVG_PATH="${PROJECT_ROOT}/assets/RADB Icon.svg"
 
 if [ -f "${ICNS_PATH}" ]; then
     echo "使用預建圖示：${ICNS_PATH}"
