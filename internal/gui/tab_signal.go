@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image/color"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -52,8 +53,10 @@ const (
 
 // signalTab 是「Relay 伺服器」分頁的完整狀態，包含三個子模式的所有 UI 元件與背景邏輯。
 // 每個子模式使用獨立的 Mutex（srvMu/agentMu/clientMu）保護並行存取安全。
+// STUN/TURN 設定來自全域 AppConfig（設定面板管理），不在各子模式中重複輸入。
 type signalTab struct {
 	window *app.Window
+	config *AppConfig // 全域設定（STUN/TURN 等共用設定）
 	mode   signalMode
 
 	// 子模式按鈕
@@ -72,11 +75,10 @@ type signalTab struct {
 	httpServer     *http.Server
 
 	// --- Agent 子模式 ---
-	agentURLEditor  widget.Editor
+	agentURLEditor   widget.Editor
 	agentTokenEditor widget.Editor
 	agentHostEditor  widget.Editor
 	agentADBEditor   widget.Editor
-	agentStunEditor  widget.Editor
 	agentStartBtn    widget.Clickable
 	agentMu          sync.Mutex
 	agentRunning     bool
@@ -87,7 +89,6 @@ type signalTab struct {
 	// --- Client 子模式 ---
 	clientURLEditor   widget.Editor
 	clientTokenEditor widget.Editor
-	clientStunEditor  widget.Editor
 	clientPortEditor  widget.Editor      // ADB proxy 的起始 port
 	clientConnectBtn  widget.Clickable
 	clientMu          sync.Mutex
@@ -104,9 +105,11 @@ type signalTab struct {
 }
 
 // newSignalTab 建立並初始化 signalTab，設定各輸入框的預設值。
-func newSignalTab(w *app.Window) *signalTab {
+// config 為全域設定（STUN/TURN 等共用設定），由設定面板管理。
+func newSignalTab(w *app.Window, config *AppConfig) *signalTab {
 	t := &signalTab{
 		window:             w,
+		config:             config,
 		srvStatus:          msg().Common.Stopped,
 		agentStatus:        msg().Common.Stopped,
 		clientStatus:       msg().Common.Disconnected,
@@ -128,14 +131,10 @@ func newSignalTab(w *app.Window) *signalTab {
 	}
 	t.agentADBEditor.SingleLine = true
 	t.agentADBEditor.SetText("5037")
-	t.agentStunEditor.SingleLine = true
-	t.agentStunEditor.SetText("stun:stun.l.google.com:19302")
 	// Client 子模式
 	t.clientURLEditor.SingleLine = true
 	t.clientURLEditor.SetText("ws://localhost:8080")
 	t.clientTokenEditor.SingleLine = true
-	t.clientStunEditor.SingleLine = true
-	t.clientStunEditor.SetText("stun:stun.l.google.com:19302")
 	t.clientPortEditor.SingleLine = true
 	t.clientPortEditor.SetText("5555")
 	return t
@@ -372,12 +371,6 @@ func (t *signalTab) layoutAgent(gtx layout.Context, th *material.Theme) []layout
 				return labeledEditor(gtx, th, "ADB Port:", &t.agentADBEditor, "5037")
 			})
 		}),
-		// STUN
-		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return labeledEditor(gtx, th, "STUN:", &t.agentStunEditor, "stun:stun.l.google.com:19302")
-			})
-		}),
 		// 啟動/停止
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			label := msg().Signal.StartAgent
@@ -435,7 +428,6 @@ func (t *signalTab) startSignalAgent() {
 	token := t.agentTokenEditor.Text()
 	hostID := t.agentHostEditor.Text()
 	adbPort := parsePort(t.agentADBEditor.Text(), 5037)
-	iceConfig := parseICEConfig(t.agentStunEditor.Text())
 
 	if url == "" || token == "" {
 		t.agentMu.Lock()
@@ -455,6 +447,12 @@ func (t *signalTab) startSignalAgent() {
 	t.window.Invalidate()
 
 	go func() {
+		iceConfig, err := resolveICEConfig(ctx, t.config)
+		if err != nil {
+			slog.Warn("failed to resolve ICE config, falling back to STUN only", "error", err)
+			iceConfig = parseICEConfig(t.config)
+		}
+
 		adbAddr := fmt.Sprintf("127.0.0.1:%d", adbPort)
 		if err := adb.EnsureADB(ctx, adbAddr, func(status string) {
 			t.agentMu.Lock()
@@ -639,12 +637,6 @@ func (t *signalTab) layoutClient(gtx layout.Context, th *material.Theme) []layou
 			return labeledEditor(gtx, th, msg().Common.TokenLabel, &t.clientTokenEditor, msg().Common.TokenHintPSK)
 		})
 	}))
-	// STUN
-	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-		return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return labeledEditor(gtx, th, "STUN:", &t.clientStunEditor, "stun:stun.l.google.com:19302")
-		})
-	}))
 	// Port 起始
 	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 		return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
@@ -777,7 +769,6 @@ func (t *signalTab) layoutClient(gtx layout.Context, th *material.Theme) []layou
 func (t *signalTab) startClient() {
 	url := t.clientURLEditor.Text()
 	token := t.clientTokenEditor.Text()
-	stunURLs := t.clientStunEditor.Text()
 	portStart := parsePort(t.clientPortEditor.Text(), 5555)
 
 	if url == "" || token == "" {
@@ -787,18 +778,6 @@ func (t *signalTab) startClient() {
 		t.window.Invalidate()
 		return
 	}
-
-	iceConfig := parseICEConfig(stunURLs)
-
-	cfg := daemon.Config{
-		ServerURL: url,
-		Token:     token,
-		PortStart: portStart,
-		PortEnd:   portStart + 100,
-		ICEConfig: iceConfig,
-	}
-
-	d := daemon.NewDaemon(cfg)
 
 	// 使用隨機 port 建立 IPC listener（避免和 CLI daemon 衝突）
 	ipcLn, err := net.Listen("tcp", "127.0.0.1:0")
@@ -821,6 +800,22 @@ func (t *signalTab) startClient() {
 	t.window.Invalidate()
 
 	go func() {
+		iceConfig, err := resolveICEConfig(ctx, t.config)
+		if err != nil {
+			slog.Warn("failed to resolve ICE config, falling back to STUN only", "error", err)
+			iceConfig = parseICEConfig(t.config)
+		}
+
+		cfg := daemon.Config{
+			ServerURL: url,
+			Token:     token,
+			PortStart: portStart,
+			PortEnd:   portStart + 100,
+			ICEConfig: iceConfig,
+		}
+
+		d := daemon.NewDaemon(cfg)
+
 		if err := d.Start(ctx, ipcLn); err != nil && ctx.Err() == nil {
 			t.clientMu.Lock()
 			t.clientStatus = fmt.Sprintf(msg().Signal.ErrDaemonFmt, err)

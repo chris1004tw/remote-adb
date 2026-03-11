@@ -25,20 +25,12 @@
 package gui
 
 import (
-	"bytes"
-	"compress/flate"
 	"context"
-	"encoding/base64"
-	"encoding/binary"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"image/color"
 	"io"
 	"log/slog"
 	"net"
-	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -52,539 +44,9 @@ import (
 	"gioui.org/widget/material"
 
 	"github.com/chris1004tw/remote-adb/internal/adb"
+	"github.com/chris1004tw/remote-adb/internal/bridge"
 	"github.com/chris1004tw/remote-adb/internal/webrtc"
 )
-
-// --- control channel 協定（DataChannel label="control"）---
-
-// ctrlMessage 是 control channel 的 JSON 訊息。
-// Type 可為 "hello"（攜帶主機名稱）或 "devices"（攜帶設備清單）。
-type ctrlMessage struct {
-	Type     string       `json:"type"`
-	Hostname string       `json:"hostname,omitempty"`
-	Devices  []ctrlDevice `json:"devices,omitempty"`
-}
-
-// ctrlDevice 是設備資訊。
-type ctrlDevice struct {
-	Serial   string `json:"serial"`
-	State    string `json:"state"`
-	Features string `json:"features,omitempty"` // 逗號分隔的 feature 清單（如 shell_v2,cmd,...）
-}
-
-// --- SDP 緊湊格式 ---
-// 設計理由：WebRTC SDP 原始格式約 500-1000 字元，其中大部分是固定樣板。
-// 透過 compactSDP 只保留可變欄位，再以二進位 + deflate + base64 編碼，
-// 最終 token 長度壓縮到約 100-200 字元，使用者可以透過即時通訊軟體手動傳送。
-
-// compactSDP 只保留 WebRTC data-channel SDP 的必要欄位。
-// 完整 SDP 的樣板行（v=, o=, s=, m=application 等）可從預設值重建。
-type compactSDP struct {
-	U string   `json:"u"` // ice-ufrag
-	P string   `json:"p"` // ice-pwd
-	F string   `json:"f"` // fingerprint hash（hex，無冒號）
-	S string   `json:"s"` // setup role（actpass/active/passive）
-	C []string `json:"c"` // candidates，格式: proto,ip,port,priority,type[,raddr,rport]
-}
-
-// sdpToCompact 從完整 SDP 提取必要欄位。
-func sdpToCompact(sdp string) compactSDP {
-	var c compactSDP
-	for _, line := range strings.Split(sdp, "\n") {
-		line = strings.TrimRight(line, "\r")
-		switch {
-		case strings.HasPrefix(line, "a=ice-ufrag:"):
-			c.U = strings.TrimPrefix(line, "a=ice-ufrag:")
-		case strings.HasPrefix(line, "a=ice-pwd:"):
-			c.P = strings.TrimPrefix(line, "a=ice-pwd:")
-		case strings.HasPrefix(line, "a=fingerprint:sha-256 "):
-			hash := strings.TrimPrefix(line, "a=fingerprint:sha-256 ")
-			c.F = strings.ReplaceAll(hash, ":", "")
-		case strings.HasPrefix(line, "a=setup:"):
-			c.S = strings.TrimPrefix(line, "a=setup:")
-		case strings.HasPrefix(line, "a=candidate:"):
-			if cc := parseCandidate(line); cc != "" {
-				c.C = append(c.C, cc)
-			}
-		}
-	}
-	c.C = filterCandidates(c.C)
-	return c
-}
-
-// filterCandidates 過濾無用的 ICE candidate，減少 token 長度。
-//
-// 過濾規則：
-//  1. 移除 loopback IP（127.x.x.x、::1）— 遠端連線無用
-//  2. 移除 IPv6 link-local（fe80:: 開頭）— 跨 NAT 無用
-//  3. srflx 同公網 IP + 同協定去重，保留最高 priority —
-//     多張網卡映射到相同公網 IP 時只需保留一個 srflx candidate
-//
-// 設計意圖：減少手動複製 token 的長度，從 ~375 字元降至接近 200 字元。
-func filterCandidates(candidates []string) []string {
-	if len(candidates) == 0 {
-		return nil
-	}
-
-	// 第一輪：過濾 loopback 和 link-local
-	var filtered []string
-	for _, c := range candidates {
-		parts := strings.Split(c, ",")
-		if len(parts) < 5 {
-			continue
-		}
-		ip := net.ParseIP(parts[1])
-		if ip == nil {
-			continue
-		}
-		if ip.IsLoopback() {
-			continue
-		}
-		if ip.IsLinkLocalUnicast() {
-			continue
-		}
-		filtered = append(filtered, c)
-	}
-
-	// 第二輪：srflx 同公網 IP + 同協定去重，保留最高 priority
-	// key = "proto,ip"（srflx 的公網 IP），value = 該 key 中最高 priority 的索引
-	type srflxEntry struct {
-		idx      int
-		priority uint64
-	}
-	bestSrflx := make(map[string]srflxEntry)
-
-	for i, c := range filtered {
-		parts := strings.Split(c, ",")
-		if len(parts) < 5 || parts[4] != "srflx" {
-			continue
-		}
-		key := parts[0] + "," + parts[1] // proto,ip（公網 IP）
-		pri, _ := strconv.ParseUint(parts[3], 10, 64)
-		if existing, ok := bestSrflx[key]; !ok || pri > existing.priority {
-			bestSrflx[key] = srflxEntry{idx: i, priority: pri}
-		}
-	}
-
-	// 建立保留的 srflx 索引集合
-	keepIdx := make(map[int]bool)
-	for _, entry := range bestSrflx {
-		keepIdx[entry.idx] = true
-	}
-
-	var result []string
-	for i, c := range filtered {
-		parts := strings.Split(c, ",")
-		if len(parts) >= 5 && parts[4] == "srflx" {
-			if keepIdx[i] {
-				result = append(result, c)
-			}
-		} else {
-			result = append(result, c)
-		}
-	}
-	return result
-}
-
-// parseCandidate 將 SDP candidate 行轉為緊湊字串。
-// 輸入: a=candidate:1 1 udp 2130706431 192.168.1.100 54321 typ host
-// 輸出: udp,192.168.1.100,54321,2130706431,host
-func parseCandidate(line string) string {
-	// a=candidate:foundation component proto priority ip port typ type [raddr addr rport port]
-	parts := strings.Fields(strings.TrimPrefix(line, "a=candidate:"))
-	if len(parts) < 8 {
-		return ""
-	}
-	proto := parts[2]    // udp/tcp
-	priority := parts[3] // uint32
-	ip := parts[4]
-	port := parts[5]
-	typ := parts[7] // host/srflx/prflx/relay
-
-	result := fmt.Sprintf("%s,%s,%s,%s,%s", proto, ip, port, priority, typ)
-
-	// 解析 raddr/rport（如果有）
-	for i := 8; i < len(parts)-1; i++ {
-		if parts[i] == "raddr" {
-			result += "," + parts[i+1]
-		}
-		if parts[i] == "rport" {
-			result += "," + parts[i+1]
-		}
-	}
-	return result
-}
-
-// compactToSDP 從緊湊格式重建合法的 data-channel SDP。
-func compactToSDP(c compactSDP) string {
-	// 重新插入 fingerprint 冒號
-	fp := insertColons(c.F)
-
-	var b strings.Builder
-	b.WriteString("v=0\r\n")
-	b.WriteString("o=- 0 0 IN IP4 0.0.0.0\r\n")
-	b.WriteString("s=-\r\n")
-	b.WriteString("t=0 0\r\n")
-	b.WriteString("a=group:BUNDLE 0\r\n")
-	b.WriteString("a=msid-semantic:WMS\r\n")
-	b.WriteString("m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n")
-	b.WriteString("c=IN IP4 0.0.0.0\r\n")
-	b.WriteString("a=ice-ufrag:" + c.U + "\r\n")
-	b.WriteString("a=ice-pwd:" + c.P + "\r\n")
-	b.WriteString("a=fingerprint:sha-256 " + fp + "\r\n")
-	b.WriteString("a=setup:" + c.S + "\r\n")
-	b.WriteString("a=mid:0\r\n")
-	b.WriteString("a=sctp-port:5000\r\n")
-	b.WriteString("a=max-message-size:262144\r\n")
-
-	for i, cc := range c.C {
-		b.WriteString(rebuildCandidate(i+1, cc) + "\r\n")
-	}
-
-	return b.String()
-}
-
-// insertColons 將連續的 hex 字串每 2 字元插入冒號。
-// "AABBCCDD" → "AA:BB:CC:DD"
-func insertColons(hex string) string {
-	var parts []string
-	for i := 0; i+2 <= len(hex); i += 2 {
-		parts = append(parts, hex[i:i+2])
-	}
-	return strings.Join(parts, ":")
-}
-
-// rebuildCandidate 將緊湊 candidate 字串重建為 SDP candidate 行。
-func rebuildCandidate(idx int, compact string) string {
-	parts := strings.Split(compact, ",")
-	if len(parts) < 5 {
-		return ""
-	}
-	proto := parts[0]
-	ip := parts[1]
-	port := parts[2]
-	priority := parts[3]
-	typ := parts[4]
-
-	line := fmt.Sprintf("a=candidate:%d 1 %s %s %s %s typ %s", idx, proto, priority, ip, port, typ)
-
-	if len(parts) >= 7 {
-		line += " raddr " + parts[5] + " rport " + parts[6]
-	}
-	return line
-}
-
-// --- 二進位序列化 ---
-// 將 compactSDP 結構體編碼為緊湊的二進位格式，避免 JSON key 名稱和引號的開銷。
-// 搭配 deflate 壓縮後再 base64 編碼，產生最終的 token 字串。
-//
-// 格式：
-//   [1B ufragLen][ufrag][1B pwdLen][pwd]
-//   [32B fingerprint raw bytes]
-//   [1B setup enum: 0=actpass,1=active,2=passive]
-//   [1B candidateCount]
-//     每個 candidate:
-//       [1B proto: 0=udp,1=tcp]
-//       [1B ipLen: 4=IPv4, 16=IPv6]
-//       [4/16B IP]
-//       [2B port BE]
-//       [4B priority BE]
-//       [1B typ: 0=host,1=srflx,2=prflx,3=relay]
-//       [1B hasRaddr: 0/1]
-//       若 hasRaddr:
-//         [1B raddrLen: 4/16]
-//         [4/16B raddr]
-//         [2B rport BE]
-
-var setupToEnum = map[string]byte{"actpass": 0, "active": 1, "passive": 2}
-var enumToSetup = [...]string{"actpass", "active", "passive"}
-
-var typToEnum = map[string]byte{"host": 0, "srflx": 1, "prflx": 2, "relay": 3}
-var enumToTyp = [...]string{"host", "srflx", "prflx", "relay"}
-
-// marshalBinary 將 compactSDP 編碼為二進位格式。
-func marshalBinary(c compactSDP) ([]byte, error) {
-	var buf bytes.Buffer
-
-	// ufrag
-	buf.WriteByte(byte(len(c.U)))
-	buf.WriteString(c.U)
-
-	// pwd
-	buf.WriteByte(byte(len(c.P)))
-	buf.WriteString(c.P)
-
-	// fingerprint: hex → raw 32 bytes
-	fpBytes, err := hex.DecodeString(c.F)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode fingerprint hex: %w", err)
-	}
-	buf.Write(fpBytes)
-
-	// setup
-	s, ok := setupToEnum[c.S]
-	if !ok {
-		return nil, fmt.Errorf("unknown setup value: %q", c.S)
-	}
-	buf.WriteByte(s)
-
-	// candidates
-	buf.WriteByte(byte(len(c.C)))
-	for _, cc := range c.C {
-		if err := marshalCandidate(&buf, cc); err != nil {
-			return nil, err
-		}
-	}
-
-	return buf.Bytes(), nil
-}
-
-// marshalCandidate 將一條 candidate 字串編碼為二進位。
-func marshalCandidate(buf *bytes.Buffer, compact string) error {
-	parts := strings.Split(compact, ",")
-	if len(parts) < 5 {
-		return fmt.Errorf("invalid candidate format: %q", compact)
-	}
-
-	// proto
-	if parts[0] == "udp" {
-		buf.WriteByte(0)
-	} else {
-		buf.WriteByte(1)
-	}
-
-	// IP
-	ip := net.ParseIP(parts[1])
-	if ip == nil {
-		return fmt.Errorf("invalid IP: %q", parts[1])
-	}
-	if v4 := ip.To4(); v4 != nil {
-		buf.WriteByte(4)
-		buf.Write(v4)
-	} else {
-		buf.WriteByte(16)
-		buf.Write(ip.To16())
-	}
-
-	// port
-	port, err := strconv.ParseUint(parts[2], 10, 16)
-	if err != nil {
-		return fmt.Errorf("invalid port: %w", err)
-	}
-	binary.Write(buf, binary.BigEndian, uint16(port))
-
-	// priority
-	pri, err := strconv.ParseUint(parts[3], 10, 32)
-	if err != nil {
-		return fmt.Errorf("invalid priority: %w", err)
-	}
-	binary.Write(buf, binary.BigEndian, uint32(pri))
-
-	// type
-	t, ok := typToEnum[parts[4]]
-	if !ok {
-		return fmt.Errorf("unknown candidate type: %q", parts[4])
-	}
-	buf.WriteByte(t)
-
-	// raddr/rport
-	if len(parts) >= 7 {
-		buf.WriteByte(1)
-		rip := net.ParseIP(parts[5])
-		if rip == nil {
-			return fmt.Errorf("invalid raddr: %q", parts[5])
-		}
-		if v4 := rip.To4(); v4 != nil {
-			buf.WriteByte(4)
-			buf.Write(v4)
-		} else {
-			buf.WriteByte(16)
-			buf.Write(rip.To16())
-		}
-		rport, err := strconv.ParseUint(parts[6], 10, 16)
-		if err != nil {
-			return fmt.Errorf("invalid rport: %w", err)
-		}
-		binary.Write(buf, binary.BigEndian, uint16(rport))
-	} else {
-		buf.WriteByte(0)
-	}
-
-	return nil
-}
-
-// unmarshalBinary 將二進位資料解碼為 compactSDP。
-func unmarshalBinary(data []byte) (compactSDP, error) {
-	r := bytes.NewReader(data)
-	var c compactSDP
-
-	// ufrag
-	uLen, err := r.ReadByte()
-	if err != nil {
-		return c, fmt.Errorf("failed to read ufrag length: %w", err)
-	}
-	uBuf := make([]byte, uLen)
-	if _, err := io.ReadFull(r, uBuf); err != nil {
-		return c, fmt.Errorf("failed to read ufrag: %w", err)
-	}
-	c.U = string(uBuf)
-
-	// pwd
-	pLen, err := r.ReadByte()
-	if err != nil {
-		return c, fmt.Errorf("failed to read pwd length: %w", err)
-	}
-	pBuf := make([]byte, pLen)
-	if _, err := io.ReadFull(r, pBuf); err != nil {
-		return c, fmt.Errorf("failed to read pwd: %w", err)
-	}
-	c.P = string(pBuf)
-
-	// fingerprint: 32 bytes → uppercase hex
-	fpBuf := make([]byte, 32)
-	if _, err := io.ReadFull(r, fpBuf); err != nil {
-		return c, fmt.Errorf("failed to read fingerprint: %w", err)
-	}
-	c.F = strings.ToUpper(hex.EncodeToString(fpBuf))
-
-	// setup
-	sEnum, err := r.ReadByte()
-	if err != nil {
-		return c, fmt.Errorf("failed to read setup: %w", err)
-	}
-	if int(sEnum) >= len(enumToSetup) {
-		return c, fmt.Errorf("unknown setup enum: %d", sEnum)
-	}
-	c.S = enumToSetup[sEnum]
-
-	// candidates
-	cCount, err := r.ReadByte()
-	if err != nil {
-		return c, fmt.Errorf("failed to read candidate count: %w", err)
-	}
-	c.C = make([]string, cCount)
-	for i := range c.C {
-		cc, err := unmarshalCandidate(r)
-		if err != nil {
-			return c, fmt.Errorf("failed to decode candidate[%d]: %w", i, err)
-		}
-		c.C[i] = cc
-	}
-
-	return c, nil
-}
-
-// unmarshalCandidate 從 reader 解碼一條 candidate。
-func unmarshalCandidate(r *bytes.Reader) (string, error) {
-	// proto
-	protoByte, err := r.ReadByte()
-	if err != nil {
-		return "", err
-	}
-	proto := "udp"
-	if protoByte == 1 {
-		proto = "tcp"
-	}
-
-	// IP
-	ipStr, err := readIP(r)
-	if err != nil {
-		return "", fmt.Errorf("failed to read IP: %w", err)
-	}
-
-	// port
-	var port uint16
-	if err := binary.Read(r, binary.BigEndian, &port); err != nil {
-		return "", fmt.Errorf("failed to read port: %w", err)
-	}
-
-	// priority
-	var priority uint32
-	if err := binary.Read(r, binary.BigEndian, &priority); err != nil {
-		return "", fmt.Errorf("failed to read priority: %w", err)
-	}
-
-	// type
-	typByte, err := r.ReadByte()
-	if err != nil {
-		return "", err
-	}
-	if int(typByte) >= len(enumToTyp) {
-		return "", fmt.Errorf("unknown candidate type enum: %d", typByte)
-	}
-	typ := enumToTyp[typByte]
-
-	result := fmt.Sprintf("%s,%s,%d,%d,%s", proto, ipStr, port, priority, typ)
-
-	// hasRaddr
-	hasRaddr, err := r.ReadByte()
-	if err != nil {
-		return "", err
-	}
-	if hasRaddr == 1 {
-		raddrStr, err := readIP(r)
-		if err != nil {
-			return "", fmt.Errorf("failed to read raddr: %w", err)
-		}
-		var rport uint16
-		if err := binary.Read(r, binary.BigEndian, &rport); err != nil {
-			return "", fmt.Errorf("failed to read rport: %w", err)
-		}
-		result += fmt.Sprintf(",%s,%d", raddrStr, rport)
-	}
-
-	return result, nil
-}
-
-// readIP 從 reader 讀取 IP 位址（1B 長度 + 4/16B 資料）。
-func readIP(r *bytes.Reader) (string, error) {
-	ipLen, err := r.ReadByte()
-	if err != nil {
-		return "", err
-	}
-	ipBuf := make([]byte, ipLen)
-	if _, err := io.ReadFull(r, ipBuf); err != nil {
-		return "", err
-	}
-	return net.IP(ipBuf).String(), nil
-}
-
-// encodeToken 將 compactSDP 編碼為可傳輸的 token 字串。
-// 流程：compactSDP → 二進位序列化 → deflate 壓縮（BestCompression）→ base64url 編碼。
-// 使用 RawURLEncoding（無 padding）進一步減少字元數。
-func encodeToken(c compactSDP) (string, error) {
-	data, err := marshalBinary(c)
-	if err != nil {
-		return "", err
-	}
-	var buf bytes.Buffer
-	w, err := flate.NewWriter(&buf, flate.BestCompression)
-	if err != nil {
-		return "", err
-	}
-	if _, err := w.Write(data); err != nil {
-		return "", err
-	}
-	if err := w.Close(); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(buf.Bytes()), nil
-}
-
-// decodeToken 是 encodeToken 的逆操作：base64url 解碼 → deflate 解壓 → 二進位反序列化。
-func decodeToken(token string) (compactSDP, error) {
-	compressed, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(token))
-	if err != nil {
-		return compactSDP{}, fmt.Errorf("failed to decode base64: %w", err)
-	}
-	r := flate.NewReader(bytes.NewReader(compressed))
-	defer r.Close()
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return compactSDP{}, fmt.Errorf("failed to decompress deflate: %w", err)
-	}
-	return unmarshalBinary(data)
-}
 
 // pairTab 是「簡易連線」分頁的完整狀態。
 // 提供兩個角色：主控模式（客戶端）和被控模式（伺服器）。
@@ -627,19 +89,12 @@ type pairTab struct {
 	pendingClipboard string
 
 	// 伺服器模式：設備清單
-	srvDevices []ctrlDevice
+	srvDevices []bridge.DeviceInfo
 
 	// 客戶端模式
-	proxyPort  int          // ADB server proxy 實際 port
-	proxyLn    net.Listener // proxy TCP listener
-	cliDevices    []ctrlDevice    // 遠端設備清單（control channel 推送）
-	deviceReadyCh chan struct{}   // CNXN 等待信號：有設備時 close，無設備時重建
-
-	// Forward 攔截（客戶端模式）
-	// scrcpy 等工具會執行 `adb forward tcp:PORT localabstract:scrcpy`，
-	// 需要在本機攔截 forward 命令並建立到遠端設備的 DataChannel 轉發。
-	fwdMu        sync.Mutex
-	fwdListeners map[string]*fwdListener // key = localSpec (e.g., "tcp:27183")
+	proxyPort int          // ADB server proxy 實際 port
+	proxyLn   net.Listener // proxy TCP listener
+	fm        *bridge.ForwardManager // 設備清單 + forward listener 管理（取代舊的 cliDevices/deviceReadyCh/fwdListeners）
 
 	// 自動 adb connect（客戶端模式）
 	autoConnected bool
@@ -650,6 +105,9 @@ type pairTab struct {
 
 	// 實時延遲（毫秒），atomic 存取
 	latencyMs atomic.Int64
+
+	// 是否透過 TURN 中繼連線（mutex 保護）
+	relayed bool
 
 	// 結束連線 / 清除按鈕
 	disconnectBtn widget.Clickable
@@ -666,6 +124,7 @@ func newPairTab(w *app.Window, cfg *AppConfig) *pairTab {
 		window: w,
 		config: cfg,
 		status: msg().Pair.StatusNotStarted,
+		fm:     bridge.NewForwardManager(),
 	}
 	// 客戶端模式
 	t.cliOfferOutEditor.ReadOnly = true
@@ -779,12 +238,13 @@ func (t *pairTab) layout(gtx layout.Context, th *material.Theme) layout.Dimensio
 // 邀請碼產生後會自動複製到剪貼簿；回應碼貼入後自動偵測變更並觸發連線。
 func (t *pairTab) layoutClientWidgets(gtx layout.Context, th *material.Theme) []layout.Widget {
 	t.mu.Lock()
-	devices := append([]ctrlDevice{}, t.cliDevices...)
 	proxyPort := t.proxyPort
 	connected := t.connected
 	hostname := t.remoteHostname
 	remoteAddr := t.remoteAddr
+	relayed := t.relayed
 	t.mu.Unlock()
+	devices := t.fm.OnlineDevices()
 
 	// 已連線：只顯示連線資訊 + 設備清單 + 結束連線按鈕
 	if connected {
@@ -794,6 +254,11 @@ func (t *pairTab) layoutClientWidgets(gtx layout.Context, th *material.Theme) []
 
 		var widgets []layout.Widget
 		latency := t.latencyMs.Load()
+
+		// TURN 中繼通知橫幅（橘色背景）
+		if relayed {
+			widgets = append(widgets, relayBanner(th))
+		}
 
 		if proxyPort > 0 {
 			widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
@@ -909,8 +374,9 @@ func (t *pairTab) layoutClientWidgets(gtx layout.Context, th *material.Theme) []
 // 已連線後顯示延遲、設備列表、結束連線按鈕。
 func (t *pairTab) layoutServerWidgets(gtx layout.Context, th *material.Theme) []layout.Widget {
 	t.mu.Lock()
-	devices := append([]ctrlDevice{}, t.srvDevices...)
+	devices := append([]bridge.DeviceInfo{}, t.srvDevices...)
 	connected := t.connected
+	relayed := t.relayed
 	t.mu.Unlock()
 
 	// 已連線：只顯示延遲 + 設備清單 + 結束連線按鈕
@@ -921,6 +387,11 @@ func (t *pairTab) layoutServerWidgets(gtx layout.Context, th *material.Theme) []
 
 		var widgets []layout.Widget
 		latency := t.latencyMs.Load()
+
+		// TURN 中繼通知橫幅（橘色背景）
+		if relayed {
+			widgets = append(widgets, relayBanner(th))
+		}
 		if latency > 0 {
 			widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
 				lbl := material.Body2(th, fmt.Sprintf(msg().Pair.LatencyFmt, latency))
@@ -1029,15 +500,17 @@ func (t *pairTab) layoutServerWidgets(gtx layout.Context, th *material.Theme) []
 // 流程：建立 PeerConnection → 建立 control DataChannel → 建立 Offer →
 // SDP 壓縮編碼 → 顯示在 UI 並自動複製到剪貼簿。
 func (t *pairTab) clientGenerateOffer() {
-	stunURLs := t.config.STUNServer
-
 	t.mu.Lock()
 	t.status = msg().Pair.StatusGenerating
 	t.mu.Unlock()
 	t.window.Invalidate()
 
 	go func() {
-		iceConfig := parseICEConfig(stunURLs)
+		iceConfig, err := resolveICEConfig(context.Background(), t.config)
+		if err != nil {
+			slog.Warn("failed to resolve ICE config, falling back to STUN only", "error", err)
+			iceConfig = parseICEConfig(t.config)
+		}
 
 		pm, err := webrtc.NewPeerManager(iceConfig)
 		if err != nil {
@@ -1069,7 +542,7 @@ func (t *pairTab) clientGenerateOffer() {
 			return
 		}
 
-		offerToken, err := encodeToken(sdpToCompact(offerSDP))
+		offerToken, err := bridge.EncodeToken(bridge.SDPToCompact(offerSDP))
 		if err != nil {
 			t.mu.Lock()
 			t.status = fmt.Sprintf(msg().Pair.ErrEncodeOfferFmt, err)
@@ -1119,7 +592,7 @@ func (t *pairTab) clientApplyAnswer() {
 	}
 
 	go func() {
-		answer, err := decodeToken(answerToken)
+		answer, err := bridge.DecodeToken(answerToken)
 		if err != nil {
 			t.mu.Lock()
 			t.status = fmt.Sprintf(msg().Pair.ErrInvalidAnswerFmt, err)
@@ -1128,7 +601,7 @@ func (t *pairTab) clientApplyAnswer() {
 			return
 		}
 
-		if err := pm.HandleAnswer(compactToSDP(answer)); err != nil {
+		if err := pm.HandleAnswer(bridge.CompactToSDP(answer)); err != nil {
 			t.mu.Lock()
 			t.status = fmt.Sprintf(msg().Pair.ErrHandleAnswerFmt, err)
 			t.mu.Unlock()
@@ -1156,6 +629,7 @@ func (t *pairTab) clientApplyAnswer() {
 			t.autoConnected = false
 			t.status = msg().Pair.StatusP2PDisconnected
 			t.connected = false
+			t.relayed = false
 			t.mu.Unlock()
 			t.window.Invalidate()
 
@@ -1168,12 +642,22 @@ func (t *pairTab) clientApplyAnswer() {
 			}
 		})
 
+		pm.OnConnected(func(relayed bool) {
+			t.mu.Lock()
+			t.relayed = relayed
+			t.mu.Unlock()
+			if relayed {
+				slog.Info("P2P connection is relayed through TURN server")
+			}
+			t.window.Invalidate()
+		})
+
 		t.mu.Lock()
 		t.connected = true
 		t.cancel = cancel
 		t.proxyPort = actualPort
 		t.proxyLn = ln
-		t.deviceReadyCh = make(chan struct{}) // CNXN 等待信號：控制通道收到設備時 close
+		t.fm = bridge.NewForwardManager() // 設備清單 + forward listener 管理
 		t.status = fmt.Sprintf(msg().Pair.StatusP2PProxyFmt, actualPort)
 		t.mu.Unlock()
 		t.window.Invalidate()
@@ -1200,105 +684,70 @@ func (t *pairTab) adbServerProxy(ctx context.Context, ln net.Listener, pm *webrt
 			return
 		}
 		id := connID.Add(1)
-		go t.handleProxyConn(ctx, conn, pm.OpenChannel, id)
+		go t.fm.HandleProxyConn(ctx, conn, pm.OpenChannel, id)
 	}
 }
 
 // controlReadLoop 持續讀取 control channel 的 JSON 訊息，更新客戶端 UI。
+// 委託 bridge.ControlReadLoop 解析 JSON，透過 callback 更新 GUI 狀態和 ForwardManager。
 //
 // 訊息類型處理：
 //   - "hello"：記錄遠端主機名稱（顯示在 UI 上）
-//   - "devices"：更新遠端設備清單，若首次偵測到在線設備則自動執行 `adb connect`
-//
-// 自動 adb connect 機制：收到第一個 state="device" 的設備時，
-// 自動執行 `adb connect 127.0.0.1:<proxyPort>`，讓設備出現在 `adb devices` 列表中。
-// 這讓使用者不需手動操作即可開始使用 scrcpy 等工具。
+//   - "devices"：委託 ForwardManager.UpdateDevices 管理設備清單和 CNXN 等待信號，
+//     若首次偵測到在線設備則自動執行 `adb connect`
 func (t *pairTab) controlReadLoop(ctx context.Context, controlCh io.ReadWriteCloser) {
-	dec := json.NewDecoder(controlCh)
-	for {
-		var ctrlMsg ctrlMessage
-		if err := dec.Decode(&ctrlMsg); err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			slog.Debug("control channel read ended", "error", err)
+	err := bridge.ControlReadLoop(ctx, controlCh, func(cm bridge.CtrlMessage) {
+		switch cm.Type {
+		case "hello":
 			t.mu.Lock()
-			t.status = msg().Pair.StatusControlClosed
-			t.connected = false
+			t.remoteHostname = cm.Hostname
 			t.mu.Unlock()
 			t.window.Invalidate()
-			return
-		}
 
-		if ctrlMsg.Type == "hello" {
+		case "devices":
+			// 委託 ForwardManager 管理設備清單和 deviceReadyCh
+			t.fm.UpdateDevices(cm.Devices)
+
+			// 統計在線設備數
+			count := 0
+			hasDevice := false
+			for _, d := range cm.Devices {
+				if d.State == "device" {
+					count++
+					hasDevice = true
+				}
+			}
+
 			t.mu.Lock()
-			t.remoteHostname = ctrlMsg.Hostname
+			shouldConnect := hasDevice && !t.autoConnected && t.proxyPort > 0
+			if shouldConnect {
+				t.autoConnected = true
+			}
+			proxyPort := t.proxyPort
+			t.status = fmt.Sprintf(msg().Pair.StatusP2PDevicesProxy, count, proxyPort)
 			t.mu.Unlock()
 			t.window.Invalidate()
-			continue
-		}
 
-		if ctrlMsg.Type != "devices" {
-			continue
-		}
-
-		hasDevice := false
-		for _, d := range ctrlMsg.Devices {
-			if d.State == "device" {
-				hasDevice = true
-				break
+			// 自動 adb connect：讓設備出現在 `adb devices`
+			if shouldConnect {
+				go func() {
+					dialer := adb.NewDialer("")
+					target := fmt.Sprintf("127.0.0.1:%d", proxyPort)
+					if err := dialer.Connect(target); err != nil {
+						slog.Debug("auto adb connect failed", "target", target, "error", err)
+					} else {
+						slog.Debug("auto adb connect succeeded", "target", target)
+					}
+				}()
 			}
 		}
-
+	})
+	if err != nil {
 		t.mu.Lock()
-		t.cliDevices = ctrlMsg.Devices
-		count := 0
-		for _, d := range ctrlMsg.Devices {
-			if d.State == "device" {
-				count++
-			}
-		}
-		// 更新設備就緒信號：有設備時 close（通知等待中的 CNXN），
-		// 設備消失時重建 channel（讓後續 CNXN 繼續等待）。
-		if t.deviceReadyCh != nil {
-			if hasDevice {
-				select {
-				case <-t.deviceReadyCh:
-					// 已 close，不需重複操作
-				default:
-					close(t.deviceReadyCh)
-				}
-			} else {
-				select {
-				case <-t.deviceReadyCh:
-					// 之前有設備但現在消失，重建 channel
-					t.deviceReadyCh = make(chan struct{})
-				default:
-					// 尚未有設備，channel 仍開啟，繼續等待
-				}
-			}
-		}
-		shouldConnect := hasDevice && !t.autoConnected && t.proxyPort > 0
-		if shouldConnect {
-			t.autoConnected = true
-		}
-		proxyPort := t.proxyPort
-		t.status = fmt.Sprintf(msg().Pair.StatusP2PDevicesProxy, count, proxyPort)
+		t.status = msg().Pair.StatusControlClosed
+		t.connected = false
 		t.mu.Unlock()
 		t.window.Invalidate()
-
-		// 自動 adb connect：讓設備出現在 `adb devices`
-		if shouldConnect {
-			go func() {
-				dialer := adb.NewDialer("")
-				target := fmt.Sprintf("127.0.0.1:%d", proxyPort)
-				if err := dialer.Connect(target); err != nil {
-					slog.Debug("auto adb connect failed", "target", target, "error", err)
-				} else {
-					slog.Debug("auto adb connect succeeded", "target", target)
-				}
-			}()
-		}
 	}
 }
 
@@ -1312,7 +761,6 @@ func (t *pairTab) controlReadLoop(ctx context.Context, controlCh io.ReadWriteClo
 func (t *pairTab) serverProcessOffer() {
 	offerToken := t.srvOfferInEditor.Text()
 	adbPort := t.config.ADBPort
-	stunURLs := t.config.STUNServer
 
 	if offerToken == "" {
 		t.mu.Lock()
@@ -1350,7 +798,7 @@ func (t *pairTab) serverProcessOffer() {
 		t.window.Invalidate()
 
 		// 解碼 Offer
-		offer, err := decodeToken(offerToken)
+		offer, err := bridge.DecodeToken(offerToken)
 		if err != nil {
 			t.mu.Lock()
 			t.status = fmt.Sprintf(msg().Pair.ErrInvalidOfferFmt, err)
@@ -1359,7 +807,11 @@ func (t *pairTab) serverProcessOffer() {
 			return
 		}
 
-		iceConfig := parseICEConfig(stunURLs)
+		iceConfig, err := resolveICEConfig(context.Background(), t.config)
+		if err != nil {
+			slog.Warn("failed to resolve ICE config, falling back to STUN only", "error", err)
+			iceConfig = parseICEConfig(t.config)
+		}
 		pm, err := webrtc.NewPeerManager(iceConfig)
 		if err != nil {
 			t.mu.Lock()
@@ -1372,6 +824,7 @@ func (t *pairTab) serverProcessOffer() {
 		ctx, cancel := context.WithCancel(context.Background())
 
 		// 監聽客戶端建立的 DataChannel
+		srvHandler := &bridge.ServerHandler{ADBAddr: adbAddr}
 		pm.OnChannel(func(label string, rwc io.ReadWriteCloser) {
 			slog.Debug("received DataChannel", "label", label)
 			if label == "control" {
@@ -1385,29 +838,8 @@ func (t *pairTab) serverProcessOffer() {
 				go t.devicePushLoop(ctx, rwc, adbAddr)
 				return
 			}
-			// adb-server/{id} → 轉發到本機 ADB server
-			if strings.HasPrefix(label, "adb-server/") {
-				go t.handleADBServerConn(ctx, rwc, adbAddr)
-				return
-			}
-			// adb-fwd/{id}/{serial}/{remoteSpec} → forward 連線到設備服務
-			if strings.HasPrefix(label, "adb-fwd/") {
-				parts := strings.SplitN(label, "/", 4)
-				if len(parts) == 4 {
-					go t.handleADBForwardConn(ctx, rwc, adbAddr, parts[2], parts[3])
-				} else {
-					rwc.Close()
-				}
-				return
-			}
-			// adb-stream/{id}/{serial}/{service} → device transport 串流
-			if strings.HasPrefix(label, "adb-stream/") {
-				parts := strings.SplitN(label, "/", 4)
-				if len(parts) == 4 {
-					go t.handleADBStreamConn(ctx, rwc, adbAddr, parts[2], parts[3])
-				} else {
-					rwc.Close()
-				}
+			// 委託 ServerHandler 處理 adb-server/adb-stream/adb-fwd DataChannel
+			if srvHandler.HandleChannel(ctx, label, rwc) {
 				return
 			}
 		})
@@ -1416,13 +848,24 @@ func (t *pairTab) serverProcessOffer() {
 			t.mu.Lock()
 			t.status = msg().Pair.StatusP2PDisconnected
 			t.connected = false
+			t.relayed = false
 			t.srvDevices = nil
 			t.mu.Unlock()
 			t.window.Invalidate()
 		})
 
+		pm.OnConnected(func(relayed bool) {
+			t.mu.Lock()
+			t.relayed = relayed
+			t.mu.Unlock()
+			if relayed {
+				slog.Info("P2P connection is relayed through TURN server")
+			}
+			t.window.Invalidate()
+		})
+
 		// 處理 Offer 並生成 Answer
-		answerSDP, err := pm.HandleOffer(compactToSDP(offer))
+		answerSDP, err := pm.HandleOffer(bridge.CompactToSDP(offer))
 		if err != nil {
 			pm.Close()
 			cancel()
@@ -1433,7 +876,7 @@ func (t *pairTab) serverProcessOffer() {
 			return
 		}
 
-		answerToken, err := encodeToken(sdpToCompact(answerSDP))
+		answerToken, err := bridge.EncodeToken(bridge.SDPToCompact(answerSDP))
 		if err != nil {
 			pm.Close()
 			cancel()
@@ -1460,133 +903,26 @@ func (t *pairTab) serverProcessOffer() {
 }
 
 // devicePushLoop 追蹤 ADB 設備並透過 control channel 推送清單給客戶端。
-// 使用 ADB tracker 的事件驅動模式（而非輪詢），設備增減時即時推送。
-// 對每個在線設備額外查詢 features（如 shell_v2, cmd 等），讓客戶端的 CNXN 回應
-// 能攜帶真實 features，避免 adb 功能不相容。
+// 委託 bridge.DevicePushLoop 處理 ADB tracker 和 JSON 推送，
+// 透過 callback 更新被控端 UI 的設備列表。
 func (t *pairTab) devicePushLoop(ctx context.Context, controlCh io.ReadWriteCloser, adbAddr string) {
-	tracker := adb.NewTracker(adbAddr)
-	deviceCh := tracker.Track(ctx)
-	table := adb.NewDeviceTable()
-	enc := json.NewEncoder(controlCh)
-
-	// 先發送主機名稱
-	hostname, _ := os.Hostname()
-	if err := enc.Encode(ctrlMessage{Type: "hello", Hostname: hostname}); err != nil {
-		slog.Debug("failed to send hello", "error", err)
-		return
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case events, ok := <-deviceCh:
-			if !ok {
-				return
+	bridge.DevicePushLoop(ctx, controlCh, adbAddr, func(devices []bridge.DeviceInfo) {
+		t.mu.Lock()
+		t.srvDevices = devices
+		online := 0
+		for _, d := range devices {
+			if d.State == "device" {
+				online++
 			}
-			table.Update(events)
-			devs := table.List()
-
-			ctrlDevs := make([]ctrlDevice, len(devs))
-			for i, d := range devs {
-				ctrlDevs[i] = ctrlDevice{Serial: d.Serial, State: d.State}
-				if d.State == "device" {
-					if feat, err := queryDeviceFeatures(adbAddr, d.Serial); err == nil {
-						ctrlDevs[i].Features = feat
-					}
-				}
-			}
-
-			// 推送給客戶端
-			if err := enc.Encode(ctrlMessage{Type: "devices", Devices: ctrlDevs}); err != nil {
-				slog.Debug("control channel write failed", "error", err)
-				return
-			}
-
-			// 更新伺服器端 UI
-			t.mu.Lock()
-			t.srvDevices = ctrlDevs
-			if len(ctrlDevs) > 0 {
-				t.status = fmt.Sprintf(msg().Pair.StatusP2PDevicesFmt, len(ctrlDevs))
-			} else {
-				t.status = msg().Pair.StatusP2PWaiting
-			}
-			t.mu.Unlock()
-			t.window.Invalidate()
 		}
-	}
-}
-
-// handleADBServerConn 將客戶端的 DataChannel 轉發到本機 ADB server。
-func (t *pairTab) handleADBServerConn(ctx context.Context, rwc io.ReadWriteCloser, adbAddr string) {
-	defer rwc.Close()
-
-	conn, err := net.Dial("tcp", adbAddr)
-	if err != nil {
-		slog.Debug("failed to connect local ADB server", "error", err)
-		return
-	}
-	defer conn.Close()
-
-	biCopy(ctx, rwc, conn)
-}
-
-// handleADBStreamConn 處理 device transport 的單一串流（被控端）。
-// 收到客戶端建立的 adb-stream DataChannel 後：
-//  1. 連線本機 ADB server
-//  2. 發送 host:transport:<serial> 切換到目標設備
-//  3. 發送 service 命令（如 shell:ls、sync: 等）
-//  4. 通知客戶端就緒（寫入 1 byte: 1=成功, 0=失敗）
-//  5. 雙向橋接 DataChannel ↔ ADB server（biCopy）
-func (t *pairTab) handleADBStreamConn(ctx context.Context, rwc io.ReadWriteCloser, adbAddr, serial, service string) {
-	defer rwc.Close()
-
-	slog.Debug("stream: start handling", "serial", serial, "service", service)
-
-	conn, err := net.Dial("tcp", adbAddr)
-	if err != nil {
-		slog.Debug("stream: failed to connect ADB server", "error", err)
-		rwc.Write([]byte{0})
-		return
-	}
-	defer conn.Close()
-
-	// 切換到目標設備
-	if err := sendADBCmd(conn, fmt.Sprintf("host:transport:%s", serial)); err != nil {
-		slog.Debug("stream: transport command failed", "error", err)
-		rwc.Write([]byte{0})
-		return
-	}
-	if err := readADBStatus(conn); err != nil {
-		slog.Debug("stream: transport failed", "serial", serial, "error", err)
-		rwc.Write([]byte{0})
-		return
-	}
-
-	slog.Debug("stream: transport succeeded", "serial", serial)
-
-	// 發送服務命令
-	if err := sendADBCmd(conn, service); err != nil {
-		slog.Debug("stream: service command failed", "service", service, "error", err)
-		rwc.Write([]byte{0})
-		return
-	}
-	if err := readADBStatus(conn); err != nil {
-		slog.Debug("stream: service failed", "service", service, "error", err)
-		rwc.Write([]byte{0})
-		return
-	}
-
-	// 通知客戶端就緒
-	if n, err := rwc.Write([]byte{1}); err != nil {
-		slog.Debug("stream: failed to write ready signal", "serial", serial, "service", service, "error", err, "n", n)
-		return
-	}
-
-	slog.Debug("stream established", "serial", serial, "service", service)
-
-	// 雙向轉發（biCopy 結束時關閉雙方，避免死鎖）
-	biCopy(ctx, rwc, conn)
+		if online > 0 {
+			t.status = fmt.Sprintf(msg().Pair.StatusP2PDevicesFmt, online)
+		} else {
+			t.status = msg().Pair.StatusP2PWaiting
+		}
+		t.mu.Unlock()
+		t.window.Invalidate()
+	})
 }
 
 // rttPollLoop 每 2 秒輪詢 WebRTC RTT 並更新 latencyMs。
@@ -1646,8 +982,10 @@ func (t *pairTab) disconnect() {
 }
 
 func (t *pairTab) cleanup() {
-	// 先關閉 forward listeners（用獨立鎖）
-	t.closeFwdListeners()
+	// 先關閉 forward listeners（ForwardManager 用獨立鎖）
+	if t.fm != nil {
+		t.fm.CloseFwdListeners()
+	}
 
 	t.mu.Lock()
 	port := t.proxyPort
@@ -1667,19 +1005,10 @@ func (t *pairTab) cleanup() {
 		t.pm.Close()
 	}
 	t.connected = false
+	t.relayed = false
 	t.proxyPort = 0
 	t.autoConnected = false
-	t.cliDevices = nil
 	t.srvDevices = nil
-	// 關閉 deviceReadyCh 以解除等待中的 CNXN handler
-	if t.deviceReadyCh != nil {
-		select {
-		case <-t.deviceReadyCh:
-		default:
-			close(t.deviceReadyCh)
-		}
-		t.deviceReadyCh = nil
-	}
 	t.mu.Unlock()
 
 	// 清理 adb connect

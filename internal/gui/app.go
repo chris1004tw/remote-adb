@@ -19,11 +19,13 @@
 package gui
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"image"
 	"image/color"
 	"log"
+	"log/slog"
 	"os"
 	"runtime"
 	"strings"
@@ -160,7 +162,7 @@ func eventLoop(w *app.Window) error {
 	// 建立三個分頁，傳入共用設定
 	pt := newPairTab(w, sp.config)
 	lt := newLANTab(w, sp.config)
-	st := newSignalTab(w)
+	st := newSignalTab(w, sp.config)
 
 	tabs := &tabBar{
 		items: []tabItem{
@@ -416,6 +418,32 @@ func statusText(gtx layout.Context, th *material.Theme, text string, c color.NRG
 	return lbl.Layout(gtx)
 }
 
+// relayBanner 回傳一個 layout.Widget，繪製 TURN 中繼連線警告橫幅。
+// 橘色背景 + 白色文字，提醒使用者目前連線透過 Cloudflare 中繼伺服器。
+func relayBanner(th *material.Theme) layout.Widget {
+	return func(gtx layout.Context) layout.Dimensions {
+		return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			bgColor := color.NRGBA{R: 255, G: 152, B: 0, A: 255} // Material Orange 500
+			return layout.Stack{}.Layout(gtx,
+				layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+					size := image.Pt(gtx.Constraints.Min.X, gtx.Constraints.Min.Y)
+					rr := gtx.Dp(unit.Dp(4))
+					defer clip.RRect{Rect: image.Rectangle{Max: size}, SE: rr, SW: rr, NE: rr, NW: rr}.Push(gtx.Ops).Pop()
+					paint.Fill(gtx.Ops, bgColor)
+					return layout.Dimensions{Size: size}
+				}),
+				layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+					return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						lbl := material.Body2(th, msg().Common.RelayNotice)
+						lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+						return lbl.Layout(gtx)
+					})
+				}),
+			)
+		})
+	}
+}
+
 // parsePort 解析 port 字串，失敗時返回預設值。
 func parsePort(s string, fallback int) int {
 	var n int
@@ -435,12 +463,53 @@ func generateToken() string {
 	return fmt.Sprintf("%x", b)
 }
 
-// parseICEConfig 解析逗號分隔的 STUN/TURN URL 字串為 ICEConfig。
-// 用於將 GUI 輸入框中的 STUN 伺服器設定傳給 WebRTC 層。
-func parseICEConfig(stunURLs string) webrtc.ICEConfig {
-	cfg := webrtc.ICEConfig{}
-	if stunURLs != "" {
-		cfg.STUNServers = strings.Split(stunURLs, ",")
+// parseICEConfig 根據 AppConfig 的 STUN/TURN 設定建構 ICEConfig。
+// STUN 設定為逗號分隔的 URL 字串；自訂 TURN 設定包含 URL、帳號、密碼三個欄位。
+// 注意：此函式僅處理 custom 模式的 TURN，Cloudflare 模式請用 resolveICEConfig。
+func parseICEConfig(cfg *AppConfig) webrtc.ICEConfig {
+	ice := webrtc.ICEConfig{}
+	if cfg.STUNServer != "" {
+		ice.STUNServers = strings.Split(cfg.STUNServer, ",")
 	}
-	return cfg
+	if cfg.TURNMode == TURNModeCustom && cfg.TURNServer != "" {
+		ice.TURNServers = []webrtc.TURNServer{
+			{URL: cfg.TURNServer, Username: cfg.TURNUser, Credential: cfg.TURNPass},
+		}
+	}
+	return ice
+}
+
+// resolveICEConfig 根據 AppConfig 建構 ICEConfig，支援 Cloudflare 自動取得 TURN 憑證。
+//
+// 與 parseICEConfig 不同，此函式會在 Cloudflare 模式下發出 HTTP 請求取得短效憑證，
+// 因此需要 context 支援取消，且必須在 goroutine 中呼叫（不可在 UI 執行緒）。
+//
+// TURN 模式對應：
+//   - "cloudflare"：從 Cloudflare 公開端點取得免費 TURN 憑證
+//   - "custom"：使用 AppConfig 中的自訂 TURN URL/帳號/密碼
+//   - ""（空）：不使用 TURN，僅 STUN
+func resolveICEConfig(ctx context.Context, cfg *AppConfig) (webrtc.ICEConfig, error) {
+	ice := webrtc.ICEConfig{}
+	if cfg.STUNServer != "" {
+		ice.STUNServers = strings.Split(cfg.STUNServer, ",")
+	}
+
+	switch cfg.TURNMode {
+	case TURNModeCloudflare:
+		servers, err := fetchCloudflareTURN(ctx, nil)
+		if err != nil {
+			return ice, fmt.Errorf("Cloudflare TURN: %w", err)
+		}
+		ice.TURNServers = servers
+		slog.Info("fetched Cloudflare TURN credentials", "servers", len(servers))
+
+	case TURNModeCustom:
+		if cfg.TURNServer != "" {
+			ice.TURNServers = []webrtc.TURNServer{
+				{URL: cfg.TURNServer, Username: cfg.TURNUser, Credential: cfg.TURNPass},
+			}
+		}
+	}
+
+	return ice, nil
 }

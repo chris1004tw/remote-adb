@@ -35,6 +35,7 @@ import (
 
 	"github.com/chris1004tw/remote-adb/internal/adb"
 	"github.com/chris1004tw/remote-adb/internal/agent"
+	"github.com/chris1004tw/remote-adb/internal/bridge"
 	"github.com/chris1004tw/remote-adb/internal/directsrv"
 )
 
@@ -81,9 +82,8 @@ type lanTab struct {
 	remoteToken string                 // 遠端 token
 	cliDevices []directsrv.DeviceInfo  // 遠端設備清單（connect-service 用）
 
-	// forward listener 管理（與 pairTab 相同）
-	fwdMu        sync.Mutex
-	fwdListeners map[string]*fwdListener
+	// forward listener 管理（委託 bridge.ForwardManager）
+	lanFm *bridge.ForwardManager
 }
 
 // newLANTab 建立並初始化 lanTab，設定各輸入框的預設值。
@@ -94,6 +94,7 @@ func newLANTab(w *app.Window, cfg *AppConfig) *lanTab {
 		config:    cfg,
 		srvStatus: msg().Common.Stopped,
 		cliStatus: msg().Common.Disconnected,
+		lanFm:     bridge.NewForwardManager(),
 	}
 	// 伺服器子模式預設值
 	t.srvTokenEditor.SingleLine = true
@@ -675,7 +676,7 @@ func (t *lanTab) lanHandleConn(ctx context.Context, conn net.Conn, id int64) {
 			}
 		}
 		t.cliMu.Unlock()
-		startDeviceTransport(ctx, conn, peek[:], openCh, serial, "", nil)
+		bridge.StartDeviceTransport(ctx, conn, peek[:], openCh, serial, "", nil)
 		return
 	}
 
@@ -695,7 +696,7 @@ func (t *lanTab) lanHandleConn(ctx context.Context, conn net.Conn, id int64) {
 
 	slog.Debug("LAN proxy ← smart socket", "id", id, "cmd", cmd)
 
-	// forward 攔截（使用 lanTab 的 fwdListeners）
+	// forward 攔截（使用 lanTab 的 ForwardManager）
 	if t.lanHandleForwardInterception(ctx, conn, cmd, openCh) {
 		return
 	}
@@ -713,12 +714,12 @@ func (t *lanTab) lanHandleConn(ctx context.Context, conn net.Conn, id int64) {
 		return
 	}
 
-	biCopy(ctx, ch, conn)
+	bridge.BiCopy(ctx, ch, conn)
 }
 
-// makeOpenChannel 建立 LAN 用的 openChannelFunc。
+// makeOpenChannel 建立 LAN 用的 bridge.OpenChannelFunc。
 // 根據 label 前綴路由到不同的 directsrv action。
-func (t *lanTab) makeOpenChannel() openChannelFunc {
+func (t *lanTab) makeOpenChannel() bridge.OpenChannelFunc {
 	t.cliMu.Lock()
 	addr := t.remoteAddr
 	token := t.remoteToken
@@ -727,26 +728,26 @@ func (t *lanTab) makeOpenChannel() openChannelFunc {
 	return func(label string) (io.ReadWriteCloser, error) {
 		switch {
 		case strings.HasPrefix(label, "adb-server/"):
-			return t.dialDirectSrv(addr, token, "connect-server", "", "")
+			return directsrv.DialService(addr, token, "connect-server", "", "")
 
 		case strings.HasPrefix(label, "adb-stream/"):
 			parts := strings.SplitN(label, "/", 4)
 			if len(parts) < 4 {
 				return nil, fmt.Errorf("invalid stream label: %s", label)
 			}
-			conn, err := t.dialDirectSrv(addr, token, "connect-service", parts[2], parts[3])
+			conn, err := directsrv.DialService(addr, token, "connect-service", parts[2], parts[3])
 			if err != nil {
 				return nil, err
 			}
 			// setupStream 期待 ready signal（1 byte），connect-service 成功後連線已就緒
-			return &prefixedRWC{ch: conn, prefix: []byte{1}}, nil
+			return &bridge.PrefixedRWC{Ch: conn, Prefix: []byte{1}}, nil
 
 		case strings.HasPrefix(label, "adb-fwd/"):
 			parts := strings.SplitN(label, "/", 4)
 			if len(parts) < 4 {
 				return nil, fmt.Errorf("invalid fwd label: %s", label)
 			}
-			return t.dialDirectSrv(addr, token, "connect-service", parts[2], parts[3])
+			return directsrv.DialService(addr, token, "connect-service", parts[2], parts[3])
 
 		default:
 			return nil, fmt.Errorf("unknown channel: %s", label)
@@ -754,220 +755,42 @@ func (t *lanTab) makeOpenChannel() openChannelFunc {
 	}
 }
 
-// dialDirectSrv 連線到遠端 directsrv 並發送指定 action。
-// 成功後回傳的 TCP 連線已處於 raw 資料模式。
-func (t *lanTab) dialDirectSrv(addr, token, action, serial, service string) (io.ReadWriteCloser, error) {
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
-	if err != nil {
-		return nil, fmt.Errorf(msg().LAN.ErrDialAgentFmt, err)
-	}
-
-	req := directsrv.Request{
-		Action:  action,
-		Serial:  serial,
-		Service: service,
-		Token:   token,
-	}
-	if err := json.NewEncoder(conn).Encode(req); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf(msg().LAN.ErrSendRequestFmt, err)
-	}
-
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	var resp directsrv.Response
-	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf(msg().LAN.ErrReadResponseFmt, err)
-	}
-	conn.SetDeadline(time.Time{})
-
-	if !resp.OK {
-		conn.Close()
-		return nil, fmt.Errorf("%s", resp.Error)
-	}
-
-	return conn, nil
-}
-
 // lanHandleForwardInterception 處理 LAN 模式的 forward 攔截。
-func (t *lanTab) lanHandleForwardInterception(ctx context.Context, conn net.Conn, cmd string, openCh openChannelFunc) bool {
-	if fc := parseForwardCmd(cmd); fc != nil {
-		t.lanHandleForward(ctx, conn, fc, openCh)
+// 委託 bridge.ForwardManager 處理 forward/killforward/list-forward 命令，
+// 但設備解析使用 lanTab 自己的 cliDevices（directsrv.DeviceInfo）。
+func (t *lanTab) lanHandleForwardInterception(ctx context.Context, conn net.Conn, cmd string, openCh bridge.OpenChannelFunc) bool {
+	// forward 命令：需要先同步設備到 ForwardManager 再委託處理
+	if fc := bridge.ParseForwardCmd(cmd); fc != nil {
+		// 同步 lanTab 的 cliDevices 到 ForwardManager
+		t.syncDevicesToFm()
+		t.lanFm.HandleForward(ctx, conn, fc, openCh)
 		return true
 	}
-	if spec, ok := parseKillForwardCmd(cmd); ok {
-		t.lanHandleKillForward(conn, spec)
+	if spec, ok := bridge.ParseKillForwardCmd(cmd); ok {
+		t.lanFm.HandleKillForward(conn, spec)
 		return true
 	}
-	if isKillForwardAll(cmd) {
-		t.lanHandleKillForwardAll(conn)
+	if bridge.IsKillForwardAll(cmd) {
+		t.lanFm.HandleKillForwardAll(conn)
 		return true
 	}
-	if isListForward(cmd) {
-		t.lanHandleListForward(conn)
+	if bridge.IsListForward(cmd) {
+		t.lanFm.HandleListForward(conn)
 		return true
 	}
 	return false
 }
 
-// lanHandleForward 攔截 adb forward 命令：在本機建立 listener，轉發到遠端設備。
-func (t *lanTab) lanHandleForward(ctx context.Context, conn net.Conn, fc *fwdCmd, openCh openChannelFunc) {
-	port, err := parseLocalSpec(fc.localSpec)
-	if err != nil {
-		writeADBOkay(conn)
-		writeADBFail(conn, err.Error())
-		return
-	}
-
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-	if err != nil {
-		writeADBOkay(conn)
-		writeADBFail(conn, fmt.Sprintf("cannot bind: %v", err))
-		return
-	}
-	actualPort := ln.Addr().(*net.TCPAddr).Port
-
-	// 解析 serial：如果只有一個 device，自動映射
-	serial := t.lanResolveSerial(fc.serial)
-	if serial == "" {
-		ln.Close()
-		writeADBOkay(conn)
-		writeADBFail(conn, "cannot resolve target device serial")
-		return
-	}
-
-	fwdCtx, fwdCancel := context.WithCancel(ctx)
-	fl := &fwdListener{
-		ln: ln, serial: serial,
-		localSpec: fc.localSpec, remoteSpec: fc.remoteSpec,
-		cancel: fwdCancel,
-	}
-
-	t.fwdMu.Lock()
-	if t.fwdListeners == nil {
-		t.fwdListeners = make(map[string]*fwdListener)
-	}
-	if old, ok := t.fwdListeners[fc.localSpec]; ok {
-		old.cancel()
-		old.ln.Close()
-	}
-	key := fc.localSpec
-	if fc.localSpec == "tcp:0" {
-		key = fmt.Sprintf("tcp:%d", actualPort)
-		fl.localSpec = key
-	}
-	t.fwdListeners[key] = fl
-	t.fwdMu.Unlock()
-
-	go t.lanFwdAcceptLoop(fwdCtx, fl, openCh)
-
-	writeADBOkay(conn)
-	if fc.localSpec == "tcp:0" {
-		portStr := fmt.Sprintf("%d", actualPort)
-		writeADBOkay(conn)
-		fmt.Fprintf(conn, "%04x%s", len(portStr), portStr)
-	} else {
-		writeADBOkay(conn)
-	}
-
-	slog.Debug("LAN forward established", "local", key, "remote", fc.remoteSpec, "serial", serial)
-}
-
-// lanResolveSerial 解析 forward 的 serial，只有一台設備時自動映射。
-func (t *lanTab) lanResolveSerial(requested string) string {
+// syncDevicesToFm 將 lanTab 的 cliDevices（directsrv.DeviceInfo）同步到 ForwardManager。
+// ForwardManager 使用 bridge.DeviceInfo，需要轉換類型。
+func (t *lanTab) syncDevicesToFm() {
 	t.cliMu.Lock()
-	defer t.cliMu.Unlock()
-
-	var devs []directsrv.DeviceInfo
-	for _, d := range t.cliDevices {
-		if d.State == "device" {
-			devs = append(devs, d)
-		}
+	devs := make([]bridge.DeviceInfo, len(t.cliDevices))
+	for i, d := range t.cliDevices {
+		devs[i] = bridge.DeviceInfo{Serial: d.Serial, State: d.State}
 	}
-	if len(devs) == 0 {
-		return ""
-	}
-	if requested != "" {
-		for _, d := range devs {
-			if d.Serial == requested {
-				return requested
-			}
-		}
-	}
-	if len(devs) == 1 {
-		return devs[0].Serial
-	}
-	return ""
-}
-
-// lanFwdAcceptLoop 接受 forward listener 的連線。
-func (t *lanTab) lanFwdAcceptLoop(ctx context.Context, fl *fwdListener, openCh openChannelFunc) {
-	var connID atomic.Int64
-	for {
-		conn, err := fl.ln.Accept()
-		if err != nil {
-			return
-		}
-		id := connID.Add(1)
-		go func(c net.Conn, i int64) {
-			defer c.Close()
-			label := fmt.Sprintf("adb-fwd/%d/%s/%s", i, fl.serial, fl.remoteSpec)
-			ch, err := openCh(label)
-			if err != nil {
-				slog.Debug("LAN forward connection failed", "label", label, "error", err)
-				return
-			}
-			defer ch.Close()
-			biCopy(ctx, ch, c)
-		}(conn, id)
-	}
-}
-
-// lanHandleKillForward 處理 killforward 命令。
-func (t *lanTab) lanHandleKillForward(conn net.Conn, localSpec string) {
-	t.fwdMu.Lock()
-	fl, ok := t.fwdListeners[localSpec]
-	if ok {
-		fl.cancel()
-		fl.ln.Close()
-		delete(t.fwdListeners, localSpec)
-	}
-	t.fwdMu.Unlock()
-	writeADBOkay(conn)
-	if ok {
-		writeADBOkay(conn)
-	} else {
-		writeADBFail(conn, fmt.Sprintf("listener '%s' not found", localSpec))
-	}
-}
-
-// lanHandleKillForwardAll 處理 killforward-all 命令。
-func (t *lanTab) lanHandleKillForwardAll(conn net.Conn) {
-	t.fwdMu.Lock()
-	for key, fl := range t.fwdListeners {
-		fl.cancel()
-		fl.ln.Close()
-		delete(t.fwdListeners, key)
-	}
-	t.fwdMu.Unlock()
-	writeADBOkay(conn)
-	writeADBOkay(conn)
-}
-
-// lanHandleListForward 處理 list-forward 命令。
-func (t *lanTab) lanHandleListForward(conn net.Conn) {
-	t.fwdMu.Lock()
-	var lines []string
-	for _, fl := range t.fwdListeners {
-		lines = append(lines, fmt.Sprintf("%s %s %s", fl.serial, fl.localSpec, fl.remoteSpec))
-	}
-	t.fwdMu.Unlock()
-	list := strings.Join(lines, "\n")
-	if len(lines) > 0 {
-		list += "\n"
-	}
-	writeADBOkay(conn)
-	fmt.Fprintf(conn, "%04x%s", len(list), list)
+	t.cliMu.Unlock()
+	t.lanFm.UpdateDevices(devs)
 }
 
 // pollRemoteDevices 定期查詢遠端設備清單並更新 UI。
@@ -994,6 +817,9 @@ func (t *lanTab) pollRemoteDevices(ctx context.Context, addr, token string) {
 
 // disconnect 中斷連線，清理 proxy 和 forward listeners。
 func (t *lanTab) disconnect() {
+	// 先清理 forward listeners（ForwardManager 用獨立鎖）
+	t.lanFm.CloseFwdListeners()
+
 	t.cliMu.Lock()
 	if t.cliCancel != nil {
 		t.cliCancel()
@@ -1008,16 +834,6 @@ func (t *lanTab) disconnect() {
 	t.cliDevices = nil
 	t.cliStatus = msg().LAN.StatusDisconnected
 	t.cliMu.Unlock()
-
-	// 清理 forward listeners
-	t.fwdMu.Lock()
-	for key, fl := range t.fwdListeners {
-		fl.cancel()
-		fl.ln.Close()
-		delete(t.fwdListeners, key)
-	}
-	t.fwdListeners = nil
-	t.fwdMu.Unlock()
 
 	// 自動 adb disconnect
 	if port > 0 {
