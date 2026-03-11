@@ -174,29 +174,32 @@ jobs:
           fi
           go build -trimpath -ldflags="${LDFLAGS}" -o "dist/radb${EXT}" ./cmd/radb
 
-      - name: UPX 壓縮（Windows ARM64 除外）
-        if: "!(matrix.goos == 'windows' && matrix.goarch == 'arm64')"
-        run: |
-          # 安裝 UPX
-          UPX_VERSION="4.2.4"
-          curl -sL "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_linux.tar.xz" | tar -xJ
-          UPX="./upx-${UPX_VERSION}-amd64_linux/upx"
-
-          echo "壓縮前: $(du -h dist/radb${EXT} | cut -f1)"
-          $UPX --best --lzma "dist/radb${EXT}"
-          echo "壓縮後: $(du -h dist/radb${EXT} | cut -f1)"
-
-      - name: 打包 Linux (tar.gz)
-        if: matrix.goos == 'linux'
-        run: tar -czf "${{ env.ARCHIVE_NAME }}.tar.gz" -C dist .
-
+      # Windows ZIP 先打包（未壓 UPX 的乾淨 binary，避免防毒誤判）
       - name: 打包 Windows (zip)
         if: matrix.goos == 'windows'
         run: cd dist && zip "../${{ env.ARCHIVE_NAME }}.zip" *
 
+      # UPX 壓縮（就地覆蓋 dist/ 內的 binary）
+      # 不使用 --lzma：LZMA 解壓 stub 會導致 PE 結構異常，觸發防毒啟發式偵測
+      - name: UPX 壓縮（Windows ARM64 除外）
+        if: "!(matrix.goos == 'windows' && matrix.goarch == 'arm64')"
+        run: |
+          UPX_VERSION="5.1.1"
+          curl -sL "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_linux.tar.xz" | tar -xJ
+          UPX="./upx-${UPX_VERSION}-amd64_linux/upx"
+
+          echo "壓縮前: $(du -h dist/radb${EXT} | cut -f1)"
+          $UPX --best "dist/radb${EXT}"
+          echo "壓縮後: $(du -h dist/radb${EXT} | cut -f1)"
+
+      # 獨立 exe 和 Linux tar.gz 使用 UPX 壓縮後的 binary
       - name: 複製 Windows 獨立執行檔
         if: matrix.goos == 'windows'
         run: cp "dist/radb.exe" "${{ env.ARCHIVE_NAME }}.exe"
+
+      - name: 打包 Linux (tar.gz)
+        if: matrix.goos == 'linux'
+        run: tar -czf "${{ env.ARCHIVE_NAME }}.tar.gz" -C dist .
 
       - name: 產生 checksum
         run: sha256sum radb-*.* > checksums-${{ matrix.goos }}-${{ matrix.goarch }}.txt
