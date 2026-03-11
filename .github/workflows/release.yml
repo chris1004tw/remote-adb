@@ -112,17 +112,21 @@ jobs:
           IFS='.' read -ra PARTS <<< "$WIN_VER"
           while [ ${#PARTS[@]} -lt 4 ]; do PARTS+=("0"); done
           WIN_VER="${PARTS[0]}.${PARTS[1]}.${PARTS[2]}.${PARTS[3]}"
-          # 建立 go-winres 設定（繁體中文 locale 0404）
+          # 準備圖示檔案與 go-winres 設定（雙語 locale：0404 繁中 + 0409 英文）
           mkdir -p cmd/radb/winres
+          cp assets/radb-256x256.png cmd/radb/winres/icon.png
+          cp assets/radb-48x48.png cmd/radb/winres/icon48.png
+          cp assets/radb-32x32.png cmd/radb/winres/icon32.png
+          cp assets/radb-16x16.png cmd/radb/winres/icon16.png
           cat > cmd/radb/winres/winres.json << EOF
           {
             "RT_GROUP_ICON": {
-              "#APPICON": {
+              "APP": {
                 "0000": [
-                  "../../../assets/radb-256x256.png",
-                  "../../../assets/radb-48x48.png",
-                  "../../../assets/radb-32x32.png",
-                  "../../../assets/radb-16x16.png"
+                  "icon.png",
+                  "icon48.png",
+                  "icon32.png",
+                  "icon16.png"
                 ]
               }
             },
@@ -136,6 +140,12 @@ jobs:
                   "info": {
                     "0404": {
                       "FileDescription": "遠端 ADB P2P 轉發工具",
+                      "ProductName": "radb",
+                      "FileVersion": "${TAG}",
+                      "ProductVersion": "${TAG}"
+                    },
+                    "0409": {
+                      "FileDescription": "Remote ADB P2P Forwarding Tool",
                       "ProductName": "radb",
                       "FileVersion": "${TAG}",
                       "ProductVersion": "${TAG}"
