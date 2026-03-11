@@ -155,56 +155,59 @@ func (t *signalTab) layout(gtx layout.Context, th *material.Theme) layout.Dimens
 		t.mode = signalModeClient
 	}
 
-	var children []layout.FlexChild
-
-	// 三個子模式按鈕列
-	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-		return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return layout.Flex{}.Layout(gtx,
-				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					btn := material.Button(th, &t.serverModeBtn, msg().Signal.Server)
-					if t.mode == signalModeServer {
-						btn.Background = colorModeActive
-					} else {
-						btn.Background = colorModeInactive
-					}
-					return btn.Layout(gtx)
-				}),
-				layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
-				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					btn := material.Button(th, &t.clientModeBtn, msg().Common.Controller)
-					if t.mode == signalModeClient {
-						btn.Background = colorModeActive
-					} else {
-						btn.Background = colorModeInactive
-					}
-					return btn.Layout(gtx)
-				}),
-				layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
-				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					btn := material.Button(th, &t.agentModeBtn, msg().Common.Agent)
-					if t.mode == signalModeAgent {
-						btn.Background = colorModeActive
-					} else {
-						btn.Background = colorModeInactive
-					}
-					return btn.Layout(gtx)
-				}),
-			)
-		})
-	}))
-
-	// 根據子模式渲染內容
-	switch t.mode {
-	case signalModeServer:
-		children = append(children, t.layoutServer(gtx, th)...)
-	case signalModeAgent:
-		children = append(children, t.layoutAgent(gtx, th)...)
-	case signalModeClient:
-		children = append(children, t.layoutClient(gtx, th)...)
-	}
-
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		// 子模式按鈕列（全寬，與主分頁對齊）
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{}.Layout(gtx,
+					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+						btn := material.Button(th, &t.serverModeBtn, msg().Signal.Server)
+						if t.mode == signalModeServer {
+							btn.Background = colorModeActive
+						} else {
+							btn.Background = colorModeInactive
+						}
+						return btn.Layout(gtx)
+					}),
+					layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+						btn := material.Button(th, &t.clientModeBtn, msg().Common.Controller)
+						if t.mode == signalModeClient {
+							btn.Background = colorModeActive
+						} else {
+							btn.Background = colorModeInactive
+						}
+						return btn.Layout(gtx)
+					}),
+					layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+						btn := material.Button(th, &t.agentModeBtn, msg().Common.Agent)
+						if t.mode == signalModeAgent {
+							btn.Background = colorModeActive
+						} else {
+							btn.Background = colorModeInactive
+						}
+						return btn.Layout(gtx)
+					}),
+				)
+			})
+		}),
+		// 內容區域（加水平 padding，與子模式按鈕列分離）
+		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				var children []layout.FlexChild
+				switch t.mode {
+				case signalModeServer:
+					children = append(children, t.layoutServer(gtx, th)...)
+				case signalModeAgent:
+					children = append(children, t.layoutAgent(gtx, th)...)
+				case signalModeClient:
+					children = append(children, t.layoutClient(gtx, th)...)
+				}
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+			})
+		}),
+	)
 }
 
 // === 伺服器子模式 ===

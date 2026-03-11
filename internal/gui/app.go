@@ -298,7 +298,7 @@ func (t *tabBar) layout(gtx layout.Context, th *material.Theme) layout.Dimension
 						return btn.Layout(gtx)
 					})
 				}
-				return layout.Flex{}.Layout(gtx, children...)
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx, children...)
 			})
 		}),
 
@@ -309,9 +309,10 @@ func (t *tabBar) layout(gtx layout.Context, th *material.Theme) layout.Dimension
 			return layout.Dimensions{Size: size}
 		}),
 
-		// 內容區域
+		// 內容區域（僅上下 padding，水平 padding 由各分頁自行處理，
+		// 讓子模式按鈕列能與主分頁等寬對齊）
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-			return layout.UniformInset(unit.Dp(16)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				if t.selected < len(t.items) {
 					return t.items[t.selected].layoutFn(gtx, th)
 				}

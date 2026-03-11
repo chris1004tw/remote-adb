@@ -706,62 +706,67 @@ func (t *pairTab) layout(gtx layout.Context, th *material.Theme) layout.Dimensio
 		t.isServer = true
 	}
 
-	// 組裝所有 widget（用於可捲動的 List）
-	var widgets []layout.Widget
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		// 角色選擇列（全寬，固定在頂部不捲動，與主分頁對齊）
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{}.Layout(gtx,
+					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+						btn := material.Button(th, &t.clientBtn, msg().Common.Controller)
+						if !isServer {
+							btn.Background = colorModeActive
+						} else {
+							btn.Background = colorModeInactive
+						}
+						return btn.Layout(gtx)
+					}),
+					layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+						btn := material.Button(th, &t.serverBtn, msg().Common.Agent)
+						if isServer {
+							btn.Background = colorModeActive
+						} else {
+							btn.Background = colorModeInactive
+						}
+						return btn.Layout(gtx)
+					}),
+				)
+			})
+		}),
+		// 可捲動的內容區域（加水平 padding，與子模式按鈕列分離）
+		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				var widgets []layout.Widget
 
-	// 角色選擇列
-	widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
-		return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return layout.Flex{}.Layout(gtx,
-				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					btn := material.Button(th, &t.clientBtn, msg().Common.Controller)
-					if !isServer {
-						btn.Background = colorModeActive
-					} else {
-						btn.Background = colorModeInactive
+				// 子模式內容
+				if isServer {
+					for _, child := range t.layoutServerWidgets(gtx, th) {
+						widgets = append(widgets, child)
 					}
-					return btn.Layout(gtx)
-				}),
-				layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
-				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					btn := material.Button(th, &t.serverBtn, msg().Common.Agent)
-					if isServer {
-						btn.Background = colorModeActive
-					} else {
-						btn.Background = colorModeInactive
+				} else {
+					for _, child := range t.layoutClientWidgets(gtx, th) {
+						widgets = append(widgets, child)
 					}
-					return btn.Layout(gtx)
-				}),
-			)
-		})
-	})
+				}
 
-	// 子模式內容
-	if isServer {
-		for _, child := range t.layoutServerWidgets(gtx, th) {
-			widgets = append(widgets, child)
-		}
-	} else {
-		for _, child := range t.layoutClientWidgets(gtx, th) {
-			widgets = append(widgets, child)
-		}
-	}
+				// 狀態
+				widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
+					c := colorPanelHint
+					if connected {
+						c = color.NRGBA{R: 76, G: 175, B: 80, A: 255}
+					}
+					return layout.Inset{Top: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return statusText(gtx, th, msg().Common.StatusPrefix+status, c)
+					})
+				})
 
-	// 狀態
-	widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
-		c := colorPanelHint
-		if connected {
-			c = color.NRGBA{R: 76, G: 175, B: 80, A: 255}
-		}
-		return layout.Inset{Top: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return statusText(gtx, th, msg().Common.StatusPrefix+status, c)
-		})
-	})
-
-	// 可捲動的清單
-	return material.List(th, &t.list).Layout(gtx, len(widgets), func(gtx layout.Context, i int) layout.Dimensions {
-		return widgets[i](gtx)
-	})
+				// 可捲動的清單
+				return material.List(th, &t.list).Layout(gtx, len(widgets), func(gtx layout.Context, i int) layout.Dimensions {
+					return widgets[i](gtx)
+				})
+			})
+		}),
+	)
 }
 
 // === 主控模式 UI ===

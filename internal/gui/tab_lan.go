@@ -113,43 +113,46 @@ func (t *lanTab) layout(gtx layout.Context, th *material.Theme) layout.Dimension
 		t.isServerMode = false
 	}
 
-	var children []layout.FlexChild
-
-	// 子模式選擇列
-	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-		return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return layout.Flex{}.Layout(gtx,
-				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					btn := material.Button(th, &t.connectModeBtn, msg().Common.Controller)
-					if !t.isServerMode {
-						btn.Background = colorModeActive
-					} else {
-						btn.Background = colorModeInactive
-					}
-					return btn.Layout(gtx)
-				}),
-				layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
-				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					btn := material.Button(th, &t.serverModeBtn, msg().Common.Agent)
-					if t.isServerMode {
-						btn.Background = colorModeActive
-					} else {
-						btn.Background = colorModeInactive
-					}
-					return btn.Layout(gtx)
-				}),
-			)
-		})
-	}))
-
-	// 根據子模式渲染內容
-	if t.isServerMode {
-		children = append(children, t.layoutServer(gtx, th)...)
-	} else {
-		children = append(children, t.layoutConnect(gtx, th)...)
-	}
-
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		// 子模式按鈕列（全寬，與主分頁對齊）
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{}.Layout(gtx,
+					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+						btn := material.Button(th, &t.connectModeBtn, msg().Common.Controller)
+						if !t.isServerMode {
+							btn.Background = colorModeActive
+						} else {
+							btn.Background = colorModeInactive
+						}
+						return btn.Layout(gtx)
+					}),
+					layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+						btn := material.Button(th, &t.serverModeBtn, msg().Common.Agent)
+						if t.isServerMode {
+							btn.Background = colorModeActive
+						} else {
+							btn.Background = colorModeInactive
+						}
+						return btn.Layout(gtx)
+					}),
+				)
+			})
+		}),
+		// 內容區域（加水平 padding，與子模式按鈕列分離）
+		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				var children []layout.FlexChild
+				if t.isServerMode {
+					children = append(children, t.layoutServer(gtx, th)...)
+				} else {
+					children = append(children, t.layoutConnect(gtx, th)...)
+				}
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+			})
+		}),
+	)
 }
 
 // --- 被控端子模式（開啟伺服器） ---
