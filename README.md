@@ -19,7 +19,7 @@
 - **互動式 CLI**，一鍵選機、自動分配 Port
 - **支援 adb shell、scrcpy、大檔案傳輸**（100MB+ 穩定）
 - **Direct 模式**：LAN/VPN 內 TCP 直連，不需要 Signal Server
-- **mDNS 自動發現**：自動找到區域網路內的 Agent
+- **mDNS 自動發現**：自動找到區域網路內的被控端
 - **手動 SDP 配對**：跨 NAT 打洞，不需要任何 Server
 - **GUI 介面**：雙擊即開，免開 Terminal（Gio 純 Go 實作）
 
@@ -31,7 +31,7 @@
 graph LR
     subgraph 開發者本機
         CLI[radb CLI]
-        Daemon[radb daemon]
+        Daemon[主控端]
     end
 
     subgraph 雲端/內網
@@ -39,7 +39,7 @@ graph LR
     end
 
     subgraph 遠端主機
-        Agent[radb agent]
+        Agent[被控端]
         Phone1[📱 Device 1]
         Phone2[📱 Device 2]
     end
@@ -61,7 +61,7 @@ graph LR
 | 需求項目 | 說明 |
 |---------|------|
 | Go | >= 1.22（僅建置時需要） |
-| ADB | Agent 所在主機需安裝 Android Platform Tools |
+| ADB | 被控端所在主機需安裝 Android Platform Tools |
 | 網路 | 主控端與被控端需能互相連線（可透過 Server 中繼、LAN 直連或 SDP 手動配對） |
 | 作業系統 | Windows / Linux / macOS |
 
@@ -131,7 +131,7 @@ sudo codesign --force --deep --sign - /Applications/radb.app
 RADB_TOKEN=your-secret radb server --port 8080
 ```
 
-**步驟 2：在遠端主機啟動 Agent**
+**步驟 2：在遠端主機啟動被控端**
 
 ```bash
 RADB_TOKEN=your-secret radb agent --server ws://your-server:8080 --host-id lab-pc-01
@@ -168,21 +168,21 @@ adb -s localhost:15555 push large_file.apk /sdcard/
 ### TCP 直連（LAN/VPN 場景）
 
 ```bash
-# Agent 端：啟動 direct 模式
+# 被控端：啟動 direct 模式
 radb agent --direct-port 15555 --direct-token mysecret
 
 # 也可同時連線 Signal Server
 radb agent --server ws://signal:8080 --token abc --direct-port 15555
 
-# Client 端：自動發現 LAN 上的 Agent（mDNS）
-radb direct discover
+# 主控端：自動發現 LAN 上的被控端（mDNS）
+radb discover
 
 # 查詢設備
-radb direct list 192.168.1.100:15555 --token mysecret
+radb connect 192.168.1.100:15555 --list --token mysecret
 
-# TCP 直連（轉發全部設備，本機 port 從 5555 開始遞增）
-radb direct connect 192.168.1.100:15555 --serial pixel-7 --token mysecret
-# → ADB 轉發 127.0.0.1:5555 → pixel-7
+# TCP 直連（全設備多工轉發，支援 adb shell / scrcpy / forward）
+radb connect 192.168.1.100:15555 --token mysecret
+# → ADB proxy 127.0.0.1:15037，自動 adb connect
 ```
 
 ---
@@ -191,14 +191,14 @@ radb direct connect 192.168.1.100:15555 --serial pixel-7 --token mysecret
 
 直接執行 `radb`（不帶引數）即可開啟圖形介面，包含三個分頁：
 
-- **簡易連線**：跨 NAT 手動 SDP 交換（Client / Agent 雙模式）
-- **區網直連**：開啟 Agent 伺服器或掃描 LAN 自動發現，一鍵轉發全部設備
+- **簡易連線**：跨 NAT 手動 SDP 交換（主控端 / 被控端雙模式）
+- **區網直連**：開啟被控端伺服器或掃描 LAN 自動發現，一鍵轉發全部設備
 - **Relay 伺服器**：透過中央 Signal Server 連線
-- **設定面板**（右下角齒輪）：集中管理 ADB Port、Proxy Port、Direct Port、STUN Server、語言切換，支援手動檢查更新。設定以 TOML 格式持久化於 `%APPDATA%/radb/radb.toml`（Windows）或 `~/.config/radb/radb.toml`（Linux/macOS）
+- **設定面板**（右下角齒輪）：集中管理 ADB Port、Proxy Port、Direct Port、STUN Server、TURN 模式（Cloudflare 免費 / 自訂）、語言切換，支援手動檢查更新。TURN 預設使用 Cloudflare 免費 TURN 憑證（自動取得，開箱即用）；選擇自訂模式時顯示 URL/帳號/密碼輸入框。設定以 TOML 格式持久化於 `%APPDATA%/radb/radb.toml`（Windows）或 `~/.config/radb/radb.toml`（Linux/macOS）
 - **多語系支援**：繁體中文 / English 雙語介面，預設根據系統語系自動偵測，可在設定面板即時切換（不需重啟）
 - **啟動自動檢查更新**：程式啟動後背景檢查新版本，有更新時在主畫面底部顯示通知橫幅，使用者可選擇「立即更新」或「稍後再說」
-- GUI 內建 ADB bridge 針對 DataChannel 採用 **16KB 分塊傳輸**，提升 `scrcpy` 視訊與大流量穩定性
-- GUI 內建 forward 攔截會將本機 `adb connect` 序號（如 `127.0.0.1:15037`）映射為遠端真實設備序號，避免 `scrcpy` forward 失配
+- GUI/CLI 共用 ADB bridge（`internal/bridge/`）針對 DataChannel 採用 **16KB 分塊傳輸**，提升 `scrcpy` 視訊與大流量穩定性
+- 內建 forward 攔截會將本機 `adb connect` 序號（如 `127.0.0.1:15037`）映射為遠端真實設備序號，避免 `scrcpy` forward 失配
 - ADB transport 的 host→device `WRTE` 路徑同樣採 **16KB 分塊寫入**，避免 `sync`/`scrcpy` 啟動階段的大封包失敗
 
 ```bash
@@ -216,16 +216,16 @@ go build -ldflags="-H windowsgui" ./cmd/radb
 適用於無法部署 Server、但需要跨網路連線的場景：
 
 ```bash
-# Client 端：生成 offer
-radb pair offer --serial pixel-7
-# → 複製 offer token 給 Agent 端
+# 主控端：生成邀請碼（compact SDP token）
+radb connect pair
+# → 複製邀請碼給被控端，等待輸入回應碼
 
-# Agent 端：處理 offer
-radb pair answer <offer-token>
-# → 複製 answer token 回 Client 端
+# 被控端：處理邀請碼並回傳回應碼
+radb agent pair <邀請碼>
+# → 複製回應碼回主控端
 
-# Client 貼上 answer → 連線建立
-# → ADB 轉發 127.0.0.1:15555 → pixel-7
+# 主控端貼上回應碼 → P2P 連線建立
+# → ADB proxy 127.0.0.1:15037，全設備多工轉發
 ```
 
 ---
@@ -271,10 +271,10 @@ scripts\windows\scrcpy-radb.cmd
 | `RADB_TOKEN` | (必填) | PSK 驗證 Token |
 | `RADB_SERVER_URL` | `ws://localhost:8080` | Server 位址 |
 | `RADB_STUN_URLS` | `stun:stun.l.google.com:19302` | STUN Server |
-| `RADB_TURN_URL` | (空) | TURN Server（對稱型 NAT 需要） |
-| `RADB_DIRECT_PORT` | (空) | Agent Direct TCP 監聽埠 |
+| `RADB_TURN_URL` | (空) | TURN Server（對稱型 NAT 需要；GUI 預設使用 Cloudflare 免費 TURN） |
+| `RADB_DIRECT_PORT` | (空) | 被控端 Direct TCP 監聽埠 |
 | `RADB_DIRECT_TOKEN` | (空) | Direct 連線 Token |
-| `RADB_PORT_START` | `5555` | Client 起始 Port |
+| `RADB_PORT_START` | `5555` | 主控端起始 Port |
 
 完整設定請參閱 [設定指南](docs/configuration.md)。
 
@@ -285,19 +285,20 @@ scripts\windows\scrcpy-radb.cmd
 ```
 remote-adb/
 ├── cmd/
-│   └── radb/              # 統一入口（server/agent/daemon/bind/direct/pair/gui/update）
+│   └── radb/              # 統一入口（server/agent/daemon/bind/connect/discover/gui/update）
 ├── internal/
 │   ├── adb/               # ADB 協定、設備管理、自動下載 platform-tools
 │   ├── agent/             # 遠端代理端核心邏輯
 │   ├── buildinfo/         # 編譯時注入的版本資訊（Version/Commit/Date）
 │   ├── cli/               # bubbletea 互動式 bind 選單
 │   ├── daemon/            # 背景服務、Port 分配、Binding Table、IPC
-│   ├── directsrv/         # TCP 直連服務 + mDNS 廣播
-│   ├── gui/               # Gio GUI 介面（設定面板 + ADB transport + forward 攔截 + i18n 多語系）
+│   ├── bridge/            # GUI/CLI 共用邏輯（SDP 編解碼、ADB transport、forward 管理）
+│   ├── directsrv/         # TCP 直連服務 + mDNS 廣播 + 客戶端連線
+│   ├── gui/               # Gio GUI 介面（設定面板 + i18n 多語系 + Cloudflare TURN）
 │   ├── proxy/             # TCP 代理（16KB chunking、單連線替換設計）
 │   ├── signal/            # WebSocket 信令 hub、PSK 認證
 │   ├── updater/           # 自動更新（GitHub Releases 下載 + 跨平台 binary 替換）
-│   └── webrtc/            # PeerConnection 與 DataChannel 管理（detach 模式）
+│   └── webrtc/            # PeerConnection 與 DataChannel 管理（detach 模式 + relay 偵測）
 ├── pkg/protocol/          # 共用信令 JSON 格式（Envelope + Payload types）
 ├── assets/                # 跨平台共用資源（應用程式 SVG 圖示）
 ├── macos/                 # macOS .app bundle metadata（Info.plist）
@@ -333,8 +334,8 @@ golangci-lint run
 | 文件 | 說明 |
 |------|------|
 | [系統架構](docs/architecture.md) | 三元件架構、信令協定、技術選型 |
-| [Agent 設計](docs/agent-design.md) | 遠端被控端的設備管理與轉發機制 |
-| [Client 設計](docs/client-design.md) | 本機端 Daemon、CLI、TCP 代理設計 |
+| [被控端設計](docs/agent-design.md) | 遠端被控端的設備管理與轉發機制 |
+| [主控端設計](docs/client-design.md) | 本機端 Daemon、CLI、TCP 代理設計 |
 | [設定指南](docs/configuration.md) | 完整環境變數與 CLI flag 參數表 |
 | [開發者指南](docs/development.md) | 建置、測試、程式碼規範 |
 | [coturn 架設指南](docs/coturn-setup.md) | TURN Server 安裝、設定與整合 |
@@ -344,7 +345,7 @@ golangci-lint run
 ## FAQ
 
 **Q: 連線不上遠端設備？**
-A: 檢查 Server 是否可達、Token 是否一致、防火牆是否阻擋 WebRTC 流量。若在對稱型 NAT 後方，需設定 TURN Server。
+A: 檢查 Server 是否可達、Token 是否一致、防火牆是否阻擋 WebRTC 流量。若在對稱型 NAT 後方，需設定 TURN Server（GUI 預設已啟用 Cloudflare 免費 TURN，通常不需額外設定）。
 
 **Q: 設備顯示 offline？**
 A: 確認遠端主機的 ADB server 正在運行（`adb start-server`），且設備已授權 USB 偵錯。
