@@ -92,8 +92,8 @@ func newLANTab(w *app.Window, cfg *AppConfig) *lanTab {
 	t := &lanTab{
 		window:    w,
 		config:    cfg,
-		srvStatus: "已停止",
-		cliStatus: "未連線",
+		srvStatus: msg().Common.Stopped,
+		cliStatus: msg().Common.Disconnected,
 	}
 	// 伺服器子模式預設值
 	t.srvTokenEditor.SingleLine = true
@@ -120,7 +120,7 @@ func (t *lanTab) layout(gtx layout.Context, th *material.Theme) layout.Dimension
 		return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{}.Layout(gtx,
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					btn := material.Button(th, &t.connectModeBtn, "主控端")
+					btn := material.Button(th, &t.connectModeBtn, msg().Common.Controller)
 					if !t.isServerMode {
 						btn.Background = colorModeActive
 					} else {
@@ -130,7 +130,7 @@ func (t *lanTab) layout(gtx layout.Context, th *material.Theme) layout.Dimension
 				}),
 				layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					btn := material.Button(th, &t.serverModeBtn, "被控端")
+					btn := material.Button(th, &t.serverModeBtn, msg().Common.Agent)
 					if t.isServerMode {
 						btn.Background = colorModeActive
 					} else {
@@ -177,14 +177,14 @@ func (t *lanTab) layoutServer(gtx layout.Context, th *material.Theme) []layout.F
 	// Token
 	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 		return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return labeledEditor(gtx, th, "Token:", &t.srvTokenEditor, "（可選）")
+			return labeledEditor(gtx, th, msg().Common.TokenLabel, &t.srvTokenEditor, msg().Common.TokenHintOptional)
 		})
 	}))
 	// 啟動/停止按鈕
 	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-		label := "啟動伺服器"
+		label := msg().Common.StartServer
 		if running {
-			label = "停止伺服器"
+			label = msg().Common.StopServer
 		}
 		btn := material.Button(th, &t.srvStartBtn, label)
 		if running {
@@ -199,7 +199,7 @@ func (t *lanTab) layoutServer(gtx layout.Context, th *material.Theme) []layout.F
 			c = color.NRGBA{R: 76, G: 175, B: 80, A: 255}
 		}
 		return layout.Inset{Top: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return statusText(gtx, th, "狀態: "+status, c)
+			return statusText(gtx, th, msg().Common.StatusPrefix+status, c)
 		})
 	}))
 	// 設備列表
@@ -208,7 +208,7 @@ func (t *lanTab) layoutServer(gtx layout.Context, th *material.Theme) []layout.F
 			return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				items := []layout.FlexChild{
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return material.Body2(th, fmt.Sprintf("設備 (%d):", len(devices))).Layout(gtx)
+						return material.Body2(th, fmt.Sprintf(msg().Common.DevicesFmt, len(devices))).Layout(gtx)
 					}),
 				}
 				for _, d := range devices {
@@ -250,7 +250,7 @@ func (t *lanTab) startServer() {
 
 	t.srvMu.Lock()
 	t.srvRunning = true
-	t.srvStatus = "檢查 ADB..."
+	t.srvStatus = msg().Common.CheckingADB
 	t.srvCancel = cancel
 	t.srvMu.Unlock()
 	t.window.Invalidate()
@@ -264,7 +264,7 @@ func (t *lanTab) startServer() {
 			t.window.Invalidate()
 		}); err != nil {
 			t.srvMu.Lock()
-			t.srvStatus = fmt.Sprintf("ADB 錯誤: %v", err)
+			t.srvStatus = fmt.Sprintf(msg().Common.ADBErrorFmt, err)
 			t.srvRunning = false
 			t.srvMu.Unlock()
 			t.window.Invalidate()
@@ -291,7 +291,7 @@ func (t *lanTab) startServer() {
 		})
 
 		t.srvMu.Lock()
-		t.srvStatus = fmt.Sprintf("運行中（port %d）", directPort)
+		t.srvStatus = fmt.Sprintf(msg().Common.RunningFmt, directPort)
 		t.srvMu.Unlock()
 		t.window.Invalidate()
 
@@ -299,7 +299,7 @@ func (t *lanTab) startServer() {
 			addr := fmt.Sprintf("0.0.0.0:%d", directPort)
 			if err := dsrv.Serve(ctx, addr); err != nil && ctx.Err() == nil {
 				t.srvMu.Lock()
-				t.srvStatus = fmt.Sprintf("錯誤: %v", err)
+				t.srvStatus = fmt.Sprintf(msg().Common.ErrorFmt, err)
 				t.srvRunning = false
 				t.srvMu.Unlock()
 				t.window.Invalidate()
@@ -341,7 +341,7 @@ func (t *lanTab) stopServer() {
 		t.srvCancel()
 	}
 	t.srvRunning = false
-	t.srvStatus = "已停止"
+	t.srvStatus = msg().Common.Stopped
 	t.srvDevices = nil
 	t.srvMu.Unlock()
 	t.window.Invalidate()
@@ -394,9 +394,9 @@ func (t *lanTab) layoutConnect(gtx layout.Context, th *material.Theme) []layout.
 	// 掃描按鈕
 	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 		return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			label := "掃描 LAN"
+			label := msg().LAN.ScanLAN
 			if scanning {
-				label = "掃描中..."
+				label = msg().LAN.Scanning
 			}
 			btn := material.Button(th, &t.scanBtn, label)
 			return btn.Layout(gtx)
@@ -409,7 +409,7 @@ func (t *lanTab) layoutConnect(gtx layout.Context, th *material.Theme) []layout.
 			return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				items := []layout.FlexChild{
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return material.Body2(th, fmt.Sprintf("發現 %d 個 Agent:", len(agents))).Layout(gtx)
+						return material.Body2(th, fmt.Sprintf(msg().LAN.AgentsFoundFmt, len(agents))).Layout(gtx)
 					}),
 				}
 				for i, a := range agents {
@@ -432,20 +432,20 @@ func (t *lanTab) layoutConnect(gtx layout.Context, th *material.Theme) []layout.
 	// Agent 地址
 	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 		return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return labeledEditor(gtx, th, "Agent 地址:", &t.addrEditor, "192.168.1.100:15555")
+			return labeledEditor(gtx, th, msg().LAN.AgentAddr, &t.addrEditor, "192.168.1.100:15555")
 		})
 	}))
 	// Token
 	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 		return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return labeledEditor(gtx, th, "Token:", &t.cliTokenEditor, "（可選）")
+			return labeledEditor(gtx, th, msg().Common.TokenLabel, &t.cliTokenEditor, msg().Common.TokenHintOptional)
 		})
 	}))
 	// 連線/斷線按鈕
 	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-		label := "連線"
+		label := msg().Common.Connect
 		if connected {
-			label = "中斷連線"
+			label = msg().Common.DisconnectBtn
 		}
 		btn := material.Button(th, &t.connectBtn, label)
 		if connected {
@@ -461,7 +461,7 @@ func (t *lanTab) layoutConnect(gtx layout.Context, th *material.Theme) []layout.
 			c = color.NRGBA{R: 76, G: 175, B: 80, A: 255}
 		}
 		return layout.Inset{Top: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return statusText(gtx, th, "狀態: "+status, c)
+			return statusText(gtx, th, msg().Common.StatusPrefix+status, c)
 		})
 	}))
 
@@ -471,7 +471,7 @@ func (t *lanTab) layoutConnect(gtx layout.Context, th *material.Theme) []layout.
 			return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				items := []layout.FlexChild{
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return material.Body2(th, fmt.Sprintf("ADB Proxy: 127.0.0.1:%d（%d 個設備）:", proxyPort, len(devices))).Layout(gtx)
+						return material.Body2(th, fmt.Sprintf(msg().LAN.ProxyDevFmt, proxyPort, len(devices))).Layout(gtx)
 					}),
 				}
 				for _, d := range devices {
@@ -525,7 +525,7 @@ func (t *lanTab) connect() {
 
 	if addr == "" {
 		t.cliMu.Lock()
-		t.cliStatus = "請填入 Agent 地址"
+		t.cliStatus = msg().LAN.StatusPleaseAddr
 		t.cliMu.Unlock()
 		t.window.Invalidate()
 		return
@@ -534,7 +534,7 @@ func (t *lanTab) connect() {
 	proxyPort := t.config.ProxyPort
 
 	t.cliMu.Lock()
-	t.cliStatus = "查詢設備中..."
+	t.cliStatus = msg().LAN.StatusQuerying
 	t.cliMu.Unlock()
 	t.window.Invalidate()
 
@@ -551,7 +551,7 @@ func (t *lanTab) connect() {
 
 		if len(devices) == 0 {
 			t.cliMu.Lock()
-			t.cliStatus = "Agent 上沒有可用設備"
+			t.cliStatus = msg().LAN.StatusNoDevices
 			t.cliMu.Unlock()
 			t.window.Invalidate()
 			return
@@ -561,7 +561,7 @@ func (t *lanTab) connect() {
 		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort))
 		if err != nil {
 			t.cliMu.Lock()
-			t.cliStatus = fmt.Sprintf("建立 proxy 失敗: %v", err)
+			t.cliStatus = fmt.Sprintf(msg().LAN.ErrProxyFmt, err)
 			t.cliMu.Unlock()
 			t.window.Invalidate()
 			return
@@ -578,11 +578,11 @@ func (t *lanTab) connect() {
 		t.remoteAddr = addr
 		t.remoteToken = token
 		t.cliDevices = devices
-		t.cliStatus = fmt.Sprintf("已連線，ADB Proxy: 127.0.0.1:%d", actualPort)
+		t.cliStatus = fmt.Sprintf(msg().LAN.StatusConnectedFmt, actualPort)
 		t.cliMu.Unlock()
 		t.window.Invalidate()
 
-		slog.Info("LAN proxy 已啟動", "port", actualPort, "remote", addr, "devices", len(devices))
+		slog.Info("LAN proxy started", "port", actualPort, "remote", addr, "devices", len(devices))
 
 		// 3. 接受連線，智慧協定偵測
 		go t.lanProxyAccept(ctx, ln)
@@ -595,9 +595,9 @@ func (t *lanTab) connect() {
 			dialer := adb.NewDialer("")
 			target := fmt.Sprintf("127.0.0.1:%d", actualPort)
 			if err := dialer.Connect(target); err != nil {
-				slog.Debug("自動 adb connect 失敗", "target", target, "error", err)
+				slog.Debug("auto adb connect failed", "target", target, "error", err)
 			} else {
-				slog.Debug("自動 adb connect 成功", "target", target)
+				slog.Debug("auto adb connect succeeded", "target", target)
 			}
 		}()
 	}()
@@ -607,22 +607,22 @@ func (t *lanTab) connect() {
 func (t *lanTab) queryDevices(addr, token string) ([]directsrv.DeviceInfo, error) {
 	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("連線失敗: %v", err)
+		return nil, fmt.Errorf(msg().LAN.ErrConnectFmt, err)
 	}
 	defer conn.Close()
 
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := json.NewEncoder(conn).Encode(directsrv.Request{Action: "list", Token: token}); err != nil {
-		return nil, fmt.Errorf("發送失敗: %v", err)
+		return nil, fmt.Errorf(msg().LAN.ErrSendFmt, err)
 	}
 
 	var resp directsrv.Response
 	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
-		return nil, fmt.Errorf("讀取失敗: %v", err)
+		return nil, fmt.Errorf(msg().LAN.ErrReadFmt, err)
 	}
 
 	if !resp.OK {
-		return nil, fmt.Errorf("查詢失敗: %s", resp.Error)
+		return nil, fmt.Errorf(msg().LAN.ErrQueryFmt, resp.Error)
 	}
 
 	// 篩選 device 狀態
@@ -655,7 +655,7 @@ func (t *lanTab) lanHandleConn(ctx context.Context, conn net.Conn, id int64) {
 
 	var peek [4]byte
 	if _, err := io.ReadFull(conn, peek[:]); err != nil {
-		slog.Debug("LAN proxy: 讀取前 4 bytes 失敗", "id", id, "error", err)
+		slog.Debug("LAN proxy: failed to read first 4 bytes", "id", id, "error", err)
 		return
 	}
 
@@ -679,12 +679,12 @@ func (t *lanTab) lanHandleConn(ctx context.Context, conn net.Conn, id int64) {
 	// hex prefix → ADB server 協定
 	n, err := strconv.ParseInt(string(peek[:]), 16, 32)
 	if err != nil {
-		slog.Debug("LAN proxy: 無效 ADB 請求", "id", id, "first4", string(peek[:]))
+		slog.Debug("LAN proxy: invalid ADB request", "id", id, "first4", string(peek[:]))
 		return
 	}
 	cmdBuf := make([]byte, n)
 	if _, err := io.ReadFull(conn, cmdBuf); err != nil {
-		slog.Debug("LAN proxy: 讀取命令失敗", "id", id, "error", err)
+		slog.Debug("LAN proxy: failed to read command", "id", id, "error", err)
 		return
 	}
 	raw := append(peek[:], cmdBuf...)
@@ -700,13 +700,13 @@ func (t *lanTab) lanHandleConn(ctx context.Context, conn net.Conn, id int64) {
 	// 一般 ADB 命令：connect-server 橋接到遠端 ADB server
 	ch, err := openCh(fmt.Sprintf("adb-server/%d", id))
 	if err != nil {
-		slog.Debug("LAN proxy: connect-server 失敗", "id", id, "error", err)
+		slog.Debug("LAN proxy: connect-server failed", "id", id, "error", err)
 		return
 	}
 	defer ch.Close()
 
 	if _, err := ch.Write(raw); err != nil {
-		slog.Debug("LAN proxy: 寫入命令失敗", "id", id, "error", err)
+		slog.Debug("LAN proxy: failed to write command", "id", id, "error", err)
 		return
 	}
 
@@ -756,7 +756,7 @@ func (t *lanTab) makeOpenChannel() openChannelFunc {
 func (t *lanTab) dialDirectSrv(addr, token, action, serial, service string) (io.ReadWriteCloser, error) {
 	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("連線 Agent 失敗: %v", err)
+		return nil, fmt.Errorf(msg().LAN.ErrDialAgentFmt, err)
 	}
 
 	req := directsrv.Request{
@@ -767,14 +767,14 @@ func (t *lanTab) dialDirectSrv(addr, token, action, serial, service string) (io.
 	}
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("發送請求失敗: %v", err)
+		return nil, fmt.Errorf(msg().LAN.ErrSendRequestFmt, err)
 	}
 
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
 	var resp directsrv.Response
 	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("讀取回應失敗: %v", err)
+		return nil, fmt.Errorf(msg().LAN.ErrReadResponseFmt, err)
 	}
 	conn.SetDeadline(time.Time{})
 
@@ -867,7 +867,7 @@ func (t *lanTab) lanHandleForward(ctx context.Context, conn net.Conn, fc *fwdCmd
 		writeADBOkay(conn)
 	}
 
-	slog.Debug("LAN forward 已建立", "local", key, "remote", fc.remoteSpec, "serial", serial)
+	slog.Debug("LAN forward established", "local", key, "remote", fc.remoteSpec, "serial", serial)
 }
 
 // lanResolveSerial 解析 forward 的 serial，只有一台設備時自動映射。
@@ -911,7 +911,7 @@ func (t *lanTab) lanFwdAcceptLoop(ctx context.Context, fl *fwdListener, openCh o
 			label := fmt.Sprintf("adb-fwd/%d/%s/%s", i, fl.serial, fl.remoteSpec)
 			ch, err := openCh(label)
 			if err != nil {
-				slog.Debug("LAN forward 連線失敗", "label", label, "error", err)
+				slog.Debug("LAN forward connection failed", "label", label, "error", err)
 				return
 			}
 			defer ch.Close()
@@ -978,7 +978,7 @@ func (t *lanTab) pollRemoteDevices(ctx context.Context, addr, token string) {
 		case <-ticker.C:
 			devices, err := t.queryDevices(addr, token)
 			if err != nil {
-				slog.Debug("LAN 設備輪詢失敗", "error", err)
+				slog.Debug("LAN device polling failed", "error", err)
 				continue
 			}
 			t.cliMu.Lock()
@@ -1003,7 +1003,7 @@ func (t *lanTab) disconnect() {
 	t.proxyPort = 0
 	t.connected = false
 	t.cliDevices = nil
-	t.cliStatus = "已中斷"
+	t.cliStatus = msg().LAN.StatusDisconnected
 	t.cliMu.Unlock()
 
 	// 清理 forward listeners

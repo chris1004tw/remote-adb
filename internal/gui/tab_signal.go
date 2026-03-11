@@ -107,9 +107,9 @@ type signalTab struct {
 func newSignalTab(w *app.Window) *signalTab {
 	t := &signalTab{
 		window:             w,
-		srvStatus:          "已停止",
-		agentStatus:        "已停止",
-		clientStatus:       "未連線",
+		srvStatus:          msg().Common.Stopped,
+		agentStatus:        msg().Common.Stopped,
+		clientStatus:       msg().Common.Disconnected,
 		clientSelectedHost: -1,
 	}
 	// 伺服器子模式
@@ -162,7 +162,7 @@ func (t *signalTab) layout(gtx layout.Context, th *material.Theme) layout.Dimens
 		return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{}.Layout(gtx,
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					btn := material.Button(th, &t.serverModeBtn, "伺服器")
+					btn := material.Button(th, &t.serverModeBtn, msg().Signal.Server)
 					if t.mode == signalModeServer {
 						btn.Background = colorModeActive
 					} else {
@@ -172,7 +172,7 @@ func (t *signalTab) layout(gtx layout.Context, th *material.Theme) layout.Dimens
 				}),
 				layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					btn := material.Button(th, &t.clientModeBtn, "主控端")
+					btn := material.Button(th, &t.clientModeBtn, msg().Common.Controller)
 					if t.mode == signalModeClient {
 						btn.Background = colorModeActive
 					} else {
@@ -182,7 +182,7 @@ func (t *signalTab) layout(gtx layout.Context, th *material.Theme) layout.Dimens
 				}),
 				layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					btn := material.Button(th, &t.agentModeBtn, "被控端")
+					btn := material.Button(th, &t.agentModeBtn, msg().Common.Agent)
 					if t.mode == signalModeAgent {
 						btn.Background = colorModeActive
 					} else {
@@ -236,14 +236,14 @@ func (t *signalTab) layoutServer(gtx layout.Context, th *material.Theme) []layou
 		// Token
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return labeledEditor(gtx, th, "Token:", &t.srvTokenEditor, "PSK 認證 Token")
+				return labeledEditor(gtx, th, msg().Common.TokenLabel, &t.srvTokenEditor, msg().Common.TokenHintPSK)
 			})
 		}),
 		// 啟動/停止
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			label := "啟動伺服器"
+			label := msg().Common.StartServer
 			if running {
-				label = "停止伺服器"
+				label = msg().Common.StopServer
 			}
 			btn := material.Button(th, &t.srvStartBtn, label)
 			if running {
@@ -258,7 +258,7 @@ func (t *signalTab) layoutServer(gtx layout.Context, th *material.Theme) []layou
 				c = color.NRGBA{R: 76, G: 175, B: 80, A: 255}
 			}
 			return layout.Inset{Top: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return statusText(gtx, th, "狀態: "+status, c)
+				return statusText(gtx, th, msg().Common.StatusPrefix+status, c)
 			})
 		}),
 	}
@@ -272,7 +272,7 @@ func (t *signalTab) startSignalServer() {
 	token := t.srvTokenEditor.Text()
 	if token == "" {
 		t.srvMu.Lock()
-		t.srvStatus = "請輸入 Token"
+		t.srvStatus = msg().Signal.StatusPleaseToken
 		t.srvMu.Unlock()
 		t.window.Invalidate()
 		return
@@ -291,7 +291,7 @@ func (t *signalTab) startSignalServer() {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.srvMu.Lock()
 	t.srvRunning = true
-	t.srvStatus = fmt.Sprintf("運行中（port %d）", port)
+	t.srvStatus = fmt.Sprintf(msg().Common.RunningFmt, port)
 	t.srvCancel = cancel
 	t.srvMu.Unlock()
 	t.window.Invalidate()
@@ -299,7 +299,7 @@ func (t *signalTab) startSignalServer() {
 	go func() {
 		if err := t.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			t.srvMu.Lock()
-			t.srvStatus = fmt.Sprintf("錯誤: %v", err)
+			t.srvStatus = fmt.Sprintf(msg().Common.ErrorFmt, err)
 			t.srvRunning = false
 			t.srvMu.Unlock()
 			t.window.Invalidate()
@@ -319,7 +319,7 @@ func (t *signalTab) stopSignalServer() {
 		t.srvCancel()
 	}
 	t.srvRunning = false
-	t.srvStatus = "已停止"
+	t.srvStatus = msg().Common.Stopped
 	t.srvMu.Unlock()
 	t.window.Invalidate()
 }
@@ -354,13 +354,13 @@ func (t *signalTab) layoutAgent(gtx layout.Context, th *material.Theme) []layout
 		// Token
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return labeledEditor(gtx, th, "Token:", &t.agentTokenEditor, "PSK 認證 Token")
+				return labeledEditor(gtx, th, msg().Common.TokenLabel, &t.agentTokenEditor, msg().Common.TokenHintPSK)
 			})
 		}),
 		// Host ID
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return labeledEditor(gtx, th, "主機名稱:", &t.agentHostEditor, "自動偵測")
+				return labeledEditor(gtx, th, msg().Signal.HostnameLabel, &t.agentHostEditor, msg().Signal.HostnameHint)
 			})
 		}),
 		// ADB Port
@@ -377,9 +377,9 @@ func (t *signalTab) layoutAgent(gtx layout.Context, th *material.Theme) []layout
 		}),
 		// 啟動/停止
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			label := "啟動被控端"
+			label := msg().Signal.StartAgent
 			if running {
-				label = "停止被控端"
+				label = msg().Signal.StopAgent
 			}
 			btn := material.Button(th, &t.agentStartBtn, label)
 			if running {
@@ -394,7 +394,7 @@ func (t *signalTab) layoutAgent(gtx layout.Context, th *material.Theme) []layout
 				c = color.NRGBA{R: 76, G: 175, B: 80, A: 255}
 			}
 			return layout.Inset{Top: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return statusText(gtx, th, "狀態: "+status, c)
+				return statusText(gtx, th, msg().Common.StatusPrefix+status, c)
 			})
 		}),
 	}
@@ -405,7 +405,7 @@ func (t *signalTab) layoutAgent(gtx layout.Context, th *material.Theme) []layout
 			return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				items := []layout.FlexChild{
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return material.Body2(th, fmt.Sprintf("設備 (%d):", len(devices))).Layout(gtx)
+						return material.Body2(th, fmt.Sprintf(msg().Common.DevicesFmt, len(devices))).Layout(gtx)
 					}),
 				}
 				for _, d := range devices {
@@ -436,7 +436,7 @@ func (t *signalTab) startSignalAgent() {
 
 	if url == "" || token == "" {
 		t.agentMu.Lock()
-		t.agentStatus = "請輸入 Server URL 和 Token"
+		t.agentStatus = msg().Signal.StatusPleaseURLToken
 		t.agentMu.Unlock()
 		t.window.Invalidate()
 		return
@@ -446,7 +446,7 @@ func (t *signalTab) startSignalAgent() {
 
 	t.agentMu.Lock()
 	t.agentRunning = true
-	t.agentStatus = "檢查 ADB..."
+	t.agentStatus = msg().Common.CheckingADB
 	t.agentCancel = cancel
 	t.agentMu.Unlock()
 	t.window.Invalidate()
@@ -460,7 +460,7 @@ func (t *signalTab) startSignalAgent() {
 			t.window.Invalidate()
 		}); err != nil {
 			t.agentMu.Lock()
-			t.agentStatus = fmt.Sprintf("ADB 錯誤: %v", err)
+			t.agentStatus = fmt.Sprintf(msg().Common.ADBErrorFmt, err)
 			t.agentRunning = false
 			t.agentMu.Unlock()
 			t.window.Invalidate()
@@ -468,7 +468,7 @@ func (t *signalTab) startSignalAgent() {
 		}
 
 		t.agentMu.Lock()
-		t.agentStatus = "連線中..."
+		t.agentStatus = msg().Common.Connecting
 		t.agentMu.Unlock()
 		t.window.Invalidate()
 
@@ -484,7 +484,7 @@ func (t *signalTab) startSignalAgent() {
 
 		if err := a.Run(ctx); err != nil && ctx.Err() == nil {
 			t.agentMu.Lock()
-			t.agentStatus = fmt.Sprintf("錯誤: %v", err)
+			t.agentStatus = fmt.Sprintf(msg().Common.ErrorFmt, err)
 			t.agentRunning = false
 			t.agentMu.Unlock()
 			t.window.Invalidate()
@@ -492,7 +492,7 @@ func (t *signalTab) startSignalAgent() {
 		}
 		t.agentMu.Lock()
 		if ctx.Err() == nil {
-			t.agentStatus = "已斷線"
+			t.agentStatus = msg().Signal.StatusDisconnected
 			t.agentRunning = false
 		}
 		t.agentMu.Unlock()
@@ -508,7 +508,7 @@ func (t *signalTab) pollAgentDevices(ctx context.Context, a *agent.Agent) {
 
 	t.agentMu.Lock()
 	if t.agentRunning {
-		t.agentStatus = "運行中"
+		t.agentStatus = msg().Signal.StatusRunning
 	}
 	t.agentMu.Unlock()
 	t.window.Invalidate()
@@ -541,7 +541,7 @@ func (t *signalTab) stopSignalAgent() {
 		t.agentCancel()
 	}
 	t.agentRunning = false
-	t.agentStatus = "已停止"
+	t.agentStatus = msg().Common.Stopped
 	t.agentDevices = nil
 	t.agentMu.Unlock()
 	t.window.Invalidate()
@@ -633,7 +633,7 @@ func (t *signalTab) layoutClient(gtx layout.Context, th *material.Theme) []layou
 	// Token
 	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 		return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return labeledEditor(gtx, th, "Token:", &t.clientTokenEditor, "PSK 認證 Token")
+			return labeledEditor(gtx, th, msg().Common.TokenLabel, &t.clientTokenEditor, msg().Common.TokenHintPSK)
 		})
 	}))
 	// STUN
@@ -650,9 +650,9 @@ func (t *signalTab) layoutClient(gtx layout.Context, th *material.Theme) []layou
 	}))
 	// 連線/中斷按鈕
 	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-		label := "連線到伺服器"
+		label := msg().Signal.ConnectServer
 		if running {
-			label = "中斷連線"
+			label = msg().Common.DisconnectBtn
 		}
 		btn := material.Button(th, &t.clientConnectBtn, label)
 		if running {
@@ -668,7 +668,7 @@ func (t *signalTab) layoutClient(gtx layout.Context, th *material.Theme) []layou
 			c = color.NRGBA{R: 76, G: 175, B: 80, A: 255}
 		}
 		return layout.Inset{Top: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return statusText(gtx, th, "狀態: "+status, c)
+			return statusText(gtx, th, msg().Common.StatusPrefix+status, c)
 		})
 	}))
 
@@ -678,14 +678,14 @@ func (t *signalTab) layoutClient(gtx layout.Context, th *material.Theme) []layou
 			return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				items := []layout.FlexChild{
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return material.Body2(th, fmt.Sprintf("主機 (%d):", len(hosts))).Layout(gtx)
+						return material.Body2(th, fmt.Sprintf(msg().Signal.HostsFmt, len(hosts))).Layout(gtx)
 					}),
 				}
 
 				devBtnIdx := 0
 				for hi, h := range hosts {
 					hostIdx := hi
-					hostText := fmt.Sprintf("  %s (%d 設備)", h.Hostname, len(h.Devices))
+					hostText := fmt.Sprintf("  %s ("+msg().Signal.HostDevFmt+")", h.Hostname, len(h.Devices))
 					if hostIdx == selectedHost {
 						hostText = "▼ " + hostText
 					} else {
@@ -711,13 +711,13 @@ func (t *signalTab) layoutClient(gtx layout.Context, th *material.Theme) []layou
 							devText := fmt.Sprintf("    %s [%s]", d.Serial, d.State)
 							lockInfo := ""
 							if d.Lock == "locked" {
-								lockInfo = " (已鎖定)"
+								lockInfo = " " + msg().Signal.Locked
 							}
 							items = append(items, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 								return layout.Inset{Left: unit.Dp(16), Top: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 									label := devText + lockInfo
 									if d.Lock != "locked" && d.State == "device" {
-										label = devText + " [Bind]"
+										label = devText + " " + msg().Signal.BindLabel
 									}
 									if dIdx < len(t.clientDevBtns) {
 										btn := material.Button(th, &t.clientDevBtns[dIdx], label)
@@ -743,12 +743,12 @@ func (t *signalTab) layoutClient(gtx layout.Context, th *material.Theme) []layou
 			return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				items := []layout.FlexChild{
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return material.Body2(th, fmt.Sprintf("已綁定 (%d):", len(bindings))).Layout(gtx)
+						return material.Body2(th, fmt.Sprintf(msg().Signal.BindingsFmt, len(bindings))).Layout(gtx)
 					}),
 				}
 				for i, b := range bindings {
 					idx := i
-					bindText := fmt.Sprintf("  127.0.0.1:%d → %s [%s] [解綁]", b.LocalPort, b.Serial, b.Status)
+					bindText := fmt.Sprintf("  127.0.0.1:%d → %s [%s] %s", b.LocalPort, b.Serial, b.Status, msg().Signal.UnbindLabel)
 					items = append(items, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						return layout.Inset{Left: unit.Dp(4), Top: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 							if idx < len(t.clientUnbindBtns) {
@@ -779,7 +779,7 @@ func (t *signalTab) startClient() {
 
 	if url == "" || token == "" {
 		t.clientMu.Lock()
-		t.clientStatus = "請輸入 Server URL 和 Token"
+		t.clientStatus = msg().Signal.StatusPleaseURLToken
 		t.clientMu.Unlock()
 		t.window.Invalidate()
 		return
@@ -801,7 +801,7 @@ func (t *signalTab) startClient() {
 	ipcLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.clientMu.Lock()
-		t.clientStatus = fmt.Sprintf("建立 IPC 失敗: %v", err)
+		t.clientStatus = fmt.Sprintf(msg().Signal.ErrIPCFmt, err)
 		t.clientMu.Unlock()
 		t.window.Invalidate()
 		return
@@ -811,7 +811,7 @@ func (t *signalTab) startClient() {
 
 	t.clientMu.Lock()
 	t.clientRunning = true
-	t.clientStatus = "連線中..."
+	t.clientStatus = msg().Common.Connecting
 	t.clientIPCAddr = ipcLn.Addr().String()
 	t.clientCancel = cancel
 	t.clientMu.Unlock()
@@ -820,7 +820,7 @@ func (t *signalTab) startClient() {
 	go func() {
 		if err := d.Start(ctx, ipcLn); err != nil && ctx.Err() == nil {
 			t.clientMu.Lock()
-			t.clientStatus = fmt.Sprintf("Daemon 錯誤: %v", err)
+			t.clientStatus = fmt.Sprintf(msg().Signal.ErrDaemonFmt, err)
 			t.clientRunning = false
 			t.clientMu.Unlock()
 			t.window.Invalidate()
@@ -842,7 +842,7 @@ func (t *signalTab) pollClientState(ctx context.Context) {
 
 	t.clientMu.Lock()
 	if t.clientRunning {
-		t.clientStatus = "已連線"
+		t.clientStatus = msg().Signal.StatusConnected
 	}
 	t.clientMu.Unlock()
 	t.window.Invalidate()
@@ -899,23 +899,23 @@ func (t *signalTab) sendIPC(cmd daemon.IPCCommand) daemon.IPCResponse {
 	t.clientMu.Unlock()
 
 	if addr == "" {
-		return daemon.ErrorResponse("IPC 未就緒")
+		return daemon.ErrorResponse(msg().Signal.ErrIPCNotReady)
 	}
 
 	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
-		return daemon.ErrorResponse(fmt.Sprintf("IPC 連線失敗: %v", err))
+		return daemon.ErrorResponse(fmt.Sprintf("IPC connect failed: %v", err))
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(30 * time.Second))
 
 	if err := json.NewEncoder(conn).Encode(cmd); err != nil {
-		return daemon.ErrorResponse(fmt.Sprintf("IPC 發送失敗: %v", err))
+		return daemon.ErrorResponse(fmt.Sprintf("IPC send failed: %v", err))
 	}
 
 	var resp daemon.IPCResponse
 	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
-		return daemon.ErrorResponse(fmt.Sprintf("IPC 讀取失敗: %v", err))
+		return daemon.ErrorResponse(fmt.Sprintf("IPC read failed: %v", err))
 	}
 	return resp
 }
@@ -931,9 +931,9 @@ func (t *signalTab) bindDevice(hostID, serial string) {
 		if resp.Success {
 			var result daemon.BindResult
 			json.Unmarshal(resp.Data, &result)
-			t.clientStatus = fmt.Sprintf("綁定成功 127.0.0.1:%d → %s", result.LocalPort, result.Serial)
+			t.clientStatus = fmt.Sprintf(msg().Signal.StatusBindOKFmt, result.LocalPort, result.Serial)
 		} else {
-			t.clientStatus = fmt.Sprintf("綁定失敗: %s", resp.Error)
+			t.clientStatus = fmt.Sprintf(msg().Signal.StatusBindFailFmt, resp.Error)
 		}
 		t.clientMu.Unlock()
 		t.window.Invalidate()
@@ -948,9 +948,9 @@ func (t *signalTab) unbindDevice(localPort int) {
 
 		t.clientMu.Lock()
 		if resp.Success {
-			t.clientStatus = fmt.Sprintf("已解綁 port %d", localPort)
+			t.clientStatus = fmt.Sprintf(msg().Signal.StatusUnbindOKFmt, localPort)
 		} else {
-			t.clientStatus = fmt.Sprintf("解綁失敗: %s", resp.Error)
+			t.clientStatus = fmt.Sprintf(msg().Signal.StatusUnbindFailFmt, resp.Error)
 		}
 		t.clientMu.Unlock()
 		t.window.Invalidate()
@@ -963,7 +963,7 @@ func (t *signalTab) stopClient() {
 		t.clientCancel()
 	}
 	t.clientRunning = false
-	t.clientStatus = "未連線"
+	t.clientStatus = msg().Common.Disconnected
 	t.clientHosts = nil
 	t.clientBindings = nil
 	t.clientSelectedHost = -1

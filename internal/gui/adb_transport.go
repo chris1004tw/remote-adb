@@ -119,7 +119,7 @@ func readADBTransportMsg(r io.Reader) (*adbMsg, error) {
 	}
 	dataLen := binary.LittleEndian.Uint32(hdr[12:16])
 	if dataLen > adbMaxDataLen {
-		return nil, fmt.Errorf("ADB 訊息資料過大: %d bytes", dataLen)
+		return nil, fmt.Errorf("ADB message data too large: %d bytes", dataLen)
 	}
 	if dataLen > 0 {
 		msg.data = make([]byte, dataLen)
@@ -144,7 +144,7 @@ func readADBMsgFromPrefix(prefix []byte, r io.Reader) (*adbMsg, error) {
 	}
 	dataLen := binary.LittleEndian.Uint32(rest[8:12])
 	if dataLen > adbMaxDataLen {
-		return nil, fmt.Errorf("ADB 訊息資料過大: %d bytes", dataLen)
+		return nil, fmt.Errorf("ADB message data too large: %d bytes", dataLen)
 	}
 	if dataLen > 0 {
 		msg.data = make([]byte, dataLen)
@@ -319,7 +319,7 @@ func (b *deviceBridge) cleanupStream(stream *dStream) {
 	close(stream.doneCh) // 通知 writeToRemote / readFromRemote 退出
 
 	if err := b.writeMsg(&adbMsg{command: aCLSE, arg0: stream.deviceID, arg1: stream.serverID}); err != nil {
-		slog.Debug("transport → CLSE 寫入失敗", "deviceID", stream.deviceID, "error", err)
+		slog.Debug("transport → CLSE write failed", "deviceID", stream.deviceID, "error", err)
 	} else {
 		slog.Debug("transport → CLSE", "deviceID", stream.deviceID, "serverID", stream.serverID)
 	}
@@ -341,17 +341,17 @@ func (b *deviceBridge) cleanupStream(stream *dStream) {
 func startDeviceTransport(ctx context.Context, conn net.Conn, firstBytes []byte, openCh openChannelFunc, serial, features string, tab *pairTab) {
 	cnxn, err := readADBMsgFromPrefix(firstBytes, conn)
 	if err != nil {
-		slog.Debug("讀取 CNXN 失敗", "error", err)
+		slog.Debug("failed to read CNXN", "error", err)
 		return
 	}
 
-	slog.Debug("收到 ADB transport CNXN",
+	slog.Debug("received ADB transport CNXN",
 		"version", fmt.Sprintf("0x%08x", cnxn.arg0),
 		"maxdata", cnxn.arg1,
 		"banner", string(cnxn.data))
 
 	if serial == "" {
-		slog.Debug("無可用遠端設備，拒絕 CNXN")
+		slog.Debug("no available remote device, rejecting CNXN")
 		return
 	}
 
@@ -376,7 +376,7 @@ func startDeviceTransport(ctx context.Context, conn net.Conn, firstBytes []byte,
 		for _, s := range remaining {
 			bridge.cleanupStream(s)
 		}
-		slog.Debug("device transport 已關閉", "serial", serial)
+		slog.Debug("device transport closed", "serial", serial)
 	}()
 
 	// 回應 CNXN（跳過 AUTH，localhost 信任）
@@ -392,20 +392,20 @@ func startDeviceTransport(ctx context.Context, conn net.Conn, firstBytes []byte,
 		arg1:    aMaxPayload,
 		data:    []byte(banner),
 	}); err != nil {
-		slog.Debug("發送 CNXN 回應失敗", "error", err)
+		slog.Debug("failed to send CNXN response", "error", err)
 		return
 	}
 
-	slog.Debug("device transport 已建立", "serial", serial)
+	slog.Debug("device transport established", "serial", serial)
 
 	// 主迴圈：讀取 ADB server 的 transport 訊息
 	for {
 		msg, err := readADBTransportMsg(conn)
 		if err != nil {
 			if ctx.Err() != nil {
-				slog.Debug("transport 因 context 取消結束", "serial", serial)
+				slog.Debug("transport ended due to context cancellation", "serial", serial)
 			} else {
-				slog.Debug("transport 讀取結束", "serial", serial, "error", err)
+				slog.Debug("transport read ended", "serial", serial, "error", err)
 			}
 			return
 		}
@@ -420,7 +420,7 @@ func startDeviceTransport(ctx context.Context, conn net.Conn, firstBytes []byte,
 		case aCLSE:
 			bridge.handleCLSE(msg)
 		default:
-			slog.Debug("transport: 未知命令", "cmd", adbCmdName(msg.command))
+			slog.Debug("transport: unknown command", "cmd", adbCmdName(msg.command))
 		}
 	}
 }
@@ -469,7 +469,7 @@ func (b *deviceBridge) handleOPEN(ctx context.Context, msg *adbMsg) {
 			label := fmt.Sprintf("adb-stream/%d/%s/%s", deviceID, b.serial, service)
 			ch, err := b.openCh(label)
 			if err != nil {
-				slog.Debug("OPEN: DataChannel 建立失敗", "deviceID", deviceID, "error", err)
+				slog.Debug("OPEN: DataChannel creation failed", "deviceID", deviceID, "error", err)
 				b.writeMsg(&adbMsg{command: aCLSE, arg0: 0, arg1: serverID})
 				return
 			}
@@ -482,7 +482,7 @@ func (b *deviceBridge) handleOPEN(ctx context.Context, msg *adbMsg) {
 	label := fmt.Sprintf("adb-stream/%d/%s/%s", deviceID, b.serial, service)
 	ch, err := b.openCh(label)
 	if err != nil {
-		slog.Debug("OPEN: DataChannel 建立失敗", "deviceID", deviceID, "error", err)
+		slog.Debug("OPEN: DataChannel creation failed", "deviceID", deviceID, "error", err)
 		b.writeMsg(&adbMsg{command: aCLSE, arg0: 0, arg1: serverID})
 		return
 	}
@@ -508,7 +508,7 @@ func (b *deviceBridge) handleReverseOPEN(ctx context.Context, serverID, deviceID
 		// 回傳 FAIL 讓工具（如 scrcpy）自動回退到 adb forward 模式。
 		msg := "reverse forward not supported via P2P bridge"
 		respData = []byte(fmt.Sprintf("FAIL%04x%s", len(msg), msg))
-		slog.Debug("reverse:forward: 回傳 FAIL，讓客戶端回退到 forward 模式", "service", service)
+		slog.Debug("reverse:forward: returning FAIL, client will fallback to forward mode", "service", service)
 
 	case strings.HasPrefix(service, "reverse:killforward:"):
 		spec := service[len("reverse:killforward:"):]
@@ -533,7 +533,7 @@ func (b *deviceBridge) handleReverseOPEN(ctx context.Context, serverID, deviceID
 		respData = []byte(fmt.Sprintf("OKAY%04x%s", len(list), list))
 
 	default:
-		slog.Debug("未知 reverse 命令", "service", service)
+		slog.Debug("unknown reverse command", "service", service)
 		b.writeMsg(&adbMsg{command: aCLSE, arg0: 0, arg1: serverID})
 		return
 	}
@@ -562,14 +562,14 @@ func (b *deviceBridge) sendOneShot(serverID, deviceID uint32, data []byte) {
 
 	// transport OKAY（接受 stream）
 	if err := b.writeMsg(&adbMsg{command: aOKAY, arg0: deviceID, arg1: serverID}); err != nil {
-		slog.Debug("sendOneShot: OKAY 失敗", "deviceID", deviceID, "error", err)
+		slog.Debug("sendOneShot: OKAY failed", "deviceID", deviceID, "error", err)
 		b.cleanupStream(stream)
 		return
 	}
 
 	// WRTE（smart socket 回應）
 	if err := b.writeMsg(&adbMsg{command: aWRTE, arg0: deviceID, arg1: serverID, data: data}); err != nil {
-		slog.Debug("sendOneShot: WRTE 失敗", "deviceID", deviceID, "error", err)
+		slog.Debug("sendOneShot: WRTE failed", "deviceID", deviceID, "error", err)
 		b.cleanupStream(stream)
 		return
 	}
@@ -580,7 +580,7 @@ func (b *deviceBridge) sendOneShot(serverID, deviceID uint32, data []byte) {
 	case <-stream.doneCh:
 		return // ADB server 先 CLSE 了
 	case <-time.After(5 * time.Second):
-		slog.Debug("sendOneShot: OKAY 逾時", "deviceID", deviceID)
+		slog.Debug("sendOneShot: OKAY timeout", "deviceID", deviceID)
 	}
 
 	b.cleanupStream(stream)
@@ -613,7 +613,7 @@ func (b *deviceBridge) setupStream(ctx context.Context, ch io.ReadWriteCloser, s
 		var buf [4]byte
 		n, err := ch.Read(buf[:])
 		if err != nil {
-			slog.Debug("setupStream: 就緒讀取失敗", "deviceID", deviceID, "error", err, "n", n)
+			slog.Debug("setupStream: ready read failed", "deviceID", deviceID, "error", err, "n", n)
 		}
 		res := readyResult{ready: err == nil && n >= 1 && buf[0] == 1}
 		if res.ready && n > 1 {
@@ -629,13 +629,13 @@ func (b *deviceBridge) setupStream(ctx context.Context, ch io.ReadWriteCloser, s
 		if ready && len(res.prefix) > 0 {
 			// 保留就緒訊號後緊接的資料，避免掉首包。
 			ch = &prefixedRWC{ch: ch, prefix: res.prefix}
-			slog.Debug("setupStream: 保留前置資料", "deviceID", deviceID, "bytes", len(res.prefix))
+			slog.Debug("setupStream: retained prefix data", "deviceID", deviceID, "bytes", len(res.prefix))
 		}
-		slog.Debug("setupStream: 收到就緒信號", "deviceID", deviceID, "ready", ready)
+		slog.Debug("setupStream: received ready signal", "deviceID", deviceID, "ready", ready)
 	case <-time.After(10 * time.Second):
-		slog.Debug("setupStream: 等待就緒逾時", "deviceID", deviceID)
+		slog.Debug("setupStream: ready wait timeout", "deviceID", deviceID)
 	case <-ctx.Done():
-		slog.Debug("setupStream: context 取消", "deviceID", deviceID)
+		slog.Debug("setupStream: context cancelled", "deviceID", deviceID)
 		ch.Close()
 		if onSetup != nil {
 			onSetup()
@@ -650,10 +650,10 @@ func (b *deviceBridge) setupStream(ctx context.Context, ch io.ReadWriteCloser, s
 	}
 
 	if !ready {
-		slog.Debug("setupStream: 遠端就緒失敗", "deviceID", deviceID, "serverID", serverID)
+		slog.Debug("setupStream: remote ready failed", "deviceID", deviceID, "serverID", serverID)
 		ch.Close()
 		if err := b.writeMsg(&adbMsg{command: aCLSE, arg0: 0, arg1: serverID}); err != nil {
-			slog.Debug("setupStream: CLSE 寫入失敗", "deviceID", deviceID, "error", err)
+			slog.Debug("setupStream: CLSE write failed", "deviceID", deviceID, "error", err)
 		}
 		return
 	}
@@ -676,7 +676,7 @@ func (b *deviceBridge) setupStream(ctx context.Context, ch io.ReadWriteCloser, s
 
 	// 回應 OKAY 給 ADB server
 	if err := b.writeMsg(&adbMsg{command: aOKAY, arg0: deviceID, arg1: serverID}); err != nil {
-		slog.Debug("setupStream: OKAY 寫入失敗", "deviceID", deviceID, "error", err)
+		slog.Debug("setupStream: OKAY write failed", "deviceID", deviceID, "error", err)
 		b.cleanupStream(stream)
 		return
 	}
@@ -696,7 +696,7 @@ func (b *deviceBridge) writeToRemote(stream *dStream) {
 		select {
 		case data := <-stream.writeCh:
 			if _, err := chunkedWrite(stream.ch, data, biCopyChunk); err != nil {
-				slog.Debug("writeToRemote: DC 寫入失敗", "deviceID", stream.deviceID, "error", err)
+				slog.Debug("writeToRemote: DC write failed", "deviceID", stream.deviceID, "error", err)
 				b.cleanupStream(stream)
 				return
 			}
@@ -706,7 +706,7 @@ func (b *deviceBridge) writeToRemote(stream *dStream) {
 				arg0:    stream.deviceID,
 				arg1:    stream.serverID,
 			}); err != nil {
-				slog.Debug("writeToRemote: OKAY 寫入失敗", "deviceID", stream.deviceID, "error", err)
+				slog.Debug("writeToRemote: OKAY write failed", "deviceID", stream.deviceID, "error", err)
 				b.cleanupStream(stream)
 				return
 			}
@@ -745,7 +745,7 @@ func chunkedWrite(dst io.Writer, data []byte, chunkSize int) (int, error) {
 func (b *deviceBridge) readFromRemote(ctx context.Context, stream *dStream) {
 	defer b.cleanupStream(stream) // idempotent
 
-	slog.Debug("readFromRemote: 開始", "deviceID", stream.deviceID, "serverID", stream.serverID)
+	slog.Debug("readFromRemote: started", "deviceID", stream.deviceID, "serverID", stream.serverID)
 
 	buf := make([]byte, aMaxPayload)
 	firstRead := true
@@ -753,7 +753,7 @@ func (b *deviceBridge) readFromRemote(ctx context.Context, stream *dStream) {
 		n, err := stream.ch.Read(buf)
 		if n > 0 {
 			if firstRead {
-				slog.Debug("readFromRemote: 首筆資料", "deviceID", stream.deviceID, "bytes", n)
+				slog.Debug("readFromRemote: first data", "deviceID", stream.deviceID, "bytes", n)
 				firstRead = false
 			}
 			if writeErr := b.writeMsg(&adbMsg{
@@ -762,7 +762,7 @@ func (b *deviceBridge) readFromRemote(ctx context.Context, stream *dStream) {
 				arg1:    stream.serverID,
 				data:    buf[:n],
 			}); writeErr != nil {
-				slog.Debug("readFromRemote: WRTE 寫入失敗", "deviceID", stream.deviceID, "error", writeErr)
+				slog.Debug("readFromRemote: WRTE write failed", "deviceID", stream.deviceID, "error", writeErr)
 				return
 			}
 			// 等待 ADB server 回應 OKAY 後才能繼續
@@ -773,13 +773,13 @@ func (b *deviceBridge) readFromRemote(ctx context.Context, stream *dStream) {
 			case <-stream.doneCh:
 				return
 			case <-time.After(10 * time.Second):
-				slog.Debug("readFromRemote: WRTE OKAY 逾時", "deviceID", stream.deviceID)
+				slog.Debug("readFromRemote: WRTE OKAY timeout", "deviceID", stream.deviceID)
 				return
 			}
 		}
 		if err != nil {
 			if err != io.EOF {
-				slog.Debug("readFromRemote: DC 讀取錯誤", "deviceID", stream.deviceID, "error", err)
+				slog.Debug("readFromRemote: DC read error", "deviceID", stream.deviceID, "error", err)
 			} else {
 				slog.Debug("readFromRemote: DC EOF", "deviceID", stream.deviceID)
 			}
@@ -818,7 +818,7 @@ func (b *deviceBridge) handleWRTE(msg *adbMsg) {
 	b.streamsMu.Unlock()
 
 	if !ok {
-		slog.Debug("transport ← WRTE: 串流不存在，回 CLSE", "deviceID", deviceID, "serverID", serverID)
+		slog.Debug("transport ← WRTE: stream not found, sending CLSE", "deviceID", deviceID, "serverID", serverID)
 		b.writeMsg(&adbMsg{command: aCLSE, arg0: deviceID, arg1: serverID})
 		return
 	}

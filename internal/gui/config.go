@@ -22,11 +22,13 @@ import (
 //   - ProxyPort：主控端 ADB proxy 的起始 port（預設 5555）
 //   - DirectPort：區網直連被控端的 TCP 服務 port（預設 15555）
 //   - STUNServer：WebRTC ICE 使用的 STUN/TURN 伺服器地址（預設 Google STUN）
+//   - Language：介面語言（""=自動偵測, "zh-TW"=繁中, "en"=英文）
 type AppConfig struct {
 	ADBPort    int    `toml:"adb_port"`
 	ProxyPort  int    `toml:"proxy_port"`
 	DirectPort int    `toml:"direct_port"`
 	STUNServer string `toml:"stun_server"`
+	Language   string `toml:"language"`
 }
 
 // DefaultConfig 回傳所有欄位皆為預設值的設定。

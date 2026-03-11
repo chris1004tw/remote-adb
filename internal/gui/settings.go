@@ -74,6 +74,11 @@ type settingsPanel struct {
 	stunOptBtns      []widget.Clickable // 選項按鈕（presets + 自訂）
 	stunEditor       widget.Editor      // 自訂 STUN 輸入框
 
+	// 語言下拉選單
+	langDropExpanded bool
+	langToggleBtn    widget.Clickable
+	langOptBtns      [3]widget.Clickable // Auto / zh-TW / en
+
 	// 設定與路徑
 	config     *AppConfig
 	configPath string
@@ -106,7 +111,7 @@ func newSettingsPanel(w *app.Window) *settingsPanel {
 
 	cfg, err := LoadConfig(configPath)
 	if err != nil {
-		slog.Warn("載入設定失敗，使用預設值", "error", err)
+		slog.Warn("failed to load config, using defaults", "error", err)
 		cfg = DefaultConfig()
 	}
 
@@ -168,7 +173,7 @@ func (p *settingsPanel) openWindow() {
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
-					slog.Warn("設定視窗提升失敗", "error", r)
+					slog.Warn("failed to raise settings window", "error", r)
 					// 視窗可能已銷毀，清除參考以便下次點擊重新建立
 					p.mu.Lock()
 					if p.settingsWin == w {
@@ -186,10 +191,11 @@ func (p *settingsPanel) openWindow() {
 
 	p.syncEditorsFromConfig()
 	p.stunDropExpanded = false
+	p.langDropExpanded = false
 	p.visible = true
 
 	w := new(app.Window)
-	w.Option(app.Title("設定"))
+	w.Option(app.Title(msg().Settings.Title))
 	w.Option(app.Size(unit.Dp(440), unit.Dp(200))) // 初始小尺寸，首幀自動成長至內容高度
 
 	p.mu.Lock()
@@ -283,16 +289,16 @@ func (p *settingsPanel) save() bool {
 	}
 
 	if p.configPath == "" {
-		slog.Warn("設定檔路徑為空，無法儲存")
+		slog.Warn("config path is empty, cannot save")
 		return false
 	}
 
 	if err := SaveConfig(p.config, p.configPath); err != nil {
-		slog.Error("儲存設定失敗", "error", err)
+		slog.Error("failed to save config", "error", err)
 		return false
 	}
 
-	slog.Info("設定已儲存", "path", p.configPath)
+	slog.Info("config saved", "path", p.configPath)
 	return true
 }
 
@@ -311,7 +317,7 @@ func (p *settingsPanel) layoutContent(gtx layout.Context, th *material.Theme) la
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		// 標題
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			title := material.H6(th, "設定")
+			title := material.H6(th, msg().Settings.Title)
 			title.TextSize = unit.Sp(18)
 			return title.Layout(gtx)
 		}),
@@ -320,7 +326,7 @@ func (p *settingsPanel) layoutContent(gtx layout.Context, th *material.Theme) la
 
 		// --- 連線設定區塊 ---
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			lbl := material.Body2(th, "連線設定")
+			lbl := material.Body2(th, msg().Settings.ConnectionSection)
 			lbl.Color = colorPanelHint
 			return lbl.Layout(gtx)
 		}),
@@ -348,12 +354,18 @@ func (p *settingsPanel) layoutContent(gtx layout.Context, th *material.Theme) la
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return p.layoutStunDropdown(gtx, th)
 		}),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
+
+		// 語言（下拉選單）
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return p.layoutLangDropdown(gtx, th)
+		}),
 
 		spacing,
 
 		// 儲存按鈕
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			btn := material.Button(th, &p.saveBtn, "儲存設定")
+			btn := material.Button(th, &p.saveBtn, msg().Settings.SaveBtn)
 			btn.Background = colorTabActive
 			return btn.Layout(gtx)
 		}),
@@ -371,7 +383,7 @@ func (p *settingsPanel) layoutContent(gtx layout.Context, th *material.Theme) la
 
 		// --- 版本資訊與更新 ---
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			lbl := material.Body2(th, "關於")
+			lbl := material.Body2(th, msg().Settings.AboutSection)
 			lbl.Color = colorPanelHint
 			return lbl.Layout(gtx)
 		}),
@@ -379,7 +391,7 @@ func (p *settingsPanel) layoutContent(gtx layout.Context, th *material.Theme) la
 
 		// 目前版本
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			ver := fmt.Sprintf("目前版本：%s", buildinfo.Version)
+			ver := fmt.Sprintf(msg().Settings.CurrentVerFmt, buildinfo.Version)
 			return material.Body1(th, ver).Layout(gtx)
 		}),
 		layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
@@ -389,7 +401,7 @@ func (p *settingsPanel) layoutContent(gtx layout.Context, th *material.Theme) la
 			if latestVersion == "" {
 				return layout.Dimensions{}
 			}
-			ver := fmt.Sprintf("最新版本：%s", latestVersion)
+			ver := fmt.Sprintf(msg().Settings.LatestVerFmt, latestVersion)
 			return material.Body1(th, ver).Layout(gtx)
 		}),
 		layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
@@ -411,17 +423,17 @@ func (p *settingsPanel) layoutContent(gtx layout.Context, th *material.Theme) la
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			if hasUpdate && !updating {
 				// 有更新可用：顯示「立即更新」按鈕
-				btn := material.Button(th, &p.doUpdateBtn, "立即更新")
+				btn := material.Button(th, &p.doUpdateBtn, msg().Settings.UpdateNow)
 				btn.Background = color.NRGBA{R: 230, G: 126, B: 34, A: 255}
 				return btn.Layout(gtx)
 			}
 			// 一般狀態：顯示「檢查更新」按鈕
-			label := "檢查更新"
+			label := msg().Settings.CheckUpdate
 			if checking {
-				label = "檢查中..."
+				label = msg().Settings.Checking
 			}
 			if updating {
-				label = "更新中..."
+				label = msg().Settings.Updating
 			}
 			btn := material.Button(th, &p.checkUpdateBtn, label)
 			btn.Background = colorModeActive
@@ -432,7 +444,7 @@ func (p *settingsPanel) layoutContent(gtx layout.Context, th *material.Theme) la
 
 		// 關閉按鈕
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			btn := material.Button(th, &p.closeBtn, "關閉")
+			btn := material.Button(th, &p.closeBtn, msg().Settings.CloseBtn)
 			btn.Background = colorTabInactive
 			return btn.Layout(gtx)
 		}),
@@ -462,7 +474,7 @@ func (p *settingsPanel) layoutStunDropdown(gtx layout.Context, th *material.Them
 	if p.stunSelected < len(defaultStunPresets) {
 		currentLabel = defaultStunPresets[p.stunSelected].label
 	} else {
-		currentLabel = "自訂"
+		currentLabel = msg().Settings.CustomStun
 	}
 
 	arrow := " ▼"
@@ -516,7 +528,7 @@ func (p *settingsPanel) layoutStunDropdown(gtx layout.Context, th *material.Them
 			if idx < len(defaultStunPresets) {
 				optLabel = defaultStunPresets[idx].label
 			} else {
-				optLabel = "自訂..."
+				optLabel = msg().Settings.CustomStunOption
 			}
 			isSelected := idx == p.stunSelected
 
@@ -583,6 +595,131 @@ func (p *settingsPanel) layoutStunDropdown(gtx layout.Context, th *material.Them
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 }
 
+// layoutLangDropdown 繪製語言下拉選單。
+// 提供三個選項：自動偵測、繁體中文、English。
+// 切換語言後即時生效（更新全域 Messages 並刷新視窗標題）。
+func (p *settingsPanel) layoutLangDropdown(gtx layout.Context, th *material.Theme) layout.Dimensions {
+	langOptions := []struct {
+		code  string
+		label string
+	}{
+		{LangAuto, msg().Settings.LanguageAuto},
+		{LangZhTW, "繁體中文"},
+		{LangEN, "English"},
+	}
+
+	for p.langToggleBtn.Clicked(gtx) {
+		p.langDropExpanded = !p.langDropExpanded
+	}
+
+	for i := range langOptions {
+		for p.langOptBtns[i].Clicked(gtx) {
+			p.langDropExpanded = false
+			p.config.Language = langOptions[i].code
+			SetLanguage(p.config.Language)
+			// 刷新主視窗標題（非阻塞，避免在 FrameEvent 中呼叫 Option 死鎖）
+			go p.window.Option(app.Title(msg().App.WindowTitle))
+			// 刷新設定視窗標題
+			p.mu.Lock()
+			if p.settingsWin != nil {
+				go p.settingsWin.Option(app.Title(msg().Settings.Title))
+			}
+			p.mu.Unlock()
+			p.window.Invalidate()
+		}
+	}
+
+	// 找出目前選取的索引
+	currentIdx := 0
+	for i, opt := range langOptions {
+		if opt.code == p.config.Language {
+			currentIdx = i
+			break
+		}
+	}
+	currentLabel := langOptions[currentIdx].label
+
+	arrow := " ▼"
+	if p.langDropExpanded {
+		arrow = " ▲"
+	}
+
+	children := []layout.FlexChild{
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						lbl := material.Body1(th, msg().Settings.LanguageLabel)
+						lbl.TextSize = unit.Sp(14)
+						return lbl.Layout(gtx)
+					})
+				}),
+				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					return p.langToggleBtn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return layout.Background{}.Layout(gtx,
+							func(gtx layout.Context) layout.Dimensions {
+								sz := gtx.Constraints.Min
+								paint.FillShape(gtx.Ops, colorEditorBg, clip.Rect{Max: sz}.Op())
+								lineH := gtx.Dp(unit.Dp(2))
+								paint.FillShape(gtx.Ops, colorTabActive,
+									clip.Rect{Min: image.Pt(0, sz.Y-lineH), Max: sz}.Op())
+								return layout.Dimensions{Size: sz}
+							},
+							func(gtx layout.Context) layout.Dimensions {
+								return layout.UniformInset(unit.Dp(6)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+									lbl := material.Body1(th, currentLabel+arrow)
+									lbl.TextSize = unit.Sp(14)
+									lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+									return lbl.Layout(gtx)
+								})
+							},
+						)
+					})
+				}),
+			)
+		}),
+	}
+
+	if p.langDropExpanded {
+		for i, opt := range langOptions {
+			idx := i
+			optLabel := opt.label
+			isSelected := idx == currentIdx
+
+			children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return p.langOptBtns[idx].Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					bg := color.NRGBA{R: 58, G: 58, B: 58, A: 255}
+					if isSelected {
+						bg = color.NRGBA{R: 33, G: 80, B: 120, A: 255}
+					}
+					return layout.Background{}.Layout(gtx,
+						func(gtx layout.Context) layout.Dimensions {
+							sz := gtx.Constraints.Min
+							paint.FillShape(gtx.Ops, bg, clip.Rect{Max: sz}.Op())
+							lineY := sz.Y - gtx.Dp(unit.Dp(1))
+							paint.FillShape(gtx.Ops, colorPanelDivider,
+								clip.Rect{Min: image.Pt(0, lineY), Max: sz}.Op())
+							return layout.Dimensions{Size: sz}
+						},
+						func(gtx layout.Context) layout.Dimensions {
+							return layout.Inset{
+								Top: unit.Dp(8), Bottom: unit.Dp(8),
+								Left: unit.Dp(12), Right: unit.Dp(12),
+							}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								lbl := material.Body1(th, optLabel)
+								lbl.TextSize = unit.Sp(13)
+								return lbl.Layout(gtx)
+							})
+						},
+					)
+				})
+			}))
+		}
+	}
+
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+}
+
 // invalidateAll 通知主視窗和設定子視窗重繪。
 // 用於背景 goroutine 更新狀態後觸發 UI 刷新。
 func (p *settingsPanel) invalidateAll() {
@@ -603,7 +740,7 @@ func (p *settingsPanel) startCheckUpdate() {
 		return
 	}
 	p.checking = true
-	p.updateStatus = "正在檢查更新..."
+	p.updateStatus = msg().Settings.StatusChecking
 	p.hasUpdate = false
 	p.mu.Unlock()
 	p.invalidateAll()
@@ -615,14 +752,14 @@ func (p *settingsPanel) startCheckUpdate() {
 		p.mu.Lock()
 		p.checking = false
 		if err != nil {
-			p.updateStatus = fmt.Sprintf("檢查失敗：%v", err)
+			p.updateStatus = fmt.Sprintf(msg().Settings.StatusCheckFailFmt, err)
 		} else {
 			p.latestVersion = result.LatestVersion
 			if result.HasUpdate {
 				p.hasUpdate = true
-				p.updateStatus = fmt.Sprintf("有新版本可用：%s → %s", result.CurrentVersion, result.LatestVersion)
+				p.updateStatus = fmt.Sprintf(msg().Settings.StatusUpdateAvailFmt, result.CurrentVersion, result.LatestVersion)
 			} else {
-				p.updateStatus = "已是最新版本"
+				p.updateStatus = msg().Settings.StatusUpToDate
 			}
 		}
 		p.mu.Unlock()
@@ -636,9 +773,9 @@ func (p *settingsPanel) startCheckUpdate() {
 func (p *settingsPanel) restartSelf() {
 	exePath, err := os.Executable()
 	if err != nil {
-		slog.Error("無法取得執行檔路徑", "error", err)
+		slog.Error("failed to get executable path", "error", err)
 		p.mu.Lock()
-		p.updateStatus = fmt.Sprintf("重啟失敗：%v", err)
+		p.updateStatus = fmt.Sprintf(msg().Settings.StatusRestartFailFmt, err)
 		p.mu.Unlock()
 		p.invalidateAll()
 		return
@@ -647,9 +784,9 @@ func (p *settingsPanel) restartSelf() {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
-		slog.Error("啟動新進程失敗", "error", err)
+		slog.Error("failed to start new process", "error", err)
 		p.mu.Lock()
-		p.updateStatus = fmt.Sprintf("重啟失敗：%v", err)
+		p.updateStatus = fmt.Sprintf(msg().Settings.StatusRestartFailFmt, err)
 		p.mu.Unlock()
 		p.invalidateAll()
 		return
@@ -721,8 +858,8 @@ func (p *settingsPanel) layoutBanner(gtx layout.Context, th *material.Theme) lay
 					return layout.Flex{Alignment: layout.Middle, Spacing: layout.SpaceBetween}.Layout(gtx,
 						// 左側：版本資訊
 						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-							msg := fmt.Sprintf("新版本 %s 可用", latestVer)
-							lbl := material.Body2(th, msg)
+							bannerMsg := fmt.Sprintf(msg().Settings.BannerNewVerFmt, latestVer)
+							lbl := material.Body2(th, bannerMsg)
 							lbl.Color = color.NRGBA{R: 255, G: 200, B: 100, A: 255}
 							return lbl.Layout(gtx)
 						}),
@@ -730,7 +867,7 @@ func (p *settingsPanel) layoutBanner(gtx layout.Context, th *material.Theme) lay
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 							return layout.Flex{Spacing: layout.SpaceStart}.Layout(gtx,
 								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-									btn := material.Button(th, &p.bannerDismissBtn, "稍後再說")
+									btn := material.Button(th, &p.bannerDismissBtn, msg().Settings.BannerDismiss)
 									btn.Background = colorTabInactive
 									btn.TextSize = unit.Sp(12)
 									btn.Inset = layout.Inset{
@@ -741,7 +878,7 @@ func (p *settingsPanel) layoutBanner(gtx layout.Context, th *material.Theme) lay
 								}),
 								layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
 								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-									btn := material.Button(th, &p.bannerUpdateBtn, "立即更新")
+									btn := material.Button(th, &p.bannerUpdateBtn, msg().Settings.UpdateNow)
 									btn.Background = color.NRGBA{R: 230, G: 126, B: 34, A: 255}
 									btn.TextSize = unit.Sp(12)
 									btn.Inset = layout.Inset{
@@ -767,7 +904,7 @@ func (p *settingsPanel) startUpdate() {
 		return
 	}
 	p.updating = true
-	p.updateStatus = "正在下載更新..."
+	p.updateStatus = msg().Settings.StatusDownloading
 	p.mu.Unlock()
 	p.invalidateAll()
 
@@ -778,10 +915,10 @@ func (p *settingsPanel) startUpdate() {
 		p.mu.Lock()
 		p.updating = false
 		if err != nil {
-			p.updateStatus = fmt.Sprintf("更新失敗：%v", err)
+			p.updateStatus = fmt.Sprintf(msg().Settings.StatusUpdateFailFmt, err)
 		} else if result.HasUpdate {
 			p.hasUpdate = false
-			p.updateStatus = fmt.Sprintf("已更新至 %s，正在重新啟動...", result.LatestVersion)
+			p.updateStatus = fmt.Sprintf(msg().Settings.StatusUpdatedFmt, result.LatestVersion)
 			p.mu.Unlock()
 			p.invalidateAll()
 			// 短暫延遲讓使用者看到狀態訊息，再啟動新進程並退出
@@ -789,7 +926,7 @@ func (p *settingsPanel) startUpdate() {
 			p.restartSelf()
 			return
 		} else {
-			p.updateStatus = "已是最新版本"
+			p.updateStatus = msg().Settings.StatusUpToDate
 		}
 		p.mu.Unlock()
 		p.invalidateAll()

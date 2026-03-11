@@ -317,14 +317,14 @@ func marshalBinary(c compactSDP) ([]byte, error) {
 	// fingerprint: hex → raw 32 bytes
 	fpBytes, err := hex.DecodeString(c.F)
 	if err != nil {
-		return nil, fmt.Errorf("fingerprint hex 解碼失敗: %w", err)
+		return nil, fmt.Errorf("failed to decode fingerprint hex: %w", err)
 	}
 	buf.Write(fpBytes)
 
 	// setup
 	s, ok := setupToEnum[c.S]
 	if !ok {
-		return nil, fmt.Errorf("未知 setup 值: %q", c.S)
+		return nil, fmt.Errorf("unknown setup value: %q", c.S)
 	}
 	buf.WriteByte(s)
 
@@ -343,7 +343,7 @@ func marshalBinary(c compactSDP) ([]byte, error) {
 func marshalCandidate(buf *bytes.Buffer, compact string) error {
 	parts := strings.Split(compact, ",")
 	if len(parts) < 5 {
-		return fmt.Errorf("candidate 格式錯誤: %q", compact)
+		return fmt.Errorf("invalid candidate format: %q", compact)
 	}
 
 	// proto
@@ -356,7 +356,7 @@ func marshalCandidate(buf *bytes.Buffer, compact string) error {
 	// IP
 	ip := net.ParseIP(parts[1])
 	if ip == nil {
-		return fmt.Errorf("無效 IP: %q", parts[1])
+		return fmt.Errorf("invalid IP: %q", parts[1])
 	}
 	if v4 := ip.To4(); v4 != nil {
 		buf.WriteByte(4)
@@ -369,21 +369,21 @@ func marshalCandidate(buf *bytes.Buffer, compact string) error {
 	// port
 	port, err := strconv.ParseUint(parts[2], 10, 16)
 	if err != nil {
-		return fmt.Errorf("無效 port: %w", err)
+		return fmt.Errorf("invalid port: %w", err)
 	}
 	binary.Write(buf, binary.BigEndian, uint16(port))
 
 	// priority
 	pri, err := strconv.ParseUint(parts[3], 10, 32)
 	if err != nil {
-		return fmt.Errorf("無效 priority: %w", err)
+		return fmt.Errorf("invalid priority: %w", err)
 	}
 	binary.Write(buf, binary.BigEndian, uint32(pri))
 
 	// type
 	t, ok := typToEnum[parts[4]]
 	if !ok {
-		return fmt.Errorf("未知 candidate type: %q", parts[4])
+		return fmt.Errorf("unknown candidate type: %q", parts[4])
 	}
 	buf.WriteByte(t)
 
@@ -392,7 +392,7 @@ func marshalCandidate(buf *bytes.Buffer, compact string) error {
 		buf.WriteByte(1)
 		rip := net.ParseIP(parts[5])
 		if rip == nil {
-			return fmt.Errorf("無效 raddr: %q", parts[5])
+			return fmt.Errorf("invalid raddr: %q", parts[5])
 		}
 		if v4 := rip.To4(); v4 != nil {
 			buf.WriteByte(4)
@@ -403,7 +403,7 @@ func marshalCandidate(buf *bytes.Buffer, compact string) error {
 		}
 		rport, err := strconv.ParseUint(parts[6], 10, 16)
 		if err != nil {
-			return fmt.Errorf("無效 rport: %w", err)
+			return fmt.Errorf("invalid rport: %w", err)
 		}
 		binary.Write(buf, binary.BigEndian, uint16(rport))
 	} else {
@@ -421,52 +421,52 @@ func unmarshalBinary(data []byte) (compactSDP, error) {
 	// ufrag
 	uLen, err := r.ReadByte()
 	if err != nil {
-		return c, fmt.Errorf("讀取 ufrag 長度失敗: %w", err)
+		return c, fmt.Errorf("failed to read ufrag length: %w", err)
 	}
 	uBuf := make([]byte, uLen)
 	if _, err := io.ReadFull(r, uBuf); err != nil {
-		return c, fmt.Errorf("讀取 ufrag 失敗: %w", err)
+		return c, fmt.Errorf("failed to read ufrag: %w", err)
 	}
 	c.U = string(uBuf)
 
 	// pwd
 	pLen, err := r.ReadByte()
 	if err != nil {
-		return c, fmt.Errorf("讀取 pwd 長度失敗: %w", err)
+		return c, fmt.Errorf("failed to read pwd length: %w", err)
 	}
 	pBuf := make([]byte, pLen)
 	if _, err := io.ReadFull(r, pBuf); err != nil {
-		return c, fmt.Errorf("讀取 pwd 失敗: %w", err)
+		return c, fmt.Errorf("failed to read pwd: %w", err)
 	}
 	c.P = string(pBuf)
 
 	// fingerprint: 32 bytes → uppercase hex
 	fpBuf := make([]byte, 32)
 	if _, err := io.ReadFull(r, fpBuf); err != nil {
-		return c, fmt.Errorf("讀取 fingerprint 失敗: %w", err)
+		return c, fmt.Errorf("failed to read fingerprint: %w", err)
 	}
 	c.F = strings.ToUpper(hex.EncodeToString(fpBuf))
 
 	// setup
 	sEnum, err := r.ReadByte()
 	if err != nil {
-		return c, fmt.Errorf("讀取 setup 失敗: %w", err)
+		return c, fmt.Errorf("failed to read setup: %w", err)
 	}
 	if int(sEnum) >= len(enumToSetup) {
-		return c, fmt.Errorf("未知 setup enum: %d", sEnum)
+		return c, fmt.Errorf("unknown setup enum: %d", sEnum)
 	}
 	c.S = enumToSetup[sEnum]
 
 	// candidates
 	cCount, err := r.ReadByte()
 	if err != nil {
-		return c, fmt.Errorf("讀取 candidate 數量失敗: %w", err)
+		return c, fmt.Errorf("failed to read candidate count: %w", err)
 	}
 	c.C = make([]string, cCount)
 	for i := range c.C {
 		cc, err := unmarshalCandidate(r)
 		if err != nil {
-			return c, fmt.Errorf("解碼 candidate[%d] 失敗: %w", i, err)
+			return c, fmt.Errorf("failed to decode candidate[%d]: %w", i, err)
 		}
 		c.C[i] = cc
 	}
@@ -489,19 +489,19 @@ func unmarshalCandidate(r *bytes.Reader) (string, error) {
 	// IP
 	ipStr, err := readIP(r)
 	if err != nil {
-		return "", fmt.Errorf("讀取 IP 失敗: %w", err)
+		return "", fmt.Errorf("failed to read IP: %w", err)
 	}
 
 	// port
 	var port uint16
 	if err := binary.Read(r, binary.BigEndian, &port); err != nil {
-		return "", fmt.Errorf("讀取 port 失敗: %w", err)
+		return "", fmt.Errorf("failed to read port: %w", err)
 	}
 
 	// priority
 	var priority uint32
 	if err := binary.Read(r, binary.BigEndian, &priority); err != nil {
-		return "", fmt.Errorf("讀取 priority 失敗: %w", err)
+		return "", fmt.Errorf("failed to read priority: %w", err)
 	}
 
 	// type
@@ -510,7 +510,7 @@ func unmarshalCandidate(r *bytes.Reader) (string, error) {
 		return "", err
 	}
 	if int(typByte) >= len(enumToTyp) {
-		return "", fmt.Errorf("未知 candidate type enum: %d", typByte)
+		return "", fmt.Errorf("unknown candidate type enum: %d", typByte)
 	}
 	typ := enumToTyp[typByte]
 
@@ -524,11 +524,11 @@ func unmarshalCandidate(r *bytes.Reader) (string, error) {
 	if hasRaddr == 1 {
 		raddrStr, err := readIP(r)
 		if err != nil {
-			return "", fmt.Errorf("讀取 raddr 失敗: %w", err)
+			return "", fmt.Errorf("failed to read raddr: %w", err)
 		}
 		var rport uint16
 		if err := binary.Read(r, binary.BigEndian, &rport); err != nil {
-			return "", fmt.Errorf("讀取 rport 失敗: %w", err)
+			return "", fmt.Errorf("failed to read rport: %w", err)
 		}
 		result += fmt.Sprintf(",%s,%d", raddrStr, rport)
 	}
@@ -575,13 +575,13 @@ func encodeToken(c compactSDP) (string, error) {
 func decodeToken(token string) (compactSDP, error) {
 	compressed, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(token))
 	if err != nil {
-		return compactSDP{}, fmt.Errorf("base64 解碼失敗: %w", err)
+		return compactSDP{}, fmt.Errorf("failed to decode base64: %w", err)
 	}
 	r := flate.NewReader(bytes.NewReader(compressed))
 	defer r.Close()
 	data, err := io.ReadAll(r)
 	if err != nil {
-		return compactSDP{}, fmt.Errorf("deflate 解壓失敗: %w", err)
+		return compactSDP{}, fmt.Errorf("failed to decompress deflate: %w", err)
 	}
 	return unmarshalBinary(data)
 }
@@ -665,7 +665,7 @@ func newPairTab(w *app.Window, cfg *AppConfig) *pairTab {
 	t := &pairTab{
 		window: w,
 		config: cfg,
-		status: "未開始",
+		status: msg().Pair.StatusNotStarted,
 	}
 	// 客戶端模式
 	t.cliOfferOutEditor.ReadOnly = true
@@ -714,7 +714,7 @@ func (t *pairTab) layout(gtx layout.Context, th *material.Theme) layout.Dimensio
 		return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{}.Layout(gtx,
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					btn := material.Button(th, &t.clientBtn, "主控端")
+					btn := material.Button(th, &t.clientBtn, msg().Common.Controller)
 					if !isServer {
 						btn.Background = colorModeActive
 					} else {
@@ -724,7 +724,7 @@ func (t *pairTab) layout(gtx layout.Context, th *material.Theme) layout.Dimensio
 				}),
 				layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					btn := material.Button(th, &t.serverBtn, "被控端")
+					btn := material.Button(th, &t.serverBtn, msg().Common.Agent)
 					if isServer {
 						btn.Background = colorModeActive
 					} else {
@@ -754,7 +754,7 @@ func (t *pairTab) layout(gtx layout.Context, th *material.Theme) layout.Dimensio
 			c = color.NRGBA{R: 76, G: 175, B: 80, A: 255}
 		}
 		return layout.Inset{Top: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return statusText(gtx, th, "狀態: "+status, c)
+			return statusText(gtx, th, msg().Common.StatusPrefix+status, c)
 		})
 	})
 
@@ -804,7 +804,7 @@ func (t *pairTab) layoutClientWidgets(gtx layout.Context, th *material.Theme) []
 
 		// 遠端主機資訊
 		if hostname != "" || remoteAddr != "" {
-			infoText := "遠端主機: "
+			infoText := msg().Pair.RemoteHost
 			if hostname != "" {
 				infoText += hostname
 			}
@@ -825,7 +825,7 @@ func (t *pairTab) layoutClientWidgets(gtx layout.Context, th *material.Theme) []
 		if len(devices) > 0 {
 			widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
 				return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					return material.Body2(th, fmt.Sprintf("遠端設備 (%d):", len(devices))).Layout(gtx)
+					return material.Body2(th, fmt.Sprintf(msg().Pair.RemoteDevFmt, len(devices))).Layout(gtx)
 				})
 			})
 			for _, d := range devices {
@@ -846,7 +846,7 @@ func (t *pairTab) layoutClientWidgets(gtx layout.Context, th *material.Theme) []
 		// 結束連線按鈕
 		widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Top: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				btn := material.Button(th, &t.disconnectBtn, "結束連線")
+				btn := material.Button(th, &t.disconnectBtn, msg().Pair.DisconnectBtn)
 				btn.Background = color.NRGBA{R: 244, G: 67, B: 54, A: 255}
 				return btn.Layout(gtx)
 			})
@@ -873,7 +873,7 @@ func (t *pairTab) layoutClientWidgets(gtx layout.Context, th *material.Theme) []
 		// 產生邀請碼按鈕
 		func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				btn := material.Button(th, &t.cliGenOfferBtn, "產生邀請碼")
+				btn := material.Button(th, &t.cliGenOfferBtn, msg().Pair.GenerateOffer)
 				return btn.Layout(gtx)
 			})
 		},
@@ -883,13 +883,13 @@ func (t *pairTab) layoutClientWidgets(gtx layout.Context, th *material.Theme) []
 				return layout.Dimensions{}
 			}
 			return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return tokenBox(gtx, th, "邀請碼（已複製到剪貼簿，僅限使用一次）:", &t.cliOfferOutEditor, "", unit.Dp(100))
+				return tokenBox(gtx, th, msg().Pair.OfferOutLabel, &t.cliOfferOutEditor, "", unit.Dp(100))
 			})
 		},
 		// 回應碼輸入（貼入後自動連線）
 		func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return tokenBox(gtx, th, "回應碼（貼入後自動連線）:", &t.cliAnswerInEditor, "貼入對方給的回應碼", unit.Dp(80))
+				return tokenBox(gtx, th, msg().Pair.AnswerInLabel, &t.cliAnswerInEditor, msg().Pair.AnswerInHint, unit.Dp(80))
 			})
 		},
 	}
@@ -918,7 +918,7 @@ func (t *pairTab) layoutServerWidgets(gtx layout.Context, th *material.Theme) []
 		latency := t.latencyMs.Load()
 		if latency > 0 {
 			widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
-				lbl := material.Body2(th, fmt.Sprintf("延遲: %d ms", latency))
+				lbl := material.Body2(th, fmt.Sprintf(msg().Pair.LatencyFmt, latency))
 				lbl.Font.Weight = 700
 				return lbl.Layout(gtx)
 			})
@@ -927,7 +927,7 @@ func (t *pairTab) layoutServerWidgets(gtx layout.Context, th *material.Theme) []
 		if len(devices) > 0 {
 			widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
 				return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					return material.Body2(th, fmt.Sprintf("設備 (%d):", len(devices))).Layout(gtx)
+					return material.Body2(th, fmt.Sprintf(msg().Common.DevicesFmt, len(devices))).Layout(gtx)
 				})
 			})
 			for _, d := range devices {
@@ -943,7 +943,7 @@ func (t *pairTab) layoutServerWidgets(gtx layout.Context, th *material.Theme) []
 		// 結束連線按鈕
 		widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Top: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				btn := material.Button(th, &t.disconnectBtn, "結束連線")
+				btn := material.Button(th, &t.disconnectBtn, msg().Pair.DisconnectBtn)
 				btn.Background = color.NRGBA{R: 244, G: 67, B: 54, A: 255}
 				return btn.Layout(gtx)
 			})
@@ -964,7 +964,7 @@ func (t *pairTab) layoutServerWidgets(gtx layout.Context, th *material.Theme) []
 		t.srvAnswerOutEditor.SetText("")
 		t.srvProcessedOffer = ""
 		t.mu.Lock()
-		t.status = "未開始"
+		t.status = msg().Pair.StatusNotStarted
 		t.mu.Unlock()
 	}
 
@@ -973,7 +973,7 @@ func (t *pairTab) layoutServerWidgets(gtx layout.Context, th *material.Theme) []
 	// 邀請碼輸入
 	widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
 		return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return tokenBox(gtx, th, "邀請碼（貼入後自動處理）:", &t.srvOfferInEditor, "貼入對方給的邀請碼", unit.Dp(80))
+			return tokenBox(gtx, th, msg().Pair.OfferInLabel, &t.srvOfferInEditor, msg().Pair.OfferInHint, unit.Dp(80))
 		})
 	})
 	// 回應碼輸出
@@ -982,7 +982,7 @@ func (t *pairTab) layoutServerWidgets(gtx layout.Context, th *material.Theme) []
 			return layout.Dimensions{}
 		}
 		return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return tokenBox(gtx, th, "回應碼（已複製到剪貼簿，僅限使用一次）:", &t.srvAnswerOutEditor, "", unit.Dp(100))
+			return tokenBox(gtx, th, msg().Pair.AnswerOutLabel, &t.srvAnswerOutEditor, "", unit.Dp(100))
 		})
 	})
 
@@ -991,7 +991,7 @@ func (t *pairTab) layoutServerWidgets(gtx layout.Context, th *material.Theme) []
 	if hasContent {
 		widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				btn := material.Button(th, &t.clearBtn, "清除邀請碼 / 回應碼")
+				btn := material.Button(th, &t.clearBtn, msg().Pair.ClearBtn)
 				btn.Background = colorTabInactive
 				return btn.Layout(gtx)
 			})
@@ -1002,7 +1002,7 @@ func (t *pairTab) layoutServerWidgets(gtx layout.Context, th *material.Theme) []
 	if len(devices) > 0 {
 		widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return material.Body2(th, fmt.Sprintf("設備 (%d):", len(devices))).Layout(gtx)
+				return material.Body2(th, fmt.Sprintf(msg().Common.DevicesFmt, len(devices))).Layout(gtx)
 			})
 		})
 		for _, d := range devices {
@@ -1027,7 +1027,7 @@ func (t *pairTab) clientGenerateOffer() {
 	stunURLs := t.config.STUNServer
 
 	t.mu.Lock()
-	t.status = "正在產生邀請碼..."
+	t.status = msg().Pair.StatusGenerating
 	t.mu.Unlock()
 	t.window.Invalidate()
 
@@ -1037,7 +1037,7 @@ func (t *pairTab) clientGenerateOffer() {
 		pm, err := webrtc.NewPeerManager(iceConfig)
 		if err != nil {
 			t.mu.Lock()
-			t.status = fmt.Sprintf("建立 PeerConnection 失敗: %v", err)
+			t.status = fmt.Sprintf(msg().Pair.ErrCreatePCFmt, err)
 			t.mu.Unlock()
 			t.window.Invalidate()
 			return
@@ -1048,7 +1048,7 @@ func (t *pairTab) clientGenerateOffer() {
 		if err != nil {
 			pm.Close()
 			t.mu.Lock()
-			t.status = fmt.Sprintf("建立 control channel 失敗: %v", err)
+			t.status = fmt.Sprintf(msg().Pair.ErrCreateCtrlChFmt, err)
 			t.mu.Unlock()
 			t.window.Invalidate()
 			return
@@ -1058,7 +1058,7 @@ func (t *pairTab) clientGenerateOffer() {
 		if err != nil {
 			pm.Close()
 			t.mu.Lock()
-			t.status = fmt.Sprintf("建立 Offer 失敗: %v", err)
+			t.status = fmt.Sprintf(msg().Pair.ErrCreateOfferFmt, err)
 			t.mu.Unlock()
 			t.window.Invalidate()
 			return
@@ -1067,7 +1067,7 @@ func (t *pairTab) clientGenerateOffer() {
 		offerToken, err := encodeToken(sdpToCompact(offerSDP))
 		if err != nil {
 			t.mu.Lock()
-			t.status = fmt.Sprintf("編碼邀請碼失敗: %v", err)
+			t.status = fmt.Sprintf(msg().Pair.ErrEncodeOfferFmt, err)
 			t.mu.Unlock()
 			t.window.Invalidate()
 			return
@@ -1077,7 +1077,7 @@ func (t *pairTab) clientGenerateOffer() {
 		t.pm = pm
 		t.controlCh = controlCh
 		t.pendingClipboard = offerToken
-		t.status = "邀請碼已產生（已複製到剪貼簿）"
+		t.status = msg().Pair.StatusOfferReady
 		t.mu.Unlock()
 		t.cliOfferOutEditor.SetText(offerToken)
 		t.window.Invalidate()
@@ -1099,7 +1099,7 @@ func (t *pairTab) clientApplyAnswer() {
 
 	if pm == nil {
 		t.mu.Lock()
-		t.status = "請先產生邀請碼"
+		t.status = msg().Pair.StatusPleaseGenerate
 		t.mu.Unlock()
 		t.window.Invalidate()
 		return
@@ -1107,7 +1107,7 @@ func (t *pairTab) clientApplyAnswer() {
 
 	if answerToken == "" {
 		t.mu.Lock()
-		t.status = "請貼入對方的回應碼"
+		t.status = msg().Pair.StatusPleaseAnswer
 		t.mu.Unlock()
 		t.window.Invalidate()
 		return
@@ -1117,7 +1117,7 @@ func (t *pairTab) clientApplyAnswer() {
 		answer, err := decodeToken(answerToken)
 		if err != nil {
 			t.mu.Lock()
-			t.status = fmt.Sprintf("無效回應碼: %v", err)
+			t.status = fmt.Sprintf(msg().Pair.ErrInvalidAnswerFmt, err)
 			t.mu.Unlock()
 			t.window.Invalidate()
 			return
@@ -1125,7 +1125,7 @@ func (t *pairTab) clientApplyAnswer() {
 
 		if err := pm.HandleAnswer(compactToSDP(answer)); err != nil {
 			t.mu.Lock()
-			t.status = fmt.Sprintf("處理回應碼失敗: %v", err)
+			t.status = fmt.Sprintf(msg().Pair.ErrHandleAnswerFmt, err)
 			t.mu.Unlock()
 			t.window.Invalidate()
 			return
@@ -1135,7 +1135,7 @@ func (t *pairTab) clientApplyAnswer() {
 		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort))
 		if err != nil {
 			t.mu.Lock()
-			t.status = fmt.Sprintf("建立 proxy listener 失敗: %v", err)
+			t.status = fmt.Sprintf(msg().Pair.ErrProxyListenerFmt, err)
 			t.mu.Unlock()
 			t.window.Invalidate()
 			return
@@ -1149,7 +1149,7 @@ func (t *pairTab) clientApplyAnswer() {
 			port := t.proxyPort
 			wasConnected := t.autoConnected
 			t.autoConnected = false
-			t.status = "P2P 已斷線"
+			t.status = msg().Pair.StatusP2PDisconnected
 			t.connected = false
 			t.mu.Unlock()
 			t.window.Invalidate()
@@ -1169,7 +1169,7 @@ func (t *pairTab) clientApplyAnswer() {
 		t.proxyPort = actualPort
 		t.proxyLn = ln
 		t.deviceReadyCh = make(chan struct{}) // CNXN 等待信號：控制通道收到設備時 close
-		t.status = fmt.Sprintf("P2P 已連線，ADB Proxy: 127.0.0.1:%d", actualPort)
+		t.status = fmt.Sprintf(msg().Pair.StatusP2PProxyFmt, actualPort)
 		t.mu.Unlock()
 		t.window.Invalidate()
 
@@ -1211,34 +1211,34 @@ func (t *pairTab) adbServerProxy(ctx context.Context, ln net.Listener, pm *webrt
 func (t *pairTab) controlReadLoop(ctx context.Context, controlCh io.ReadWriteCloser) {
 	dec := json.NewDecoder(controlCh)
 	for {
-		var msg ctrlMessage
-		if err := dec.Decode(&msg); err != nil {
+		var ctrlMsg ctrlMessage
+		if err := dec.Decode(&ctrlMsg); err != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			slog.Debug("control channel 讀取結束", "error", err)
+			slog.Debug("control channel read ended", "error", err)
 			t.mu.Lock()
-			t.status = "control channel 已關閉"
+			t.status = msg().Pair.StatusControlClosed
 			t.connected = false
 			t.mu.Unlock()
 			t.window.Invalidate()
 			return
 		}
 
-		if msg.Type == "hello" {
+		if ctrlMsg.Type == "hello" {
 			t.mu.Lock()
-			t.remoteHostname = msg.Hostname
+			t.remoteHostname = ctrlMsg.Hostname
 			t.mu.Unlock()
 			t.window.Invalidate()
 			continue
 		}
 
-		if msg.Type != "devices" {
+		if ctrlMsg.Type != "devices" {
 			continue
 		}
 
 		hasDevice := false
-		for _, d := range msg.Devices {
+		for _, d := range ctrlMsg.Devices {
 			if d.State == "device" {
 				hasDevice = true
 				break
@@ -1246,9 +1246,9 @@ func (t *pairTab) controlReadLoop(ctx context.Context, controlCh io.ReadWriteClo
 		}
 
 		t.mu.Lock()
-		t.cliDevices = msg.Devices
+		t.cliDevices = ctrlMsg.Devices
 		count := 0
-		for _, d := range msg.Devices {
+		for _, d := range ctrlMsg.Devices {
 			if d.State == "device" {
 				count++
 			}
@@ -1278,7 +1278,7 @@ func (t *pairTab) controlReadLoop(ctx context.Context, controlCh io.ReadWriteClo
 			t.autoConnected = true
 		}
 		proxyPort := t.proxyPort
-		t.status = fmt.Sprintf("P2P 已連線，遠端 %d 個設備（ADB Proxy: 127.0.0.1:%d）", count, proxyPort)
+		t.status = fmt.Sprintf(msg().Pair.StatusP2PDevicesProxy, count, proxyPort)
 		t.mu.Unlock()
 		t.window.Invalidate()
 
@@ -1288,9 +1288,9 @@ func (t *pairTab) controlReadLoop(ctx context.Context, controlCh io.ReadWriteClo
 				dialer := adb.NewDialer("")
 				target := fmt.Sprintf("127.0.0.1:%d", proxyPort)
 				if err := dialer.Connect(target); err != nil {
-					slog.Debug("自動 adb connect 失敗", "target", target, "error", err)
+					slog.Debug("auto adb connect failed", "target", target, "error", err)
 				} else {
-					slog.Debug("自動 adb connect 成功", "target", target)
+					slog.Debug("auto adb connect succeeded", "target", target)
 				}
 			}()
 		}
@@ -1311,14 +1311,14 @@ func (t *pairTab) serverProcessOffer() {
 
 	if offerToken == "" {
 		t.mu.Lock()
-		t.status = "請貼入對方的邀請碼"
+		t.status = msg().Pair.StatusPleaseOffer
 		t.mu.Unlock()
 		t.window.Invalidate()
 		return
 	}
 
 	t.mu.Lock()
-	t.status = "檢查 ADB..."
+	t.status = msg().Common.CheckingADB
 	t.mu.Unlock()
 	t.window.Invalidate()
 
@@ -1333,14 +1333,14 @@ func (t *pairTab) serverProcessOffer() {
 			t.window.Invalidate()
 		}); err != nil {
 			t.mu.Lock()
-			t.status = fmt.Sprintf("ADB 錯誤: %v", err)
+			t.status = fmt.Sprintf(msg().Common.ADBErrorFmt, err)
 			t.mu.Unlock()
 			t.window.Invalidate()
 			return
 		}
 
 		t.mu.Lock()
-		t.status = "正在處理邀請碼..."
+		t.status = msg().Pair.StatusProcessing
 		t.mu.Unlock()
 		t.window.Invalidate()
 
@@ -1348,7 +1348,7 @@ func (t *pairTab) serverProcessOffer() {
 		offer, err := decodeToken(offerToken)
 		if err != nil {
 			t.mu.Lock()
-			t.status = fmt.Sprintf("無效邀請碼: %v", err)
+			t.status = fmt.Sprintf(msg().Pair.ErrInvalidOfferFmt, err)
 			t.mu.Unlock()
 			t.window.Invalidate()
 			return
@@ -1358,7 +1358,7 @@ func (t *pairTab) serverProcessOffer() {
 		pm, err := webrtc.NewPeerManager(iceConfig)
 		if err != nil {
 			t.mu.Lock()
-			t.status = fmt.Sprintf("建立 PeerConnection 失敗: %v", err)
+			t.status = fmt.Sprintf(msg().Pair.ErrCreatePCFmt, err)
 			t.mu.Unlock()
 			t.window.Invalidate()
 			return
@@ -1368,12 +1368,12 @@ func (t *pairTab) serverProcessOffer() {
 
 		// 監聽客戶端建立的 DataChannel
 		pm.OnChannel(func(label string, rwc io.ReadWriteCloser) {
-			slog.Debug("收到 DataChannel", "label", label)
+			slog.Debug("received DataChannel", "label", label)
 			if label == "control" {
 				// DataChannel 開啟 = P2P 真正連上，此時才切換到已連線 UI
 				t.mu.Lock()
 				t.connected = true
-				t.status = "P2P 已連線，等待設備..."
+				t.status = msg().Pair.StatusP2PWaiting
 				t.mu.Unlock()
 				t.window.Invalidate()
 				// 客戶端的 control channel → 啟動設備推送
@@ -1409,7 +1409,7 @@ func (t *pairTab) serverProcessOffer() {
 
 		pm.OnDisconnect(func() {
 			t.mu.Lock()
-			t.status = "P2P 已斷線"
+			t.status = msg().Pair.StatusP2PDisconnected
 			t.connected = false
 			t.srvDevices = nil
 			t.mu.Unlock()
@@ -1422,7 +1422,7 @@ func (t *pairTab) serverProcessOffer() {
 			pm.Close()
 			cancel()
 			t.mu.Lock()
-			t.status = fmt.Sprintf("處理 Offer 失敗: %v", err)
+			t.status = fmt.Sprintf(msg().Pair.ErrHandleOfferFmt, err)
 			t.mu.Unlock()
 			t.window.Invalidate()
 			return
@@ -1433,7 +1433,7 @@ func (t *pairTab) serverProcessOffer() {
 			pm.Close()
 			cancel()
 			t.mu.Lock()
-			t.status = fmt.Sprintf("編碼回應碼失敗: %v", err)
+			t.status = fmt.Sprintf(msg().Pair.ErrEncodeAnswerFmt, err)
 			t.mu.Unlock()
 			t.window.Invalidate()
 			return
@@ -1444,7 +1444,7 @@ func (t *pairTab) serverProcessOffer() {
 		t.cancel = cancel
 		// 注意：不在此設 connected = true，等 control DataChannel 開啟才切換
 		t.pendingClipboard = answerToken
-		t.status = "回應碼已產生（已複製到剪貼簿）"
+		t.status = msg().Pair.StatusAnswerReady
 		t.mu.Unlock()
 		t.srvAnswerOutEditor.SetText(answerToken)
 		t.window.Invalidate()
@@ -1467,7 +1467,7 @@ func (t *pairTab) devicePushLoop(ctx context.Context, controlCh io.ReadWriteClos
 	// 先發送主機名稱
 	hostname, _ := os.Hostname()
 	if err := enc.Encode(ctrlMessage{Type: "hello", Hostname: hostname}); err != nil {
-		slog.Debug("發送 hello 失敗", "error", err)
+		slog.Debug("failed to send hello", "error", err)
 		return
 	}
 
@@ -1494,7 +1494,7 @@ func (t *pairTab) devicePushLoop(ctx context.Context, controlCh io.ReadWriteClos
 
 			// 推送給客戶端
 			if err := enc.Encode(ctrlMessage{Type: "devices", Devices: ctrlDevs}); err != nil {
-				slog.Debug("control channel 寫入失敗", "error", err)
+				slog.Debug("control channel write failed", "error", err)
 				return
 			}
 
@@ -1502,9 +1502,9 @@ func (t *pairTab) devicePushLoop(ctx context.Context, controlCh io.ReadWriteClos
 			t.mu.Lock()
 			t.srvDevices = ctrlDevs
 			if len(ctrlDevs) > 0 {
-				t.status = fmt.Sprintf("P2P 已連線，%d 個設備", len(ctrlDevs))
+				t.status = fmt.Sprintf(msg().Pair.StatusP2PDevicesFmt, len(ctrlDevs))
 			} else {
-				t.status = "P2P 已連線，等待設備..."
+				t.status = msg().Pair.StatusP2PWaiting
 			}
 			t.mu.Unlock()
 			t.window.Invalidate()
@@ -1518,7 +1518,7 @@ func (t *pairTab) handleADBServerConn(ctx context.Context, rwc io.ReadWriteClose
 
 	conn, err := net.Dial("tcp", adbAddr)
 	if err != nil {
-		slog.Debug("連線本機 ADB server 失敗", "error", err)
+		slog.Debug("failed to connect local ADB server", "error", err)
 		return
 	}
 	defer conn.Close()
@@ -1536,11 +1536,11 @@ func (t *pairTab) handleADBServerConn(ctx context.Context, rwc io.ReadWriteClose
 func (t *pairTab) handleADBStreamConn(ctx context.Context, rwc io.ReadWriteCloser, adbAddr, serial, service string) {
 	defer rwc.Close()
 
-	slog.Debug("stream: 開始處理", "serial", serial, "service", service)
+	slog.Debug("stream: start handling", "serial", serial, "service", service)
 
 	conn, err := net.Dial("tcp", adbAddr)
 	if err != nil {
-		slog.Debug("stream: 連線 ADB server 失敗", "error", err)
+		slog.Debug("stream: failed to connect ADB server", "error", err)
 		rwc.Write([]byte{0})
 		return
 	}
@@ -1548,37 +1548,37 @@ func (t *pairTab) handleADBStreamConn(ctx context.Context, rwc io.ReadWriteClose
 
 	// 切換到目標設備
 	if err := sendADBCmd(conn, fmt.Sprintf("host:transport:%s", serial)); err != nil {
-		slog.Debug("stream: transport 命令失敗", "error", err)
+		slog.Debug("stream: transport command failed", "error", err)
 		rwc.Write([]byte{0})
 		return
 	}
 	if err := readADBStatus(conn); err != nil {
-		slog.Debug("stream: transport 失敗", "serial", serial, "error", err)
+		slog.Debug("stream: transport failed", "serial", serial, "error", err)
 		rwc.Write([]byte{0})
 		return
 	}
 
-	slog.Debug("stream: transport 成功", "serial", serial)
+	slog.Debug("stream: transport succeeded", "serial", serial)
 
 	// 發送服務命令
 	if err := sendADBCmd(conn, service); err != nil {
-		slog.Debug("stream: service 命令失敗", "service", service, "error", err)
+		slog.Debug("stream: service command failed", "service", service, "error", err)
 		rwc.Write([]byte{0})
 		return
 	}
 	if err := readADBStatus(conn); err != nil {
-		slog.Debug("stream: service 失敗", "service", service, "error", err)
+		slog.Debug("stream: service failed", "service", service, "error", err)
 		rwc.Write([]byte{0})
 		return
 	}
 
 	// 通知客戶端就緒
 	if n, err := rwc.Write([]byte{1}); err != nil {
-		slog.Debug("stream: 就緒信號寫入失敗", "serial", serial, "service", service, "error", err, "n", n)
+		slog.Debug("stream: failed to write ready signal", "serial", serial, "service", service, "error", err, "n", n)
 		return
 	}
 
-	slog.Debug("stream 已建立", "serial", serial, "service", service)
+	slog.Debug("stream established", "serial", serial, "service", service)
 
 	// 雙向轉發（biCopy 結束時關閉雙方，避免死鎖）
 	biCopy(ctx, rwc, conn)
@@ -1635,7 +1635,7 @@ func (t *pairTab) disconnect() {
 	t.mu.Lock()
 	t.remoteHostname = ""
 	t.remoteAddr = ""
-	t.status = "未開始"
+	t.status = msg().Pair.StatusNotStarted
 	t.mu.Unlock()
 	t.window.Invalidate()
 }

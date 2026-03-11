@@ -9,12 +9,13 @@
 //  3. Relay 伺服器（tab_signal.go）：透過中央 Signaling Server 進行
 //     WebSocket 信令交換 + WebRTC P2P 連線，適合跨網路的正式部署。
 //
-// CJK 字型策略：
-//   - macOS：不手動載入，由 go-text/typesetting 的 fontscan 自動掃描系統字型目錄
-//     （/System/Library/Fonts 含 PingFang.ttc），確保完整字形覆蓋
+// CJK 字型策略（所有平台統一手動載入 CJK 字型作為首選）：
+//   - macOS：載入 PingFang.ttc，不使用 NoSystemFonts，系統字型作為 fallback。
+//     確保 Latin + CJK 使用一致 metrics，避免混合 SF Pro + PingFang 造成
+//     基線不一致、按鈕文字偏移、字元間距不均。
 //   - Windows：手動載入微軟正黑體（msjh.ttc），路徑從 %WINDIR%\Fonts 取得
 //   - Linux：手動嘗試 Noto Sans CJK（多個常見路徑）
-//   - Windows/Linux 若系統字型不可用，退回 Go 內建字型（gofont），此時中文會顯示為方框
+//   - 若系統字型不可用，退回 Go 內建字型（gofont），此時中文會顯示為方框
 package gui
 
 import (
@@ -50,7 +51,7 @@ import (
 func Run() {
 	go func() {
 		w := new(app.Window)
-		w.Option(app.Title("radb — 遠端 ADB 工具"))
+		w.Option(app.Title(msg().App.WindowTitle))
 		w.Option(app.Size(unit.Dp(580), unit.Dp(600)))
 		if err := eventLoop(w); err != nil {
 			log.Fatal(err)
@@ -62,63 +63,75 @@ func Run() {
 
 // newThemeWithCJK 建立帶 CJK（中日韓）字型的 Gio Theme。
 //
-// CJK 字型策略：
-//   - macOS：不手動載入，由 go-text/typesetting 的 fontscan 自動掃描
-//     /System/Library/Fonts（含 PingFang.ttc），確保完整字形覆蓋。
+// CJK 字型策略（所有平台統一手動載入 CJK 字型作為首選）：
+//   - macOS：載入 PingFang.ttc，**不使用 NoSystemFonts**，系統字型作為 fallback。
+//     這確保 Latin + CJK 都使用 PingFang 的一致 metrics（基線、advance width），
+//     避免混合 SF Pro + PingFang 時造成基線不一致、按鈕文字偏移、字元間距不均。
+//     系統字型 fallback 覆蓋 ParseCollection 可能遺漏的字形，不會缺字。
 //   - Windows：手動載入微軟正黑體（msjh.ttc），搭配 NoSystemFonts 避免掃描延遲。
 //   - Linux：手動載入 Noto Sans CJK，搭配 NoSystemFonts。
 //
-// Windows/Linux 手動載入時，CJK 字型放在集合前方優先使用，
+// 所有平台手動載入時，CJK 字型放在集合前方優先使用，
 // Go 內建 gofont 作為 Latin 字元的 fallback。
 func newThemeWithCJK() *material.Theme {
 	th := material.NewTheme()
 
-	// macOS：讓預設 Shaper 的系統字型掃描自動處理 CJK，不需手動載入
-	if runtime.GOOS != "darwin" {
-		var fontPaths []string
-		switch runtime.GOOS {
-		case "windows":
-			winDir := os.Getenv("WINDIR")
-			if winDir == "" {
-				winDir = `C:\Windows`
-			}
-			fontPaths = []string{
-				winDir + `\Fonts\msjh.ttc`,
-			}
-		default: // Linux
-			// 優先使用 Noto Sans CJK TC（繁體中文）OTF，找不到才 fallback 到通用 TTC
-			fontPaths = []string{
-				"/usr/share/fonts/opentype/noto/NotoSansCJKTC-Regular.otf",
-				"/usr/share/fonts/noto-cjk/NotoSansCJKTC-Regular.otf",
-				"/usr/share/fonts/google-noto-cjk-tc/NotoSansCJKTC-Regular.otf",
-				"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-				"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-			}
+	var fontPaths []string
+	switch runtime.GOOS {
+	case "darwin":
+		fontPaths = []string{
+			"/System/Library/Fonts/PingFang.ttc",
 		}
+	case "windows":
+		winDir := os.Getenv("WINDIR")
+		if winDir == "" {
+			winDir = `C:\Windows`
+		}
+		fontPaths = []string{
+			winDir + `\Fonts\msjh.ttc`,
+		}
+	default: // Linux
+		// 優先使用 Noto Sans CJK TC（繁體中文）OTF，找不到才 fallback 到通用 TTC
+		fontPaths = []string{
+			"/usr/share/fonts/opentype/noto/NotoSansCJKTC-Regular.otf",
+			"/usr/share/fonts/noto-cjk/NotoSansCJKTC-Regular.otf",
+			"/usr/share/fonts/google-noto-cjk-tc/NotoSansCJKTC-Regular.otf",
+			"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+			"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+		}
+	}
 
-		var cjkFaces []font.FontFace
-		for _, p := range fontPaths {
-			data, err := os.ReadFile(p)
-			if err != nil {
+	var cjkFaces []font.FontFace
+	for _, p := range fontPaths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		faces, err := opentype.ParseCollection(data)
+		if err != nil {
+			// 嘗試單一字型格式
+			face, err2 := opentype.Parse(data)
+			if err2 != nil {
 				continue
 			}
-			faces, err := opentype.ParseCollection(data)
-			if err != nil {
-				// 嘗試單一字型格式
-				face, err2 := opentype.Parse(data)
-				if err2 != nil {
-					continue
-				}
-				cjkFaces = append(cjkFaces, font.FontFace{Face: face})
-			} else {
-				cjkFaces = append(cjkFaces, faces...)
-			}
-			break // 找到一個就夠了
+			cjkFaces = append(cjkFaces, font.FontFace{Face: face})
+		} else {
+			cjkFaces = append(cjkFaces, faces...)
 		}
+		break // 找到一個就夠了
+	}
 
-		if len(cjkFaces) > 0 {
-			// CJK 字型放前面優先使用，Go 內建字型作為 fallback
-			allFaces := append(cjkFaces, gofont.Collection()...)
+	if len(cjkFaces) > 0 {
+		// CJK 字型放前面優先使用，Go 內建字型作為 fallback
+		allFaces := append(cjkFaces, gofont.Collection()...)
+		if runtime.GOOS == "darwin" {
+			// macOS：保留系統字型 fallback，避免 ParseCollection
+			// 解析不完整時缺字（方框）。與 NoSystemFonts 版本的差異：
+			// 系統字型掃描仍會索引 /System/Library/Fonts，
+			// 當 collection 中找不到字形時自動回退。
+			th.Shaper = text.NewShaper(text.WithCollection(allFaces))
+		} else {
+			// Windows/Linux：使用 NoSystemFonts 避免系統字型掃描延遲
 			th.Shaper = text.NewShaper(text.NoSystemFonts(), text.WithCollection(allFaces))
 		}
 	}
@@ -141,6 +154,9 @@ func eventLoop(w *app.Window) error {
 	// 建立設定面板（載入持久化設定）
 	sp := newSettingsPanel(w)
 
+	// 初始化介面語言（從設定檔或系統偵測）
+	SetLanguage(sp.config.Language)
+
 	// 建立三個分頁，傳入共用設定
 	pt := newPairTab(w, sp.config)
 	lt := newLANTab(w, sp.config)
@@ -148,9 +164,9 @@ func eventLoop(w *app.Window) error {
 
 	tabs := &tabBar{
 		items: []tabItem{
-			{title: "P2P 直連", layoutFn: pt.layout},
-			{title: "區網直連", layoutFn: lt.layout},
-			{title: "Relay 伺服器", layoutFn: st.layout},
+			{title: msg().App.TabPair, layoutFn: pt.layout},
+			{title: msg().App.TabLAN, layoutFn: lt.layout},
+			{title: msg().App.TabSignal, layoutFn: st.layout},
 		},
 	}
 
@@ -174,6 +190,11 @@ func eventLoop(w *app.Window) error {
 			return e.Err
 		case app.FrameEvent:
 			gtx := app.NewContext(&ops, e)
+
+			// 即時更新分頁標題（語言切換後下一幀生效）
+			tabs.items[0].title = msg().App.TabPair
+			tabs.items[1].title = msg().App.TabLAN
+			tabs.items[2].title = msg().App.TabSignal
 
 			// 處理齒輪按鈕點擊 → 開啟獨立設定子視窗
 			for gearBtn.Clicked(gtx) {
@@ -204,7 +225,7 @@ func eventLoop(w *app.Window) error {
 							Right:  unit.Dp(12),
 							Bottom: bottomInset,
 						}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							btn := material.IconButton(theme, &gearBtn, icons.Gear, "設定")
+							btn := material.IconButton(theme, &gearBtn, icons.Gear, msg().App.GearTooltip)
 							btn.Size = unit.Dp(24)
 							btn.Background = colorTabInactive
 							btn.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}

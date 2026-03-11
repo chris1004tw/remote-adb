@@ -237,13 +237,13 @@ func (t *pairTab) getDeviceOrWait(ctx context.Context, timeout time.Duration) (s
 		return "", ""
 	}
 
-	slog.Debug("CNXN 等待遠端設備就緒")
+	slog.Debug("CNXN waiting for remote device")
 	select {
 	case <-readyCh:
 	case <-ctx.Done():
 		return "", ""
 	case <-time.After(timeout):
-		slog.Debug("等待遠端設備逾時，拒絕 CNXN")
+		slog.Debug("remote device wait timeout, rejecting CNXN")
 		return "", ""
 	}
 
@@ -272,7 +272,7 @@ func (t *pairTab) handleProxyConn(ctx context.Context, conn net.Conn, openCh ope
 	// 讀取前 4 bytes 判斷協定類型
 	var peek [4]byte
 	if _, err := io.ReadFull(conn, peek[:]); err != nil {
-		slog.Debug("讀取前 4 bytes 失敗", "id", id, "error", err)
+		slog.Debug("failed to read first 4 bytes", "id", id, "error", err)
 		return
 	}
 
@@ -286,12 +286,12 @@ func (t *pairTab) handleProxyConn(ctx context.Context, conn net.Conn, openCh ope
 	// ADB server 協定：前 4 bytes 是 hex 長度
 	n, err := strconv.ParseInt(string(peek[:]), 16, 32)
 	if err != nil {
-		slog.Debug("無效的 ADB 請求", "id", id, "first4", string(peek[:]))
+		slog.Debug("invalid ADB request", "id", id, "first4", string(peek[:]))
 		return
 	}
 	cmdBuf := make([]byte, n)
 	if _, err := io.ReadFull(conn, cmdBuf); err != nil {
-		slog.Debug("讀取 ADB 命令失敗", "id", id, "error", err)
+		slog.Debug("failed to read ADB command", "id", id, "error", err)
 		return
 	}
 	raw := append(peek[:], cmdBuf...)
@@ -307,14 +307,14 @@ func (t *pairTab) handleProxyConn(ctx context.Context, conn net.Conn, openCh ope
 	// 非 forward 命令：建立 DataChannel 轉發
 	ch, err := openCh(fmt.Sprintf("adb-server/%d", id))
 	if err != nil {
-		slog.Debug("建立 DataChannel 失敗", "id", id, "error", err)
+		slog.Debug("failed to create DataChannel", "id", id, "error", err)
 		return
 	}
 	defer ch.Close()
 
 	// 先寫入已讀取的命令，讓遠端 ADB server 收到完整請求
 	if _, err := ch.Write(raw); err != nil {
-		slog.Debug("寫入命令到 DataChannel 失敗", "id", id, "error", err)
+		slog.Debug("failed to write command to DataChannel", "id", id, "error", err)
 		return
 	}
 
@@ -416,7 +416,7 @@ func (t *pairTab) handleForward(ctx context.Context, conn net.Conn, fc *fwdCmd, 
 		writeADBOkay(conn)
 	}
 
-	slog.Debug("forward 已建立", "local", key, "remote", fc.remoteSpec, "serial", serial, "port", actualPort)
+	slog.Debug("forward established", "local", key, "remote", fc.remoteSpec, "serial", serial, "port", actualPort)
 }
 
 // resolveForwardSerial 將 adb forward 命令中的 serial 映射為遠端真實裝置 serial。
@@ -454,7 +454,7 @@ func (t *pairTab) resolveForwardSerial(requested string) (string, bool) {
 	// requested 未命中時，若只有一台設備，允許自動映射（包含 127.0.0.1:15037 這類本機序號）
 	if len(devs) == 1 {
 		if requested != "" && requested != devs[0].Serial {
-			slog.Debug("forward serial 映射", "from", requested, "to", devs[0].Serial)
+			slog.Debug("forward serial mapping", "from", requested, "to", devs[0].Serial)
 		}
 		return devs[0].Serial, true
 	}
@@ -485,10 +485,10 @@ func (t *pairTab) handleFwdConn(ctx context.Context, conn net.Conn, fl *fwdListe
 
 	// DataChannel label: adb-fwd/{id}/{serial}/{remoteSpec}
 	label := fmt.Sprintf("adb-fwd/%d/%s/%s", id, fl.serial, fl.remoteSpec)
-	slog.Debug("forward 連線", "id", id, "local", fl.localSpec, "remote", fl.remoteSpec)
+	slog.Debug("forward connection", "id", id, "local", fl.localSpec, "remote", fl.remoteSpec)
 	ch, err := openCh(label)
 	if err != nil {
-		slog.Debug("forward DataChannel 建立失敗", "label", label, "error", err)
+		slog.Debug("forward DataChannel creation failed", "label", label, "error", err)
 		return
 	}
 	defer ch.Close()
@@ -596,7 +596,7 @@ func (t *pairTab) setupReverseForward(ctx context.Context, serial, localSpec, re
 
 	go t.fwdAcceptLoop(fwdCtx, fl, openCh)
 
-	slog.Debug("reverse forward 已建立（轉為客戶端 forward）",
+	slog.Debug("reverse forward established (converted to client forward)",
 		"local", key, "remote", remoteSpec, "serial", serial, "port", actualPort)
 	return actualPort, nil
 }
@@ -668,28 +668,28 @@ func (t *pairTab) handleADBForwardConn(ctx context.Context, rwc io.ReadWriteClos
 
 	conn, err := net.Dial("tcp", adbAddr)
 	if err != nil {
-		slog.Debug("forward: 連線 ADB server 失敗", "error", err)
+		slog.Debug("forward: failed to connect ADB server", "error", err)
 		return
 	}
 	defer conn.Close()
 
 	// 切換到目標設備
 	if err := sendADBCmd(conn, fmt.Sprintf("host:transport:%s", serial)); err != nil {
-		slog.Debug("forward: 發送 transport 失敗", "error", err)
+		slog.Debug("forward: failed to send transport", "error", err)
 		return
 	}
 	if err := readADBStatus(conn); err != nil {
-		slog.Debug("forward: transport 失敗", "serial", serial, "error", err)
+		slog.Debug("forward: transport failed", "serial", serial, "error", err)
 		return
 	}
 
 	// 連線到 remote spec
 	if err := sendADBCmd(conn, remoteSpec); err != nil {
-		slog.Debug("forward: 發送 remote spec 失敗", "error", err)
+		slog.Debug("forward: failed to send remote spec", "error", err)
 		return
 	}
 	if err := readADBStatus(conn); err != nil {
-		slog.Debug("forward: remote spec 失敗", "remoteSpec", remoteSpec, "error", err)
+		slog.Debug("forward: remote spec failed", "remoteSpec", remoteSpec, "error", err)
 		return
 	}
 
