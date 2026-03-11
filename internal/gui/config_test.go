@@ -1,6 +1,7 @@
 package gui
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -33,6 +34,10 @@ func TestSaveAndLoadConfig(t *testing.T) {
 		ProxyPort:  6666,
 		DirectPort: 20000,
 		STUNServer: "stun:custom.example.com:3478",
+		TURNMode:   TURNModeCustom,
+		TURNServer: "turn:relay.example.com:3478",
+		TURNUser:   "myuser",
+		TURNPass:   "mypass",
 	}
 	if err := SaveConfig(cfg, path); err != nil {
 		t.Fatalf("SaveConfig failed: %v", err)
@@ -59,6 +64,18 @@ func TestSaveAndLoadConfig(t *testing.T) {
 	}
 	if loaded.STUNServer != "stun:custom.example.com:3478" {
 		t.Errorf("loaded STUNServer = %q, want custom", loaded.STUNServer)
+	}
+	if loaded.TURNMode != TURNModeCustom {
+		t.Errorf("loaded TURNMode = %q, want %q", loaded.TURNMode, TURNModeCustom)
+	}
+	if loaded.TURNServer != "turn:relay.example.com:3478" {
+		t.Errorf("loaded TURNServer = %q, want turn:relay.example.com:3478", loaded.TURNServer)
+	}
+	if loaded.TURNUser != "myuser" {
+		t.Errorf("loaded TURNUser = %q, want myuser", loaded.TURNUser)
+	}
+	if loaded.TURNPass != "mypass" {
+		t.Errorf("loaded TURNPass = %q, want mypass", loaded.TURNPass)
 	}
 }
 
@@ -101,6 +118,68 @@ func TestLoadConfig_PartialFile(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_TURNModeCloudflare(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.TURNMode != TURNModeCloudflare {
+		t.Errorf("TURNMode = %q, want %q (Cloudflare by default)", cfg.TURNMode, TURNModeCloudflare)
+	}
+	if cfg.TURNServer != "" {
+		t.Errorf("TURNServer = %q, want empty (Cloudflare mode uses API)", cfg.TURNServer)
+	}
+	if cfg.TURNUser != "" {
+		t.Errorf("TURNUser = %q, want empty", cfg.TURNUser)
+	}
+	if cfg.TURNPass != "" {
+		t.Errorf("TURNPass = %q, want empty", cfg.TURNPass)
+	}
+}
+
+func TestParseICEConfig_STUNOnly(t *testing.T) {
+	cfg := &AppConfig{STUNServer: "stun:stun.l.google.com:19302"}
+	ice := parseICEConfig(cfg)
+	if len(ice.STUNServers) != 1 || ice.STUNServers[0] != "stun:stun.l.google.com:19302" {
+		t.Errorf("STUNServers = %v, want [stun:stun.l.google.com:19302]", ice.STUNServers)
+	}
+	if len(ice.TURNServers) != 0 {
+		t.Errorf("TURNServers = %v, want empty", ice.TURNServers)
+	}
+}
+
+func TestParseICEConfig_WithTURN(t *testing.T) {
+	cfg := &AppConfig{
+		STUNServer: "stun:stun.l.google.com:19302",
+		TURNMode:   TURNModeCustom,
+		TURNServer: "turn:relay.example.com:3478",
+		TURNUser:   "user1",
+		TURNPass:   "pass1",
+	}
+	ice := parseICEConfig(cfg)
+	if len(ice.STUNServers) != 1 {
+		t.Fatalf("STUNServers length = %d, want 1", len(ice.STUNServers))
+	}
+	if len(ice.TURNServers) != 1 {
+		t.Fatalf("TURNServers length = %d, want 1", len(ice.TURNServers))
+	}
+	turn := ice.TURNServers[0]
+	if turn.URL != "turn:relay.example.com:3478" {
+		t.Errorf("TURN URL = %q, want turn:relay.example.com:3478", turn.URL)
+	}
+	if turn.Username != "user1" {
+		t.Errorf("TURN Username = %q, want user1", turn.Username)
+	}
+	if turn.Credential != "pass1" {
+		t.Errorf("TURN Credential = %q, want pass1", turn.Credential)
+	}
+}
+
+func TestParseICEConfig_EmptyTURN(t *testing.T) {
+	cfg := &AppConfig{STUNServer: "stun:stun.l.google.com:19302", TURNServer: ""}
+	ice := parseICEConfig(cfg)
+	if len(ice.TURNServers) != 0 {
+		t.Errorf("TURNServers should be empty when TURNServer is blank, got %v", ice.TURNServers)
+	}
+}
+
 func TestSaveConfig_CreatesParentDir(t *testing.T) {
 	dir := t.TempDir()
 	nested := filepath.Join(dir, "sub", "dir", "radb.toml")
@@ -111,5 +190,41 @@ func TestSaveConfig_CreatesParentDir(t *testing.T) {
 	}
 	if _, err := os.Stat(nested); err != nil {
 		t.Fatalf("file not created at nested path: %v", err)
+	}
+}
+
+// TestResolveICEConfig_Custom 驗證自訂模式使用 AppConfig 中的 TURN 設定。
+func TestResolveICEConfig_Custom(t *testing.T) {
+	cfg := &AppConfig{
+		STUNServer: "stun:stun.l.google.com:19302",
+		TURNMode:   TURNModeCustom,
+		TURNServer: "turn:my.turn.com:3478",
+		TURNUser:   "myuser",
+		TURNPass:   "mypass",
+	}
+	ice, err := resolveICEConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("resolveICEConfig failed: %v", err)
+	}
+	if len(ice.TURNServers) != 1 {
+		t.Fatalf("TURNServers = %d, want 1", len(ice.TURNServers))
+	}
+	if ice.TURNServers[0].URL != "turn:my.turn.com:3478" {
+		t.Errorf("TURN URL = %q, want turn:my.turn.com:3478", ice.TURNServers[0].URL)
+	}
+}
+
+// TestResolveICEConfig_NoTURN 驗證空模式不啟用 TURN。
+func TestResolveICEConfig_NoTURN(t *testing.T) {
+	cfg := &AppConfig{
+		STUNServer: "stun:stun.l.google.com:19302",
+		TURNMode:   "",
+	}
+	ice, err := resolveICEConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("resolveICEConfig failed: %v", err)
+	}
+	if len(ice.TURNServers) != 0 {
+		t.Errorf("TURNServers = %v, want empty", ice.TURNServers)
 	}
 }

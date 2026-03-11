@@ -61,6 +61,7 @@ type commonMsg struct {
 	TokenHintOptional string // "（可選）"
 	TokenHintPSK     string // "PSK 認證 Token"
 	Connecting       string // "連線中..."
+	RelayNotice      string // TURN 中繼通知訊息
 }
 
 // pairMsg 是「簡易連線」分頁的文字。
@@ -190,6 +191,13 @@ type settingsMsg struct {
 	BannerDismiss     string // "稍後再說"
 	CustomStun        string // "自訂"
 	CustomStunOption  string // "自訂..."
+	TURNModeLabel     string // "TURN 伺服器"
+	TURNModeCloudflare string // "Cloudflare（免費）"
+	TURNModeCustom    string // "自訂"
+	TURNLabel         string // "TURN 位址"
+	TURNHint          string // "turn:your.server.com:3478"
+	TURNUserLabel     string // "TURN 帳號"
+	TURNPassLabel     string // "TURN 密碼"
 	LanguageLabel     string // "語言"
 	LanguageAuto      string // "自動"
 
@@ -271,6 +279,7 @@ var messagesZhTW = Messages{
 		TokenHintOptional: "（可選）",
 		TokenHintPSK:     "PSK 認證 Token",
 		Connecting:       "連線中...",
+		RelayNotice:      "因主控或被控端的網路環境受限，目前透過 Cloudflare 中繼伺服器連線",
 	},
 	Pair: pairMsg{
 		GenerateOffer: "產生邀請碼",
@@ -381,6 +390,13 @@ var messagesZhTW = Messages{
 		BannerDismiss:     "稍後再說",
 		CustomStun:        "自訂",
 		CustomStunOption:  "自訂...",
+		TURNModeLabel:     "TURN 伺服器",
+		TURNModeCloudflare: "Cloudflare（免費）",
+		TURNModeCustom:    "自訂...",
+		TURNLabel:         "TURN 位址",
+		TURNHint:          "turn:your.server.com:3478",
+		TURNUserLabel:     "TURN 帳號",
+		TURNPassLabel:     "TURN 密碼",
 		LanguageLabel:     "語言",
 		LanguageAuto:      "自動",
 
@@ -424,6 +440,7 @@ var messagesEN = Messages{
 		TokenHintOptional: "(optional)",
 		TokenHintPSK:     "PSK auth token",
 		Connecting:       "Connecting...",
+		RelayNotice:      "Due to network restrictions, the connection is routed through a Cloudflare relay server",
 	},
 	Pair: pairMsg{
 		GenerateOffer: "Generate Invite Code",
@@ -534,6 +551,13 @@ var messagesEN = Messages{
 		BannerDismiss:     "Later",
 		CustomStun:        "Custom",
 		CustomStunOption:  "Custom...",
+		TURNModeLabel:     "TURN Server",
+		TURNModeCloudflare: "Cloudflare (Free)",
+		TURNModeCustom:    "Custom...",
+		TURNLabel:         "TURN Address",
+		TURNHint:          "turn:your.server.com:3478",
+		TURNUserLabel:     "TURN User",
+		TURNPassLabel:     "TURN Password",
 		LanguageLabel:     "Language",
 		LanguageAuto:      "Auto",
 

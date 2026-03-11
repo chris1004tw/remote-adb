@@ -44,6 +44,7 @@ type PeerManager struct {
 	mu             sync.Mutex                                  // 保護以下回呼函式與 closed 旗標
 	onChannelFn    func(label string, rwc io.ReadWriteCloser)  // 對方開啟 DataChannel 時的回呼
 	onDisconnectFn func()                                      // 連線斷開時的回呼
+	onConnectedFn  func(relayed bool)                          // 連線建立時的回呼（relayed 表示是否走 TURN 中繼）
 	closed         bool                                        // 防止重複關閉
 }
 
@@ -71,12 +72,24 @@ func NewPeerManager(config ICEConfig) (*PeerManager, error) {
 		config: config,
 	}
 
-	// 監聽連線狀態變化：Failed/Disconnected/Closed 皆視為斷線，通知上層
+	// 監聯連線狀態變化：
+	// - Connected：通知上層連線已建立，並回報是否走 TURN 中繼
+	// - Failed/Disconnected/Closed：通知上層連線已斷開
 	pc.OnConnectionStateChange(func(state pionwebrtc.PeerConnectionState) {
-		slog.Debug("PeerConnection 狀態變化", "state", state.String())
-		if state == pionwebrtc.PeerConnectionStateFailed ||
-			state == pionwebrtc.PeerConnectionStateDisconnected ||
-			state == pionwebrtc.PeerConnectionStateClosed {
+		slog.Debug("PeerConnection state changed", "state", state.String())
+		switch state {
+		case pionwebrtc.PeerConnectionStateConnected:
+			relayed := pm.IsRelayed()
+			slog.Info("PeerConnection connected", "relayed", relayed)
+			pm.mu.Lock()
+			fn := pm.onConnectedFn
+			pm.mu.Unlock()
+			if fn != nil {
+				fn(relayed)
+			}
+		case pionwebrtc.PeerConnectionStateFailed,
+			pionwebrtc.PeerConnectionStateDisconnected,
+			pionwebrtc.PeerConnectionStateClosed:
 			pm.mu.Lock()
 			fn := pm.onDisconnectFn
 			pm.mu.Unlock()
@@ -338,6 +351,48 @@ func (pm *PeerManager) OnDisconnect(handler func()) {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 	pm.onDisconnectFn = handler
+}
+
+// OnConnected 註冊連線建立時的回呼。
+// relayed 參數表示連線是否透過 TURN 中繼伺服器（relay candidate），
+// 若為 true，表示 STUN 穿透失敗，雙方透過中繼通訊。
+// 回呼在 PeerConnectionStateConnected 狀態時觸發。
+func (pm *PeerManager) OnConnected(handler func(relayed bool)) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.onConnectedFn = handler
+}
+
+// IsRelayed 檢查目前選定的 ICE candidate pair 是否為 relay 類型。
+// 若本地或遠端 candidate 任一為 relay（TURN 中繼），回傳 true。
+// 連線尚未建立或無法取得 candidate pair 時回傳 false。
+//
+// 查詢路徑與 GetRemoteAddr 相同：
+// PeerConnection → SCTP → DTLS Transport → ICE Transport → 選定的 candidate pair
+func (pm *PeerManager) IsRelayed() bool {
+	sctp := pm.pc.SCTP()
+	if sctp == nil {
+		return false
+	}
+	dtls := sctp.Transport()
+	if dtls == nil {
+		return false
+	}
+	ice := dtls.ICETransport()
+	if ice == nil {
+		return false
+	}
+	pair, err := ice.GetSelectedCandidatePair()
+	if err != nil || pair == nil {
+		return false
+	}
+	if pair.Local != nil && pair.Local.Typ == pionwebrtc.ICECandidateTypeRelay {
+		return true
+	}
+	if pair.Remote != nil && pair.Remote.Typ == pionwebrtc.ICECandidateTypeRelay {
+		return true
+	}
+	return false
 }
 
 // GetRTT 回傳目前成功的 ICE candidate pair 往返延遲（Round-Trip Time）。

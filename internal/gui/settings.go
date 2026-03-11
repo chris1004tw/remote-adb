@@ -1,8 +1,9 @@
 // settings.go 實作設定面板的 GUI 與邏輯。
 //
-// 設定面板以 overlay 形式覆蓋在主視窗上方，由右下角齒輪按鈕觸發。
-// 包含四個共用設定欄位（ADB Port、Proxy Port、Direct Port、STUN Server）
-// 以及手動檢查更新按鈕。
+// 設定面板以獨立子視窗呈現，由右下角齒輪按鈕觸發。
+// 包含連線設定欄位（ADB Port、Proxy Port、Direct Port、STUN Server、
+// TURN Server/帳號/密碼）、語言切換、以及手動檢查更新按鈕。
+// TURN 帳號與密碼僅在 TURN URL 有填入值時才顯示。
 //
 // 設定值以 TOML 格式持久化（見 config.go），各分頁共用同一份設定。
 //
@@ -74,6 +75,17 @@ type settingsPanel struct {
 	stunOptBtns      []widget.Clickable // 選項按鈕（presets + 自訂）
 	stunEditor       widget.Editor      // 自訂 STUN 輸入框
 
+	// TURN 模式下拉選單
+	turnDropExpanded bool
+	turnSelected     int                // 0=Cloudflare, 1=自訂
+	turnToggleBtn    widget.Clickable   // 下拉切換按鈕
+	turnOptBtns      [2]widget.Clickable // 選項按鈕（Cloudflare / 自訂）
+
+	// TURN 自訂模式輸入框（自訂被選中時才顯示）
+	turnEditor     widget.Editor // TURN URL 輸入框
+	turnUserEditor widget.Editor // TURN 帳號輸入框
+	turnPassEditor widget.Editor // TURN 密碼輸入框
+
 	// 語言下拉選單
 	langDropExpanded bool
 	langToggleBtn    widget.Clickable
@@ -130,6 +142,12 @@ func newSettingsPanel(w *app.Window) *settingsPanel {
 	p.stunOptBtns = make([]widget.Clickable, len(defaultStunPresets)+1)
 	p.stunEditor.SingleLine = true
 
+	// 初始化 TURN 編輯框
+	p.turnEditor.SingleLine = true
+	p.turnUserEditor.SingleLine = true
+	p.turnPassEditor.SingleLine = true
+	p.turnPassEditor.Mask = '●' // 遮蔽密碼
+
 	// 載入設定值到編輯框與下拉選單
 	p.syncEditorsFromConfig()
 
@@ -155,6 +173,19 @@ func (p *settingsPanel) syncEditorsFromConfig() {
 	if p.stunSelected >= len(defaultStunPresets) {
 		p.stunEditor.SetText(p.config.STUNServer)
 	}
+
+	// TURN 模式下拉選單
+	switch p.config.TURNMode {
+	case TURNModeCustom:
+		p.turnSelected = 1
+	default: // cloudflare 或空（預設 Cloudflare）
+		p.turnSelected = 0
+	}
+
+	// TURN 自訂模式輸入框
+	p.turnEditor.SetText(p.config.TURNServer)
+	p.turnUserEditor.SetText(p.config.TURNUser)
+	p.turnPassEditor.SetText(p.config.TURNPass)
 }
 
 // openWindow 開啟獨立設定子視窗。
@@ -191,6 +222,7 @@ func (p *settingsPanel) openWindow() {
 
 	p.syncEditorsFromConfig()
 	p.stunDropExpanded = false
+	p.turnDropExpanded = false
 	p.langDropExpanded = false
 	p.visible = true
 
@@ -288,6 +320,16 @@ func (p *settingsPanel) save() bool {
 		p.config.STUNServer = p.stunEditor.Text()
 	}
 
+	// TURN 模式與自訂設定
+	if p.turnSelected == 0 {
+		p.config.TURNMode = TURNModeCloudflare
+	} else {
+		p.config.TURNMode = TURNModeCustom
+	}
+	p.config.TURNServer = p.turnEditor.Text()
+	p.config.TURNUser = p.turnUserEditor.Text()
+	p.config.TURNPass = p.turnPassEditor.Text()
+
 	if p.configPath == "" {
 		slog.Warn("config path is empty, cannot save")
 		return false
@@ -353,6 +395,12 @@ func (p *settingsPanel) layoutContent(gtx layout.Context, th *material.Theme) la
 		// STUN Server（下拉選單）
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return p.layoutStunDropdown(gtx, th)
+		}),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
+
+		// TURN Server（URL 有值時才顯示帳號/密碼）
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return p.layoutTurnFields(gtx, th)
 		}),
 		layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
 
@@ -588,6 +636,130 @@ func (p *settingsPanel) layoutStunDropdown(gtx layout.Context, th *material.Them
 						})
 					},
 				)
+			}),
+		)
+	}
+
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+}
+
+// layoutTurnFields 繪製 TURN 伺服器下拉選單與自訂輸入框。
+// 下拉選單提供兩個選項：Cloudflare（免費）和自訂。
+// 選擇自訂時顯示 URL、帳號、密碼輸入框。
+func (p *settingsPanel) layoutTurnFields(gtx layout.Context, th *material.Theme) layout.Dimensions {
+	turnOptions := []string{
+		msg().Settings.TURNModeCloudflare,
+		msg().Settings.TURNModeCustom,
+	}
+
+	// 處理切換按鈕點擊
+	for p.turnToggleBtn.Clicked(gtx) {
+		p.turnDropExpanded = !p.turnDropExpanded
+	}
+
+	// 處理選項點擊
+	for i := range turnOptions {
+		for p.turnOptBtns[i].Clicked(gtx) {
+			p.turnSelected = i
+			p.turnDropExpanded = false
+		}
+	}
+
+	currentLabel := turnOptions[p.turnSelected]
+	arrow := " ▼"
+	if p.turnDropExpanded {
+		arrow = " ▲"
+	}
+
+	children := []layout.FlexChild{
+		// 第一列：標籤 + 下拉切換按鈕
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						lbl := material.Body1(th, msg().Settings.TURNModeLabel)
+						lbl.TextSize = unit.Sp(14)
+						return lbl.Layout(gtx)
+					})
+				}),
+				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					return p.turnToggleBtn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return layout.Background{}.Layout(gtx,
+							func(gtx layout.Context) layout.Dimensions {
+								sz := gtx.Constraints.Min
+								paint.FillShape(gtx.Ops, colorEditorBg, clip.Rect{Max: sz}.Op())
+								lineH := gtx.Dp(unit.Dp(2))
+								paint.FillShape(gtx.Ops, colorTabActive,
+									clip.Rect{Min: image.Pt(0, sz.Y-lineH), Max: sz}.Op())
+								return layout.Dimensions{Size: sz}
+							},
+							func(gtx layout.Context) layout.Dimensions {
+								return layout.UniformInset(unit.Dp(6)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+									lbl := material.Body1(th, currentLabel+arrow)
+									lbl.TextSize = unit.Sp(14)
+									lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+									return lbl.Layout(gtx)
+								})
+							},
+						)
+					})
+				}),
+			)
+		}),
+	}
+
+	// 展開時：選項清單
+	if p.turnDropExpanded {
+		for i, optLabel := range turnOptions {
+			idx := i
+			label := optLabel
+			isSelected := idx == p.turnSelected
+
+			children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return p.turnOptBtns[idx].Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					bg := color.NRGBA{R: 58, G: 58, B: 58, A: 255}
+					if isSelected {
+						bg = color.NRGBA{R: 33, G: 80, B: 120, A: 255}
+					}
+					return layout.Background{}.Layout(gtx,
+						func(gtx layout.Context) layout.Dimensions {
+							sz := gtx.Constraints.Min
+							paint.FillShape(gtx.Ops, bg, clip.Rect{Max: sz}.Op())
+							lineY := sz.Y - gtx.Dp(unit.Dp(1))
+							paint.FillShape(gtx.Ops, colorPanelDivider,
+								clip.Rect{Min: image.Pt(0, lineY), Max: sz}.Op())
+							return layout.Dimensions{Size: sz}
+						},
+						func(gtx layout.Context) layout.Dimensions {
+							return layout.Inset{
+								Top: unit.Dp(8), Bottom: unit.Dp(8),
+								Left: unit.Dp(12), Right: unit.Dp(12),
+							}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								lbl := material.Body1(th, label)
+								lbl.TextSize = unit.Sp(13)
+								return lbl.Layout(gtx)
+							})
+						},
+					)
+				})
+			}))
+		}
+	}
+
+	// 自訂模式被選中且下拉收起時：顯示 URL/帳號/密碼輸入框
+	if p.turnSelected == 1 && !p.turnDropExpanded {
+		children = append(children,
+			layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return labeledEditor(gtx, th, msg().Settings.TURNLabel, &p.turnEditor, msg().Settings.TURNHint)
+			}),
+			layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return labeledEditor(gtx, th, msg().Settings.TURNUserLabel, &p.turnUserEditor, "radb")
+			}),
+			layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return labeledEditor(gtx, th, msg().Settings.TURNPassLabel, &p.turnPassEditor, "")
 			}),
 		)
 	}
