@@ -180,7 +180,8 @@ radb direct connect 192.168.1.100:15555 --serial pixel-7 --token mysecret
 - **簡易連線**：跨 NAT 手動 SDP 交換（Client / Agent 雙模式）
 - **區網直連**：開啟 Agent 伺服器或掃描 LAN 自動發現，一鍵轉發全部設備
 - **Relay 伺服器**：透過中央 Signal Server 連線
-- **設定面板**（右下角齒輪）：集中管理 ADB Port、Proxy Port、Direct Port、STUN Server，支援手動檢查更新。設定以 TOML 格式持久化於 `%APPDATA%/radb/radb.toml`（Windows）或 `~/.config/radb/radb.toml`（Linux/macOS）
+- **設定面板**（右下角齒輪）：集中管理 ADB Port、Proxy Port、Direct Port、STUN Server、語言切換，支援手動檢查更新。設定以 TOML 格式持久化於 `%APPDATA%/radb/radb.toml`（Windows）或 `~/.config/radb/radb.toml`（Linux/macOS）
+- **多語系支援**：繁體中文 / English 雙語介面，預設根據系統語系自動偵測，可在設定面板即時切換（不需重啟）
 - **啟動自動檢查更新**：程式啟動後背景檢查新版本，有更新時在主畫面底部顯示通知橫幅，使用者可選擇「立即更新」或「稍後再說」
 - GUI 內建 ADB bridge 針對 DataChannel 採用 **16KB 分塊傳輸**，提升 `scrcpy` 視訊與大流量穩定性
 - GUI 內建 forward 攔截會將本機 `adb connect` 序號（如 `127.0.0.1:15037`）映射為遠端真實設備序號，避免 `scrcpy` forward 失配
@@ -278,7 +279,7 @@ remote-adb/
 │   ├── cli/               # bubbletea 互動式 bind 選單
 │   ├── daemon/            # 背景服務、Port 分配、Binding Table、IPC
 │   ├── directsrv/         # TCP 直連服務 + mDNS 廣播
-│   ├── gui/               # Gio GUI 介面（設定面板 + ADB transport + forward 攔截）
+│   ├── gui/               # Gio GUI 介面（設定面板 + ADB transport + forward 攔截 + i18n 多語系）
 │   ├── proxy/             # TCP 代理（16KB chunking、單連線替換設計）
 │   ├── signal/            # WebSocket 信令 hub、PSK 認證
 │   ├── updater/           # 自動更新（GitHub Releases 下載 + 跨平台 binary 替換）
