@@ -1,6 +1,12 @@
 # radb -- 遠端 ADB P2P 轉發工具
 
+[![English README](https://img.shields.io/badge/lang-English-blue)](README.en.md)
+
 透過 P2P 網路穿透，讓你在本機像操作本地 USB 設備一樣，使用遠端主機上的 Android 手機。支援 `adb shell`、`scrcpy` 投影與大檔案傳輸。
+
+> **macOS 使用者**：首次開啟若出現「已損毀」或「無法驗證開發者」提示，請執行 `sudo xattr -dr com.apple.quarantine /Applications/radb.app` 即可解決。[詳細說明](#macos-首次執行)
+>
+> **Windows 使用者**：獨立 `.exe` 經 UPX 壓縮，部分防毒軟體可能誤報。若遇此情況請改用 `.zip` 版本。[詳細說明](#預編譯-binary)
 
 ---
 
@@ -56,7 +62,7 @@ graph LR
 |---------|------|
 | Go | >= 1.22（僅建置時需要） |
 | ADB | Agent 所在主機需安裝 Android Platform Tools |
-| 網路 | Agent 與 Client 需可連線至 Server |
+| 網路 | 主控端與被控端需能互相連線（可透過 Server 中繼、LAN 直連或 SDP 手動配對） |
 | 作業系統 | Windows / Linux / macOS |
 
 ---
@@ -85,13 +91,21 @@ go install github.com/chris1004tw/remote-adb/cmd/radb@latest
 |------|------|------|
 | macOS | `.dmg`（Universal Binary） | 同時支援 Intel 與 Apple Silicon，開啟後將 radb.app 拖入 Applications |
 | Linux | `.tar.gz` | 解壓後取得 `radb` 執行檔 |
-| Windows | `.zip` / `.exe` | 解壓或直接下載獨立執行檔 |
+| Windows | `.zip` | 解壓後取得 `radb.exe`（未壓縮，PE 結構完整） |
+| Windows | `.exe` | 獨立執行檔（UPX 壓縮，體積較小） |
+
+> **防毒軟體提示**：獨立 `.exe` 經 UPX 壓縮以縮小體積，部分防毒軟體可能因啟發式偵測產生誤報。若遇到此情況，請改用 `.zip` 版本，其中的 binary 未經 UPX 壓縮，不會觸發誤判。
 
 ### macOS 首次執行
 
-由於未經 Apple 簽名，macOS 會阻擋首次執行。請依以下**任一方式**解除：
+由於未經 Apple 簽名，macOS 會阻擋首次執行，可能出現以下提示：
 
-**方式一：移除隔離屬性**
+- **「無法打開，因為無法驗證開發者」**（Gatekeeper 攔截）
+- **「已損毀，無法打開。您應該將其丟到垃圾桶」**（隔離屬性標記）
+
+請依以下**任一方式**解除：
+
+**方式一：移除隔離屬性（推薦，可同時解決「已損毀」提示）**
 
 ```bash
 sudo xattr -dr com.apple.quarantine /Applications/radb.app
