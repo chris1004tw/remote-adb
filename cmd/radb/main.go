@@ -3,28 +3,27 @@
 // radb 支援三種主要運作模式，透過子命令切換：
 //
 //   Signal Server 模式（需要中央伺服器）：
-//     server  — 啟動 WebSocket 信令伺服器
-//     agent   — 啟動遠端 Agent（掛載手機的主機）
-//     daemon  — 啟動本機背景服務（管理 WebRTC 連線與 TCP 代理）
-//     bind    — 綁定遠端設備到本機 port（互動式 TUI 或 CLI flag）
-//     unbind  — 解除設備綁定
-//     list    — 列出已綁定的設備
-//     status  — 查詢 daemon 連線狀態
-//     hosts   — 列出可用的遠端主機與設備
+//     server       — 啟動 WebSocket 信令伺服器
+//     agent        — 啟動常駐遠端被控端
+//     agent pair   — 一次性 P2P 被控端（手動 SDP 交換）
+//     daemon       — 啟動本機背景服務（管理 WebRTC 連線與 TCP 代理）
+//     bind         — 綁定遠端設備到本機 port（互動式 TUI 或 CLI flag）
+//     unbind       — 解除設備綁定
+//     list         — 列出已綁定的設備
+//     status       — 查詢 daemon 連線狀態
+//     hosts        — 列出可用的遠端主機與設備
 //
-//   Direct 模式（無需 Server，適用 LAN / VPN）：
-//     direct discover — mDNS 掃描區網 Agent
-//     direct list     — 查詢 Agent 設備列表
-//     direct connect  — TCP 直連 ADB 轉發
-//
-//   Pair 模式（手動 SDP 交換，跨 NAT 打洞）：
-//     pair offer  — 生成 WebRTC Offer token（Client 端）
-//     pair answer — 處理 Offer 並回傳 Answer（Agent 端）
+//   直連模式（無需 Server）：
+//     connect <addr>        — TCP 直連 ADB 全設備多工轉發
+//     connect <addr> --list — 查詢遠端設備列表
+//     connect pair          — P2P SDP 配對全設備多工（跨 NAT）
+//     discover              — mDNS 掃描區網被控端
 //
 //   其他：
 //     update  — 從 GitHub Releases 下載最新版本並替換自身
 //     version — 顯示版本資訊
 //
+// 舊指令 direct / pair 保留為隱藏別名（向後相容），但不顯示在 help 中。
 // 無引數執行時進入 GUI 模式（Gio 圖形介面）。
 package main
 
@@ -44,6 +43,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -51,6 +51,7 @@ import (
 
 	"github.com/chris1004tw/remote-adb/internal/adb"
 	"github.com/chris1004tw/remote-adb/internal/agent"
+	"github.com/chris1004tw/remote-adb/internal/bridge"
 	"github.com/chris1004tw/remote-adb/internal/buildinfo"
 	"github.com/chris1004tw/remote-adb/internal/cli"
 	"github.com/chris1004tw/remote-adb/internal/daemon"
@@ -83,7 +84,12 @@ func main() {
 	case "server":
 		cmdServer(os.Args[2:])
 	case "agent":
-		cmdAgent(os.Args[2:])
+		// 檢查是否有 "pair" 子命令：radb agent pair <offer-token>
+		if len(os.Args) > 2 && os.Args[2] == "pair" {
+			cmdAgentPair(os.Args[3:])
+		} else {
+			cmdAgent(os.Args[2:])
+		}
 	case "daemon":
 		cmdDaemon(os.Args[2:])
 	case "bind":
@@ -96,6 +102,11 @@ func main() {
 		cmdStatus()
 	case "hosts":
 		cmdHosts()
+	case "connect":
+		cmdConnect(os.Args[2:])
+	case "discover":
+		cmdDiscover(os.Args[2:])
+	// 舊指令隱藏別名（向後相容，不顯示在 printUsage）
 	case "direct":
 		cmdDirect(os.Args[2:])
 	case "pair":
@@ -114,20 +125,22 @@ func main() {
 func printUsage() {
 	fmt.Fprintf(os.Stderr, "用法: radb <子命令> [選項]\n\n")
 	fmt.Fprintf(os.Stderr, "Signal Server 模式:\n")
-	fmt.Fprintf(os.Stderr, "  server    啟動信令伺服器\n")
-	fmt.Fprintf(os.Stderr, "  agent     啟動遠端代理\n")
-	fmt.Fprintf(os.Stderr, "  daemon    啟動背景服務\n")
-	fmt.Fprintf(os.Stderr, "  bind      綁定遠端設備\n")
-	fmt.Fprintf(os.Stderr, "  unbind    解除綁定\n")
-	fmt.Fprintf(os.Stderr, "  list      列出已綁定設備\n")
-	fmt.Fprintf(os.Stderr, "  status    查詢 daemon 狀態\n")
-	fmt.Fprintf(os.Stderr, "  hosts     列出可用主機\n")
-	fmt.Fprintf(os.Stderr, "\nDirect 模式（無需 Server）:\n")
-	fmt.Fprintf(os.Stderr, "  direct    TCP 直連（discover/list/connect）\n")
-	fmt.Fprintf(os.Stderr, "  pair      手動 SDP 配對（offer/answer）\n")
+	fmt.Fprintf(os.Stderr, "  server          啟動信令伺服器\n")
+	fmt.Fprintf(os.Stderr, "  agent           啟動遠端被控端\n")
+	fmt.Fprintf(os.Stderr, "  agent pair      一次性 P2P 被控端\n")
+	fmt.Fprintf(os.Stderr, "  daemon          啟動背景服務\n")
+	fmt.Fprintf(os.Stderr, "  bind            綁定遠端設備\n")
+	fmt.Fprintf(os.Stderr, "  unbind          解除綁定\n")
+	fmt.Fprintf(os.Stderr, "  list            列出已綁定設備\n")
+	fmt.Fprintf(os.Stderr, "  status          查詢 daemon 狀態\n")
+	fmt.Fprintf(os.Stderr, "  hosts           列出可用主機\n")
+	fmt.Fprintf(os.Stderr, "\n直連模式（無需 Server）:\n")
+	fmt.Fprintf(os.Stderr, "  connect <addr>  TCP 直連 ADB 轉發\n")
+	fmt.Fprintf(os.Stderr, "  connect pair    P2P SDP 配對（跨 NAT）\n")
+	fmt.Fprintf(os.Stderr, "  discover        掃描區網被控端（mDNS）\n")
 	fmt.Fprintf(os.Stderr, "\n其他:\n")
-	fmt.Fprintf(os.Stderr, "  update    檢查並更新到最新版本\n")
-	fmt.Fprintf(os.Stderr, "  version   顯示版本\n")
+	fmt.Fprintf(os.Stderr, "  update          檢查並更新到最新版本\n")
+	fmt.Fprintf(os.Stderr, "  version         顯示版本\n")
 }
 
 // cmdServer 啟動 WebSocket 信令伺服器。
@@ -524,8 +537,574 @@ func sendIPCCommand(cmd daemon.IPCCommand) daemon.IPCResponse {
 	return resp
 }
 
-// --- Direct 模式指令 ---
-// Direct 模式不需要 Signal Server，適用於 LAN / VPN 可直接到達的場景。
+// --- 直連模式指令 ---
+// 直連模式不需要 Signal Server，支援 LAN TCP 直連和 P2P SDP 配對兩種方式。
+// 所有直連模式指令皆使用 bridge 套件的完整 ADB 多工橋接（device transport + forward 攔截），
+// 取代舊版 direct connect 的單設備 io.Copy 簡易轉發。
+
+// cmdConnect 是直連模式的統一入口。
+// 根據第一個引數分派：
+//   - "pair" → cmdConnectPair（P2P SDP 配對）
+//   - 其他   → TCP 直連（支援 --list 僅查設備）
+func cmdConnect(args []string) {
+	if len(args) > 0 && args[0] == "pair" {
+		cmdConnectPair(args[1:])
+		return
+	}
+
+	fs := flag.NewFlagSet("connect", flag.ExitOnError)
+	listOnly := fs.Bool("list", false, "只列出遠端設備")
+	token := fs.String("token", envStr("RADB_DIRECT_TOKEN", ""), "認證 Token")
+	proxyPort := fs.Int("port", envInt("RADB_PROXY_PORT", 15037), "本機 ADB proxy port")
+	adbPort := fs.Int("adb-port", envInt("RADB_ADB_PORT", 5037), "本機 ADB server port")
+	fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "用法: radb connect <地址:port> [--list] [--token TOKEN]")
+		fmt.Fprintln(os.Stderr, "      radb connect pair [選項]")
+		os.Exit(1)
+	}
+	addr := fs.Arg(0)
+
+	if *listOnly {
+		cmdConnectList(addr, *token)
+		return
+	}
+	cmdConnectDirect(addr, *token, *proxyPort, *adbPort)
+}
+
+// cmdConnectList 查詢遠端 Agent 的設備列表並印出。
+// 等同舊版 `radb direct list`，透過 directsrv 的 JSON 協定查詢。
+func cmdConnectList(addr, token string) {
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "連線 Agent 失敗: %v\n", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	if err := json.NewEncoder(conn).Encode(directsrv.Request{Action: "list", Token: token}); err != nil {
+		fmt.Fprintf(os.Stderr, "發送請求失敗: %v\n", err)
+		os.Exit(1)
+	}
+
+	var resp directsrv.Response
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		fmt.Fprintf(os.Stderr, "讀取回應失敗: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !resp.OK {
+		fmt.Fprintf(os.Stderr, "查詢失敗: %s\n", resp.Error)
+		os.Exit(1)
+	}
+
+	if resp.Hostname != "" {
+		fmt.Printf("主機: %s\n", resp.Hostname)
+	}
+	if len(resp.Devices) == 0 {
+		fmt.Println("目前沒有設備")
+		return
+	}
+
+	fmt.Printf("%-20s %-10s %-10s %s\n", "Serial", "State", "Lock", "Locked By")
+	fmt.Println(strings.Repeat("-", 55))
+	for _, d := range resp.Devices {
+		fmt.Printf("%-20s %-10s %-10s %s\n", d.Serial, d.State, d.Lock, d.LockedBy)
+	}
+}
+
+// cmdConnectDirect 建立 TCP 直連的全設備多工 ADB 轉發。
+// 取代舊版 `radb direct connect` 的單設備 io.Copy，改為：
+//  1. 查詢遠端設備清單（驗證連線可用）
+//  2. 建立 ForwardManager（管理設備清單 + forward 攔截）
+//  3. 建立 OpenChannelFunc（透過 directsrv 的 connect-server / connect-service）
+//  4. 在本機建立 ADB proxy listener
+//  5. 背景輪詢設備清單
+//  6. 自動 adb connect
+//  7. Accept loop（每個連線由 ForwardManager.HandleProxyConn 處理）
+func cmdConnectDirect(addr, token string, proxyPort, adbPort int) {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	// 1. 查詢設備（驗證連線可用）
+	devices := queryDirectDevices(addr, token)
+	if len(devices) == 0 {
+		fmt.Fprintln(os.Stderr, "遠端無可用設備")
+		os.Exit(1)
+	}
+	for _, d := range devices {
+		fmt.Printf("  設備: %s [%s]\n", d.Serial, d.State)
+	}
+
+	// 2. 建立 ForwardManager
+	fm := bridge.NewForwardManager()
+	bridgeDevices := make([]bridge.DeviceInfo, 0)
+	for _, d := range devices {
+		if d.State == "device" {
+			bridgeDevices = append(bridgeDevices, bridge.DeviceInfo{
+				Serial: d.Serial, State: d.State,
+			})
+		}
+	}
+	fm.UpdateDevices(bridgeDevices)
+
+	// 3. 建立 OpenChannelFunc（透過 directsrv）
+	openCh := makeDirectOpenChannel(addr, token)
+
+	// 4. 建立 proxy listener
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "建立 proxy listener 失敗: %v\n", err)
+		os.Exit(1)
+	}
+	defer ln.Close()
+
+	actualPort := ln.Addr().(*net.TCPAddr).Port
+	fmt.Printf("ADB proxy 已啟動: 127.0.0.1:%d\n", actualPort)
+	fmt.Printf("使用方式: adb connect 127.0.0.1:%d\n", actualPort)
+	fmt.Println("按 Ctrl+C 結束")
+
+	// 5. 背景輪詢設備
+	go pollDirectDevices(ctx, addr, token, fm)
+
+	// 6. 自動 adb connect
+	go autoADBConnect(fmt.Sprintf("127.0.0.1:%d", adbPort), fmt.Sprintf("127.0.0.1:%d", actualPort))
+
+	// context 取消時關閉 listener，解除 Accept 阻塞
+	go func() {
+		<-ctx.Done()
+		ln.Close()
+	}()
+
+	// 7. Accept loop
+	var connID atomic.Int64
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				break
+			}
+			continue
+		}
+		id := connID.Add(1)
+		go fm.HandleProxyConn(ctx, conn, openCh, id)
+	}
+
+	fm.KillReverseForwardAll()
+	fmt.Println("\n轉發已停止")
+}
+
+// makeDirectOpenChannel 建立 LAN 直連用的 bridge.OpenChannelFunc。
+// 根據 label 前綴路由到不同的 directsrv action，與 GUI tab_lan.go 的 makeOpenChannel 邏輯一致。
+//
+// label 格式與路由：
+//   - "adb-server/{id}" → connect-server（ADB server 協定命令轉發）
+//   - "adb-stream/{id}/{serial}/{service}" → connect-service + PrefixedRWC（設備服務串流）
+//   - "adb-fwd/{id}/{serial}/{remoteSpec}" → connect-service（forward 連線到設備服務）
+//
+// adb-stream 的特殊處理：setupStream 期待讀取 1 byte ready signal，
+// 但 directsrv 的 connect-service 回傳連線時已完成 ADB transport + service，
+// 因此使用 PrefixedRWC 注入虛擬的 ready byte（0x01），讓 setupStream 正確通過。
+func makeDirectOpenChannel(addr, token string) bridge.OpenChannelFunc {
+	return func(label string) (io.ReadWriteCloser, error) {
+		switch {
+		case strings.HasPrefix(label, "adb-server/"):
+			return directsrv.DialService(addr, token, "connect-server", "", "")
+
+		case strings.HasPrefix(label, "adb-stream/"):
+			parts := strings.SplitN(label, "/", 4)
+			if len(parts) < 4 {
+				return nil, fmt.Errorf("invalid stream label: %s", label)
+			}
+			conn, err := directsrv.DialService(addr, token, "connect-service", parts[2], parts[3])
+			if err != nil {
+				return nil, err
+			}
+			// setupStream 期待 ready signal（1 byte），connect-service 成功後連線已就緒
+			return &bridge.PrefixedRWC{Ch: conn, Prefix: []byte{1}}, nil
+
+		case strings.HasPrefix(label, "adb-fwd/"):
+			parts := strings.SplitN(label, "/", 4)
+			if len(parts) < 4 {
+				return nil, fmt.Errorf("invalid fwd label: %s", label)
+			}
+			return directsrv.DialService(addr, token, "connect-service", parts[2], parts[3])
+
+		default:
+			return nil, fmt.Errorf("unknown channel: %s", label)
+		}
+	}
+}
+
+// queryDirectDevices 查詢遠端 Agent 的設備清單。
+// 回傳全部設備（含 offline），供 cmdConnectDirect 初始化使用。
+// 失敗時直接 os.Exit。
+func queryDirectDevices(addr, token string) []directsrv.DeviceInfo {
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "連線 Agent 失敗: %v\n", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	if err := json.NewEncoder(conn).Encode(directsrv.Request{Action: "list", Token: token}); err != nil {
+		fmt.Fprintf(os.Stderr, "發送請求失敗: %v\n", err)
+		os.Exit(1)
+	}
+
+	var resp directsrv.Response
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		fmt.Fprintf(os.Stderr, "讀取回應失敗: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !resp.OK {
+		fmt.Fprintf(os.Stderr, "查詢失敗: %s\n", resp.Error)
+		os.Exit(1)
+	}
+
+	if resp.Hostname != "" {
+		fmt.Printf("主機: %s\n", resp.Hostname)
+	}
+	return resp.Devices
+}
+
+// queryDirectDevicesQuiet 靜默查詢遠端設備清單（不印輸出、不 exit）。
+// 供 pollDirectDevices 使用，失敗時回傳 nil。
+func queryDirectDevicesQuiet(addr, token string) []directsrv.DeviceInfo {
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		return nil
+	}
+	defer conn.Close()
+
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	if err := json.NewEncoder(conn).Encode(directsrv.Request{Action: "list", Token: token}); err != nil {
+		return nil
+	}
+
+	var resp directsrv.Response
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		return nil
+	}
+	if !resp.OK {
+		return nil
+	}
+	return resp.Devices
+}
+
+// pollDirectDevices 定期查詢遠端設備清單並更新 ForwardManager。
+// 間隔 3 秒輪詢，僅同步 State=="device" 的在線設備。
+func pollDirectDevices(ctx context.Context, addr, token string, fm *bridge.ForwardManager) {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			devices := queryDirectDevicesQuiet(addr, token)
+			bridgeDevices := make([]bridge.DeviceInfo, 0)
+			for _, d := range devices {
+				if d.State == "device" {
+					bridgeDevices = append(bridgeDevices, bridge.DeviceInfo{
+						Serial: d.Serial, State: d.State,
+					})
+				}
+			}
+			fm.UpdateDevices(bridgeDevices)
+		}
+	}
+}
+
+// autoADBConnect 嘗試自動執行 `adb connect` 到 proxy port。
+// 若本機 ADB server 沒有在運行，靜默失敗（使用者可手動 connect）。
+// 等待 500ms 讓 proxy listener 就緒後再嘗試。
+func autoADBConnect(adbAddr, target string) {
+	time.Sleep(500 * time.Millisecond)
+	dialer := adb.NewDialer(adbAddr)
+	if err := dialer.Connect(target); err != nil {
+		slog.Debug("auto adb connect failed", "target", target, "error", err)
+	} else {
+		slog.Debug("auto adb connect succeeded", "target", target)
+	}
+}
+
+// cmdConnectPair 透過 P2P SDP 配對建立全設備多工 ADB 轉發。
+// 取代舊版 `radb pair offer` 的單設備 io.Copy，改為：
+//  1. 建立 PeerConnection + control DataChannel
+//  2. 產生 Offer SDP → 壓縮編碼為邀請碼 token
+//  3. 使用者手動將邀請碼傳給被控端，貼入回應碼
+//  4. HandleAnswer → 等待 P2P 連線建立
+//  5. 啟動 control channel 讀取迴圈（接收設備清單）
+//  6. 建立 ADB proxy listener → ForwardManager.HandleProxyConn 多工轉發
+func cmdConnectPair(args []string) {
+	fs := flag.NewFlagSet("connect pair", flag.ExitOnError)
+	stunURLs := fs.String("stun", envStr("RADB_STUN_URLS", "stun:stun.l.google.com:19302"), "STUN Server URL")
+	turnURL := fs.String("turn", envStr("RADB_TURN_URL", ""), "TURN Server URL")
+	turnUser := fs.String("turn-user", envStr("RADB_TURN_USER", ""), "TURN 使用者名稱")
+	turnPass := fs.String("turn-pass", envStr("RADB_TURN_PASS", ""), "TURN 密碼")
+	proxyPort := fs.Int("port", envInt("RADB_PROXY_PORT", 15037), "本機 ADB proxy port")
+	adbPort := fs.Int("adb-port", envInt("RADB_ADB_PORT", 5037), "本機 ADB server port")
+	fs.Parse(args)
+
+	// 建立 ICE config
+	iceConfig := webrtc.ICEConfig{}
+	if *stunURLs != "" {
+		iceConfig.STUNServers = strings.Split(*stunURLs, ",")
+	}
+	if *turnURL != "" {
+		iceConfig.TURNServers = []webrtc.TURNServer{
+			{URL: *turnURL, Username: *turnUser, Credential: *turnPass},
+		}
+	}
+
+	// 建立 PeerConnection
+	pm, err := webrtc.NewPeerManager(iceConfig)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "建立 PeerConnection 失敗: %v\n", err)
+		os.Exit(1)
+	}
+	defer pm.Close()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	// 建立 control DataChannel
+	controlCh, err := pm.OpenChannel("control")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "建立 control channel 失敗: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 產生 compact SDP offer
+	fmt.Fprintln(os.Stderr, "正在收集 ICE 候選...")
+	offerSDP, err := pm.CreateOffer()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "建立 Offer 失敗: %v\n", err)
+		os.Exit(1)
+	}
+
+	compact := bridge.SDPToCompact(offerSDP)
+	token, err := bridge.EncodeToken(compact)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "編碼 token 失敗: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Fprintln(os.Stderr, "\n邀請碼（複製給被控端）:")
+	fmt.Println(token)
+	fmt.Fprintln(os.Stderr, "\n請輸入回應碼:")
+
+	// 讀取 answer token
+	var answerToken string
+	fmt.Scanln(&answerToken)
+
+	answerCompact, err := bridge.DecodeToken(strings.TrimSpace(answerToken))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "無效的回應碼: %v\n", err)
+		os.Exit(1)
+	}
+
+	answerSDP := bridge.CompactToSDP(answerCompact)
+	if err := pm.HandleAnswer(answerSDP); err != nil {
+		fmt.Fprintf(os.Stderr, "處理回應失敗: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 等待連線建立
+	connCh := make(chan struct{})
+	pm.OnConnected(func(relayed bool) {
+		if relayed {
+			fmt.Fprintln(os.Stderr, "注意：連線透過 TURN 中繼（延遲較高）")
+		}
+		close(connCh)
+	})
+
+	select {
+	case <-connCh:
+	case <-time.After(30 * time.Second):
+		fmt.Fprintln(os.Stderr, "連線逾時")
+		os.Exit(1)
+	case <-ctx.Done():
+		return
+	}
+
+	fmt.Fprintln(os.Stderr, "P2P 連線已建立")
+
+	// 建立 ForwardManager
+	fm := bridge.NewForwardManager()
+
+	// 啟動 control channel 讀取（更新設備清單）
+	go func() {
+		bridge.ControlReadLoop(ctx, controlCh, func(cm bridge.CtrlMessage) {
+			switch cm.Type {
+			case "hello":
+				fmt.Fprintf(os.Stderr, "遠端主機: %s\n", cm.Hostname)
+			case "devices":
+				fm.UpdateDevices(cm.Devices)
+				online := 0
+				for _, d := range cm.Devices {
+					if d.State == "device" {
+						online++
+						fmt.Fprintf(os.Stderr, "  設備: %s\n", d.Serial)
+					}
+				}
+				fmt.Fprintf(os.Stderr, "在線設備: %d 台\n", online)
+			}
+		})
+	}()
+
+	// 建立 proxy listener
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *proxyPort))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "建立 proxy listener 失敗: %v\n", err)
+		os.Exit(1)
+	}
+	defer ln.Close()
+
+	actualPort := ln.Addr().(*net.TCPAddr).Port
+	fmt.Fprintf(os.Stderr, "ADB proxy 已啟動: 127.0.0.1:%d\n", actualPort)
+	fmt.Fprintf(os.Stderr, "使用方式: adb connect 127.0.0.1:%d\n", actualPort)
+	fmt.Fprintln(os.Stderr, "按 Ctrl+C 結束")
+
+	// 自動 adb connect
+	go autoADBConnect(fmt.Sprintf("127.0.0.1:%d", *adbPort), fmt.Sprintf("127.0.0.1:%d", actualPort))
+
+	// context 取消時關閉 listener
+	go func() {
+		<-ctx.Done()
+		ln.Close()
+	}()
+
+	// Accept loop
+	var connID atomic.Int64
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				break
+			}
+			continue
+		}
+		id := connID.Add(1)
+		go fm.HandleProxyConn(ctx, conn, pm.OpenChannel, id)
+	}
+
+	fm.KillReverseForwardAll()
+}
+
+// cmdAgentPair 處理一次性 P2P 被控端連線。
+// 接收主控端的邀請碼（compact SDP），建立 Answer 並等待 P2P 連線。
+// 連線建立後透過 control channel 推送設備清單，並由 ServerHandler
+// 處理所有 DataChannel（adb-server/adb-stream/adb-fwd）。
+func cmdAgentPair(args []string) {
+	fs := flag.NewFlagSet("agent pair", flag.ExitOnError)
+	adbPort := fs.Int("adb-port", envInt("RADB_ADB_PORT", 5037), "本機 ADB server 埠")
+	stunURLs := fs.String("stun", envStr("RADB_STUN_URLS", "stun:stun.l.google.com:19302"), "STUN Server URL")
+	turnURL := fs.String("turn", envStr("RADB_TURN_URL", ""), "TURN Server URL")
+	turnUser := fs.String("turn-user", envStr("RADB_TURN_USER", ""), "TURN 使用者名稱")
+	turnPass := fs.String("turn-pass", envStr("RADB_TURN_PASS", ""), "TURN 密碼")
+	fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "用法: radb agent pair <邀請碼> [--adb-port PORT] [--stun URLS]")
+		os.Exit(1)
+	}
+	offerToken := fs.Arg(0)
+
+	// 解碼 compact SDP offer
+	offerCompact, err := bridge.DecodeToken(strings.TrimSpace(offerToken))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "無效的邀請碼: %v\n", err)
+		os.Exit(1)
+	}
+
+	offerSDP := bridge.CompactToSDP(offerCompact)
+
+	// 建立 ICE config
+	iceConfig := webrtc.ICEConfig{}
+	if *stunURLs != "" {
+		iceConfig.STUNServers = strings.Split(*stunURLs, ",")
+	}
+	if *turnURL != "" {
+		iceConfig.TURNServers = []webrtc.TURNServer{
+			{URL: *turnURL, Username: *turnUser, Credential: *turnPass},
+		}
+	}
+
+	// 建立 PeerConnection
+	pm, err := webrtc.NewPeerManager(iceConfig)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "建立 PeerConnection 失敗: %v\n", err)
+		os.Exit(1)
+	}
+	defer pm.Close()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	adbAddr := fmt.Sprintf("127.0.0.1:%d", *adbPort)
+	handler := &bridge.ServerHandler{ADBAddr: adbAddr}
+
+	// 設定 DataChannel 處理
+	pm.OnChannel(func(label string, rwc io.ReadWriteCloser) {
+		if label == "control" {
+			// control channel — 啟動設備推送
+			go bridge.DevicePushLoop(ctx, rwc, adbAddr, func(devices []bridge.DeviceInfo) {
+				online := 0
+				for _, d := range devices {
+					if d.State == "device" {
+						online++
+					}
+				}
+				fmt.Fprintf(os.Stderr, "在線設備: %d 台\n", online)
+			})
+			return
+		}
+		// 其他 DataChannel 由 ServerHandler 分派
+		if !handler.HandleChannel(ctx, label, rwc) {
+			slog.Warn("unknown DataChannel label", "label", label)
+			rwc.Close()
+		}
+	})
+
+	// 處理 Offer
+	fmt.Fprintln(os.Stderr, "正在處理邀請碼並收集 ICE 候選...")
+	answerSDP, err := pm.HandleOffer(offerSDP)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "處理 Offer 失敗: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 產生 compact SDP answer
+	answerCompact := bridge.SDPToCompact(answerSDP)
+	answerTokenStr, err := bridge.EncodeToken(answerCompact)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "編碼回應碼失敗: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Fprintln(os.Stderr, "\n回應碼（複製回主控端）:")
+	fmt.Println(answerTokenStr)
+	fmt.Fprintln(os.Stderr, "\n等待連線...")
+
+	<-ctx.Done()
+	fmt.Fprintln(os.Stderr, "\n已停止")
+}
+
+// cmdDiscover 掃描區網上的 radb Agent（mDNS）。
+// 等同舊版 `radb direct discover`，直接委派。
+func cmdDiscover(args []string) {
+	cmdDirectDiscover(args)
+}
+
+// --- 舊版 Direct 模式指令（隱藏別名，向後相容） ---
+// 以下指令不顯示在 printUsage 中，但仍可正常使用。
 // Agent 端開啟 TCP 服務，Client 端透過 TCP 直接連線並進行 ADB 轉發。
 
 // cmdDirect 分派 direct 子命令：discover（mDNS 掃描）、list（查詢設備）、connect（TCP 直連轉發）。
