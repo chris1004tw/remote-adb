@@ -524,8 +524,13 @@ func EncodeToken(c CompactSDP) (string, error) {
 }
 
 // DecodeToken 是 EncodeToken 的逆操作：base64url 解碼 → deflate 解壓 → 二進位反序列化。
+// 空 token 回傳明確錯誤，避免空位元組送入 deflate 後產生誤導性的 "unexpected EOF"。
 func DecodeToken(token string) (CompactSDP, error) {
-	compressed, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(token))
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return CompactSDP{}, fmt.Errorf("token is empty")
+	}
+	compressed, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil {
 		return CompactSDP{}, fmt.Errorf("failed to decode base64: %w", err)
 	}

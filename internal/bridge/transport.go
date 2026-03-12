@@ -62,11 +62,14 @@ const (
 	aWRTE = 0x45545257 // "WRTE" — 寫入資料
 	aCLSE = 0x45534c43 // "CLSE" — 關閉串流
 
-	aVersion      = 0x01000001 // A_VERSION_SKIP_CHECKSUM：version >= 此值時不驗證 checksum
-	aMaxPayload   = 256 * 1024 // 256KB：單次 WRTE 最大 payload
-	adbMsgHdrSize = 24         // 固定 24 byte header
-	adbMaxDataLen = 1024 * 1024 // 安全上限 1MB，防止惡意或損壞的資料長度
-	BiCopyChunk   = 16 * 1024  // 16KB：DataChannel 分塊寫入大小
+	aVersion           = 0x01000001       // A_VERSION_SKIP_CHECKSUM：version >= 此值時不驗證 checksum
+	aMaxPayload        = 256 * 1024       // 256KB：單次 WRTE 最大 payload
+	adbMsgHdrSize      = 24               // 固定 24 byte header
+	adbMaxDataLen      = 1024 * 1024      // 安全上限 1MB，防止惡意或損壞的資料長度
+	BiCopyChunk        = 16 * 1024        // 16KB：DataChannel 分塊寫入大小
+	streamReadyTimeout = 45 * time.Second // 遠端 stream ready 訊號等待上限（適配高延遲/TURN）
+	wrteOkayTimeout    = 30 * time.Second // 單筆 WRTE 等待 OKAY 上限（避免高 RTT 下誤判逾時）
+	toRemoteWriteTimeout = 20 * time.Second // host->device 寫入 DC 上限（避免 sync 上傳無限卡住）
 )
 
 // 預設 device banner：CNXN 回應的 banner 字串，包含常用 ADB features。
@@ -230,13 +233,17 @@ func ChunkedCopy(dst io.Writer, src io.Reader, chunkSize int) (int64, error) {
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
-			wn, werr := dst.Write(buf[:n])
-			total += int64(wn)
-			if werr != nil {
-				return total, werr
-			}
-			if wn != n {
-				return total, io.ErrShortWrite
+			written := 0
+			for written < n {
+				wn, werr := dst.Write(buf[written:n])
+				total += int64(wn)
+				if werr != nil {
+					return total, werr
+				}
+				if wn == 0 {
+					return total, io.ErrShortWrite
+				}
+				written += wn
 			}
 		}
 		if err != nil {
@@ -260,9 +267,9 @@ func ChunkedCopy(dst io.Writer, src io.Reader, chunkSize int) (int64, error) {
 // 主迴圈在 StartDeviceTransport 中執行，負責讀取 transport 訊息並分派給對應的 handler。
 // writeMu 保護對 conn 的並行寫入（主迴圈和 per-stream goroutine 都可能寫入）。
 type deviceBridge struct {
-	conn   net.Conn         // 底層 TCP 連線（ADB device transport）
-	openCh OpenChannelFunc  // 建立遠端通道的函式（DataChannel 或 TCP）
-	serial string           // 目標設備序號
+	conn   net.Conn              // 底層 TCP 連線（ADB device transport）
+	openCh OpenChannelFunc       // 建立遠端通道的函式（DataChannel 或 TCP）
+	serial string                // 目標設備序號
 	rfm    ReverseForwardManager // 用於 reverse forward 管理（nil = 不支援 reverse forward）
 
 	writeMu   sync.Mutex          // 保護 conn 的並行寫入
@@ -636,7 +643,7 @@ func (b *deviceBridge) setupStream(ctx context.Context, ch io.ReadWriteCloser, s
 			slog.Debug("setupStream: retained prefix data", "deviceID", deviceID, "bytes", len(res.prefix))
 		}
 		slog.Debug("setupStream: received ready signal", "deviceID", deviceID, "ready", ready)
-	case <-time.After(10 * time.Second):
+	case <-time.After(streamReadyTimeout):
 		slog.Debug("setupStream: ready wait timeout", "deviceID", deviceID)
 	case <-ctx.Done():
 		slog.Debug("setupStream: context cancelled", "deviceID", deviceID)
@@ -699,11 +706,14 @@ func (b *deviceBridge) writeToRemote(stream *dStream) {
 	for {
 		select {
 		case data := <-stream.writeCh:
+			setWriteDeadline(stream.ch, time.Now().Add(toRemoteWriteTimeout))
 			if _, err := chunkedWrite(stream.ch, data, BiCopyChunk); err != nil {
 				slog.Debug("writeToRemote: DC write failed", "deviceID", stream.deviceID, "error", err)
+				setWriteDeadline(stream.ch, time.Time{})
 				b.cleanupStream(stream)
 				return
 			}
+			setWriteDeadline(stream.ch, time.Time{})
 			// DC 寫入成功，回 OKAY 允許 host 繼續送 WRTE
 			if err := b.writeMsg(&adbMsg{
 				command: aOKAY,
@@ -720,6 +730,16 @@ func (b *deviceBridge) writeToRemote(stream *dStream) {
 	}
 }
 
+// setWriteDeadline 只在底層連線支援 deadline 時設定。
+// detach 模式的 DataChannel 在支援時可避免 write 永久卡住。
+func setWriteDeadline(w io.Writer, t time.Time) {
+	if d, ok := w.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		if err := d.SetWriteDeadline(t); err != nil {
+			slog.Debug("set write deadline failed", "error", err)
+		}
+	}
+}
+
 // chunkedWrite 將單筆資料以 chunkSize（16KB）為單位切段寫入 dst。
 // 避免單次寫入超過 WebRTC DataChannel（SCTP）的最大訊息大小限制。
 func chunkedWrite(dst io.Writer, data []byte, chunkSize int) (int, error) {
@@ -729,13 +749,17 @@ func chunkedWrite(dst io.Writer, data []byte, chunkSize int) (int, error) {
 		if n > chunkSize {
 			n = chunkSize
 		}
-		wn, err := dst.Write(data[:n])
-		total += wn
-		if err != nil {
-			return total, err
-		}
-		if wn != n {
-			return total, io.ErrShortWrite
+		written := 0
+		for written < n {
+			wn, err := dst.Write(data[written:n])
+			total += wn
+			if err != nil {
+				return total, err
+			}
+			if wn == 0 {
+				return total, io.ErrShortWrite
+			}
+			written += wn
 		}
 		data = data[n:]
 	}
@@ -776,7 +800,7 @@ func (b *deviceBridge) readFromRemote(ctx context.Context, stream *dStream) {
 				return
 			case <-stream.doneCh:
 				return
-			case <-time.After(10 * time.Second):
+			case <-time.After(wrteOkayTimeout):
 				slog.Debug("readFromRemote: WRTE OKAY timeout", "deviceID", stream.deviceID)
 				return
 			}

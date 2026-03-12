@@ -243,6 +243,49 @@ func TestTokenRoundTrip(t *testing.T) {
 	}
 }
 
+// TestDecodeTokenInvalid 測試 DecodeToken 對空字串與無效 token 的錯誤處理。
+// 空 token 應回傳明確的「token 為空」錯誤，而非誤導性的 deflate 解壓失敗。
+func TestDecodeTokenInvalid(t *testing.T) {
+	tests := []struct {
+		name    string
+		token   string
+		wantErr string // 預期錯誤訊息須包含此子字串
+	}{
+		{
+			name:    "空字串",
+			token:   "",
+			wantErr: "token is empty",
+		},
+		{
+			name:    "純空白",
+			token:   "   \t\n  ",
+			wantErr: "token is empty",
+		},
+		{
+			name:    "無效 base64",
+			token:   "!!!not-base64!!!",
+			wantErr: "failed to decode base64",
+		},
+		{
+			name:    "截斷的 token（有效 base64 但 deflate 不完整）",
+			token:   "AQID", // base64url 編碼的 [1,2,3]，不是有效 deflate
+			wantErr: "failed to decompress",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := DecodeToken(tt.token)
+			if err == nil {
+				t.Fatal("預期 DecodeToken 回傳錯誤，但得到 nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("錯誤訊息 %q 不包含預期子字串 %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
 // TestFilterCandidates 測試 candidate 過濾邏輯。
 // 過濾規則：
 //  1. 移除 loopback IP（127.x.x.x、::1）

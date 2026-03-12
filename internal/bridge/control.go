@@ -17,9 +17,14 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/chris1004tw/remote-adb/internal/adb"
 )
+
+// keepaliveInterval 是 control channel keepalive ping 的發送間隔。
+// 防止 NAT mapping 因 SCTP idle 過久而失效，導致後續 DataChannel 建立逾時。
+const keepaliveInterval = 30 * time.Second
 
 // CtrlMessage 是 control channel 的 JSON 訊息格式。
 // Type 可為 "hello"（攜帶主機名稱）或 "devices"（攜帶設備清單）。
@@ -52,10 +57,19 @@ func DevicePushLoop(ctx context.Context, controlCh io.ReadWriteCloser, adbAddr s
 		return
 	}
 
+	// keepalive ticker：定期送 ping 訊息，防止 SCTP idle 導致 NAT mapping 失效
+	keepalive := time.NewTicker(keepaliveInterval)
+	defer keepalive.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-keepalive.C:
+			if err := enc.Encode(CtrlMessage{Type: "ping"}); err != nil {
+				slog.Debug("control channel keepalive failed", "error", err)
+				return
+			}
 		case events, ok := <-deviceCh:
 			if !ok {
 				return
