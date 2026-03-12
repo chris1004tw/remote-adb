@@ -1,6 +1,7 @@
 package webrtc_test
 
 import (
+	"errors"
 	"io"
 	"testing"
 	"time"
@@ -187,5 +188,146 @@ func TestPeerManager_MultipleChannels(t *testing.T) {
 
 	for _, ch := range channels {
 		ch.Close()
+	}
+}
+
+// TestPeerManager_CloseUnblocksPendingChannels 驗證 PeerManager.Close() 能解除
+// 尚未就緒的 pendingChannel 阻塞（H1 修復驗證）。
+// 場景：建立 DataChannel 後未做 SDP 交換（OnOpen 永遠不會觸發），
+// 呼叫 pm.Close() 應讓 Read/Close 立即回傳 ErrPeerClosed。
+func TestPeerManager_CloseUnblocksPendingChannels(t *testing.T) {
+	pm, err := webrtc.NewPeerManager(webrtc.ICEConfig{})
+	if err != nil {
+		t.Fatalf("建立 PeerManager 失敗: %v", err)
+	}
+
+	// 建立 DataChannel 但不做 SDP 交換，OnOpen 永遠不觸發
+	ch, err := pm.OpenChannel("test-pending")
+	if err != nil {
+		t.Fatalf("OpenChannel 失敗: %v", err)
+	}
+
+	// 在背景 goroutine 中嘗試 Read（會阻塞在 wait()）
+	readDone := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 64)
+		_, err := ch.Read(buf)
+		readDone <- err
+	}()
+
+	// 確認 Read 確實在阻塞（短暫等待後不應完成）
+	select {
+	case <-readDone:
+		t.Fatal("Read 不應在 Close 前回傳")
+	case <-time.After(100 * time.Millisecond):
+		// 預期：Read 仍在阻塞
+	}
+
+	// 關閉 PeerManager，應解除 Read 的阻塞
+	pm.Close()
+
+	select {
+	case err := <-readDone:
+		if !errors.Is(err, webrtc.ErrPeerClosed) {
+			t.Errorf("Read 回傳 %v，預期 %v", err, webrtc.ErrPeerClosed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("pm.Close() 後 Read 仍未解除阻塞（超時 5 秒）")
+	}
+
+	// Close() 也應立即回傳而非阻塞
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- ch.Close()
+	}()
+
+	select {
+	case err := <-closeDone:
+		if !errors.Is(err, webrtc.ErrPeerClosed) {
+			t.Errorf("Close 回傳 %v，預期 %v", err, webrtc.ErrPeerClosed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("pm.Close() 後 ch.Close() 仍未回傳（超時 5 秒）")
+	}
+}
+
+// TestPeerManager_OpenChannel_NormalFlow 驗證正常 SDP 交換後，
+// pendingChannel 的 Read/Write 能正確運作（H12 移除 mutex 後的回歸測試）。
+func TestPeerManager_OpenChannel_NormalFlow(t *testing.T) {
+	offerer, err := webrtc.NewPeerManager(webrtc.ICEConfig{})
+	if err != nil {
+		t.Fatalf("建立 offerer 失敗: %v", err)
+	}
+	defer offerer.Close()
+
+	answerer, err := webrtc.NewPeerManager(webrtc.ICEConfig{})
+	if err != nil {
+		t.Fatalf("建立 answerer 失敗: %v", err)
+	}
+	defer answerer.Close()
+
+	// Answerer 端收到 DataChannel 後回寫資料
+	echoCh := make(chan struct{})
+	answerer.OnChannel(func(label string, rwc io.ReadWriteCloser) {
+		defer close(echoCh)
+		buf := make([]byte, 256)
+		n, err := rwc.Read(buf)
+		if err != nil {
+			t.Errorf("answerer Read 失敗: %v", err)
+			return
+		}
+		// 回寫收到的資料
+		if _, err := rwc.Write(buf[:n]); err != nil {
+			t.Errorf("answerer Write 失敗: %v", err)
+		}
+	})
+
+	ch, err := offerer.OpenChannel("echo-test")
+	if err != nil {
+		t.Fatalf("OpenChannel 失敗: %v", err)
+	}
+
+	offerSDP, err := offerer.CreateOffer()
+	if err != nil {
+		t.Fatalf("CreateOffer 失敗: %v", err)
+	}
+	answerSDP, err := answerer.HandleOffer(offerSDP)
+	if err != nil {
+		t.Fatalf("HandleOffer 失敗: %v", err)
+	}
+	if err := offerer.HandleAnswer(answerSDP); err != nil {
+		t.Fatalf("HandleAnswer 失敗: %v", err)
+	}
+
+	// Write 會等待 DataChannel 就緒後傳送（驗證無 mutex 後仍正確）
+	testData := []byte("echo-payload")
+	if _, err := ch.Write(testData); err != nil {
+		t.Fatalf("Write 失敗: %v", err)
+	}
+
+	// 讀取 echo 回應
+	buf := make([]byte, 256)
+	readDone := make(chan struct {
+		n   int
+		err error
+	}, 1)
+	go func() {
+		n, err := ch.Read(buf)
+		readDone <- struct {
+			n   int
+			err error
+		}{n, err}
+	}()
+
+	select {
+	case result := <-readDone:
+		if result.err != nil {
+			t.Fatalf("Read 失敗: %v", result.err)
+		}
+		if string(buf[:result.n]) != "echo-payload" {
+			t.Errorf("回應 = %q，預期 %q", string(buf[:result.n]), "echo-payload")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("超時未收到 echo 回應")
 	}
 }

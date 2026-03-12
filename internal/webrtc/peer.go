@@ -17,6 +17,7 @@
 package webrtc
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -26,6 +27,9 @@ import (
 	"github.com/pion/datachannel"
 	pionwebrtc "github.com/pion/webrtc/v4"
 )
+
+// ErrPeerClosed 表示 PeerManager 已關閉，所有尚未就緒的 DataChannel 不再等待。
+var ErrPeerClosed = errors.New("peer connection closed")
 
 // PeerManager 管理與單一遠端對等方的 WebRTC 連線。
 //
@@ -40,6 +44,7 @@ import (
 type PeerManager struct {
 	pc     *pionwebrtc.PeerConnection // 底層 pion PeerConnection
 	config ICEConfig                  // ICE 伺服器設定（STUN/TURN）
+	doneCh chan struct{}              // 關閉通知，Close() 時 close，讓所有 pendingChannel.wait() 解除阻塞
 
 	mu             sync.Mutex                                  // 保護以下回呼函式與 closed 旗標
 	onChannelFn    func(label string, rwc io.ReadWriteCloser)  // 對方開啟 DataChannel 時的回呼
@@ -70,6 +75,7 @@ func NewPeerManager(config ICEConfig) (*PeerManager, error) {
 	pm := &PeerManager{
 		pc:     pc,
 		config: config,
+		doneCh: make(chan struct{}),
 	}
 
 	// 監聯連線狀態變化：
@@ -248,9 +254,11 @@ func (pm *PeerManager) OpenChannel(label string) (io.ReadWriteCloser, error) {
 		return nil, fmt.Errorf("建立 DataChannel 失敗: %w", err)
 	}
 
-	// 建立 pendingChannel 包裝，readyCh 用於同步等待 DataChannel 開啟
+	// 建立 pendingChannel 包裝，readyCh 用於同步等待 DataChannel 開啟，
+	// doneCh 用於 PeerManager 關閉時解除阻塞
 	pch := &pendingChannel{
 		readyCh: make(chan struct{}),
+		doneCh:  pm.doneCh,
 	}
 
 	dc.OnOpen(func() {
@@ -269,44 +277,48 @@ func (pm *PeerManager) OpenChannel(label string) (io.ReadWriteCloser, error) {
 // pendingChannel 包裝一個尚未就緒的 DataChannel，實作 io.ReadWriteCloser 介面。
 //
 // 設計意圖：讓 OpenChannel 能在 SDP 交換前就回傳可用的介面，
-// 呼叫者不需要關心底層連線何時真正建立。同步機制透過 readyCh（unbuffered channel）：
-//   - DataChannel 開啟前：Read/Write/Close 呼叫 wait() → 阻塞在 <-readyCh
-//   - DataChannel 開啟後：setReady/setError close(readyCh) → 所有等待者被喚醒
-//   - readyCh 只會被 close 一次，之後所有 wait() 立即回傳
+// 呼叫者不需要關心底層連線何時真正建立。同步機制透過兩個 channel：
+//   - readyCh：DataChannel 就緒信號。setReady/setError 在賦值 rwc/err 後 close，
+//     Go 的 channel close 提供 happens-before 保證，故不需額外 mutex。
+//   - doneCh：PeerManager 關閉信號。Close() 時 close，讓 wait() 解除阻塞。
+//
+// 狀態轉換：
+//   - DataChannel 開啟前：Read/Write/Close 呼叫 wait() → select 阻塞
+//   - DataChannel 開啟後：close(readyCh) → 所有等待者被喚醒，讀取 rwc/err
+//   - PeerManager 關閉：close(doneCh) → 所有等待者回傳 ErrPeerClosed
 type pendingChannel struct {
-	readyCh chan struct{} // DataChannel 就緒信號，close 後表示 rwc 或 err 已設定
-
-	mu  sync.Mutex                  // 保護 rwc 和 err 的並行存取
-	rwc datachannel.ReadWriteCloser // detach 後的底層 SCTP stream
-	err error                       // detach 失敗時的錯誤
+	readyCh chan struct{}              // DataChannel 就緒信號，close 後表示 rwc 或 err 已設定
+	doneCh  chan struct{}              // PeerManager 關閉信號，close 後 wait() 回傳 ErrPeerClosed
+	rwc     datachannel.ReadWriteCloser // detach 後的底層 SCTP stream
+	err     error                       // detach 失敗時的錯誤
 }
 
 // setReady 在 DataChannel 成功 detach 後呼叫，儲存底層串流並喚醒所有等待者。
+// close(readyCh) 提供 happens-before 保證：rwc 的賦值對所有 <-readyCh 接收方可見。
 func (p *pendingChannel) setReady(rwc datachannel.ReadWriteCloser) {
-	p.mu.Lock()
 	p.rwc = rwc
-	p.mu.Unlock()
-	close(p.readyCh) // 通知所有阻塞在 wait() 的 goroutine
+	close(p.readyCh)
 }
 
 // setError 在 detach 失敗時呼叫，儲存錯誤並喚醒所有等待者。
+// close(readyCh) 提供 happens-before 保證：err 的賦值對所有 <-readyCh 接收方可見。
 func (p *pendingChannel) setError(err error) {
-	p.mu.Lock()
 	p.err = err
-	p.mu.Unlock()
-	close(p.readyCh) // 通知所有阻塞在 wait() 的 goroutine
+	close(p.readyCh)
 }
 
-// wait 阻塞直到 DataChannel 就緒或失敗，回傳底層串流或錯誤。
-// 若 readyCh 已被 close，則立即回傳（channel receive on closed channel 不阻塞）。
+// wait 阻塞直到 DataChannel 就緒、失敗、或 PeerManager 關閉。
+// 若 readyCh 或 doneCh 已被 close，則立即回傳。
 func (p *pendingChannel) wait() (datachannel.ReadWriteCloser, error) {
-	<-p.readyCh
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.err != nil {
-		return nil, p.err
+	select {
+	case <-p.readyCh:
+		if p.err != nil {
+			return nil, p.err
+		}
+		return p.rwc, nil
+	case <-p.doneCh:
+		return nil, ErrPeerClosed
 	}
-	return p.rwc, nil
 }
 
 // Read 實作 io.Reader，阻塞等待 DataChannel 就緒後委派給底層串流。
@@ -441,39 +453,20 @@ func (pm *PeerManager) GetRemoteAddr() string {
 }
 
 // Close 關閉 PeerConnection 及所有 DataChannel。
+// 同時 close doneCh 通知所有 pendingChannel.wait() 解除阻塞。
 // 使用 closed 旗標防止重複關閉（PeerConnection.Close 不是冪等的）。
+//
+// 注意：必須先 unlock 再呼叫 pc.Close()，因為 pc.Close() 會觸發
+// OnPeerConnectionStateChange callback，而 callback 內會 lock pm.mu
+// 讀取 onDisconnectFn。若持鎖呼叫 pc.Close() 會造成 deadlock。
 func (pm *PeerManager) Close() error {
 	pm.mu.Lock()
-	defer pm.mu.Unlock()
 	if pm.closed {
+		pm.mu.Unlock()
 		return nil
 	}
 	pm.closed = true
+	close(pm.doneCh) // 讓所有尚未就緒的 pendingChannel 立即回傳 ErrPeerClosed
+	pm.mu.Unlock()
 	return pm.pc.Close()
-}
-
-// detachedChannel 包裝 pion 的 datachannel.ReadWriteCloser 為標準的 io.ReadWriteCloser。
-//
-// pion 的 datachannel.ReadWriteCloser 介面雖然方法簽名相同，但並非 Go 標準庫的
-// io.ReadWriteCloser 型別。此包裝器做型別適配，讓外部模組（如 proxy）
-// 可以透過標準介面操作 DataChannel，不需要依賴 pion 套件。
-type detachedChannel struct {
-	dc datachannel.ReadWriteCloser
-}
-
-// wrapDetachedChannel 將 pion DataChannel 包裝為標準 io.ReadWriteCloser。
-func wrapDetachedChannel(dc datachannel.ReadWriteCloser) io.ReadWriteCloser {
-	return &detachedChannel{dc: dc}
-}
-
-func (d *detachedChannel) Read(p []byte) (int, error) {
-	return d.dc.Read(p)
-}
-
-func (d *detachedChannel) Write(p []byte) (int, error) {
-	return d.dc.Write(p)
-}
-
-func (d *detachedChannel) Close() error {
-	return d.dc.Close()
 }
