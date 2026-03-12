@@ -44,16 +44,21 @@ import (
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 
+	"github.com/chris1004tw/remote-adb/internal/buildinfo"
 	"github.com/chris1004tw/remote-adb/internal/gui/icons"
 	"github.com/chris1004tw/remote-adb/internal/webrtc"
 )
+
+func guiWindowTitle() string {
+	return fmt.Sprintf("radb - %s - %s", msg().App.WindowTitle, buildinfo.Version)
+}
 
 // Run 啟動 GUI 主視窗，阻塞直到視窗關閉。
 // Gio 的 app.Main() 必須在主 goroutine 呼叫，因此視窗邏輯放在獨立 goroutine 中執行。
 func Run() {
 	go func() {
 		w := new(app.Window)
-		w.Option(app.Title(msg().App.WindowTitle))
+		w.Option(app.Title(guiWindowTitle()))
 		w.Option(app.Size(unit.Dp(580), unit.Dp(600)))
 		if err := eventLoop(w); err != nil {
 			log.Fatal(err)

@@ -77,8 +77,8 @@ type settingsPanel struct {
 
 	// TURN 模式下拉選單
 	turnDropExpanded bool
-	turnSelected     int                // 0=Cloudflare, 1=自訂
-	turnToggleBtn    widget.Clickable   // 下拉切換按鈕
+	turnSelected     int                 // 0=Cloudflare, 1=自訂
+	turnToggleBtn    widget.Clickable    // 下拉切換按鈕
 	turnOptBtns      [2]widget.Clickable // 選項按鈕（Cloudflare / 自訂）
 
 	// TURN 自訂模式輸入框（自訂被選中時才顯示）
@@ -108,8 +108,8 @@ type settingsPanel struct {
 	latestVersion string // 最新版本號
 
 	// 更新通知橫幅（主畫面底部，非設定面板內）
-	bannerDismissed bool             // 使用者已關閉橫幅
-	bannerUpdateBtn widget.Clickable // 橫幅「立即更新」按鈕
+	bannerDismissed  bool             // 使用者已關閉橫幅
+	bannerUpdateBtn  widget.Clickable // 橫幅「立即更新」按鈕
 	bannerDismissBtn widget.Clickable // 橫幅「稍後再說」按鈕
 
 	// 捲動
@@ -790,7 +790,7 @@ func (p *settingsPanel) layoutLangDropdown(gtx layout.Context, th *material.Them
 			p.config.Language = langOptions[i].code
 			SetLanguage(p.config.Language)
 			// 刷新主視窗標題（非阻塞，避免在 FrameEvent 中呼叫 Option 死鎖）
-			go p.window.Option(app.Title(msg().App.WindowTitle))
+			go p.window.Option(app.Title(guiWindowTitle()))
 			// 刷新設定視窗標題
 			p.mu.Lock()
 			if p.settingsWin != nil {
