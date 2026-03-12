@@ -195,6 +195,10 @@ radb direct connect 192.168.1.100:9000 --token mysecret
 - **多語系支援**：繁體中文 / English 雙語介面，預設根據系統語系自動偵測，可在設定面板即時切換（不需重啟）
 - **啟動自動檢查更新**：程式啟動後背景檢查新版本，有更新時在主畫面底部顯示通知橫幅，使用者可選擇「立即更新」或「稍後再說」
 - GUI/CLI 共用 ADB bridge（`internal/bridge/`）針對 DataChannel 採用 **16KB 分塊傳輸**，提升 `scrcpy` 視訊與大流量穩定性
+- **快速邀請碼模式**：P2P 直連分頁新增「立即產生邀請碼」按鈕，縮短 ICE candidate 蒐集時間，快速產生邀請碼（可能缺少部分候選，有無法連接的風險）
+- **邀請碼背景預產生**：切入主控模式時自動在背景預先建立完整邀請碼，點擊「產生邀請碼」時可秒出結果
+- **連線進度顯示**：P2P 連線過程細分為多階段進度（準備 TURN → 建立元件 → 蒐集候選 → 壓縮），使用者可即時了解目前步驟
+- GUI 視窗標題顯示版本號（如 `radb - 遠端 ADB 工具 - v1.2.0`）
 - **Per-device Proxy Port**：每台遠端設備分配獨立 port（從 5555 起遞增），`scrcpy` / UIAutomator 可直接以 `adb -s 127.0.0.1:<port>` 操作特定設備
 - 內建 forward 攔截會將本機 proxy 序號映射為遠端真實設備序號，避免 `scrcpy` forward 失配
 - ADB transport 的 host→device `WRTE` 路徑同樣採 **16KB 分塊寫入**，避免 `sync`/`scrcpy` 啟動階段的大封包失敗
