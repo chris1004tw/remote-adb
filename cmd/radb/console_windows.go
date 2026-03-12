@@ -2,36 +2,18 @@
 
 package main
 
-import (
-	"os"
-	"syscall"
-)
+import "syscall"
 
-// attachParentConsole 在 CLI 模式下附加父行程的主控台。
+// freeConsole 在 GUI 模式下脫離父行程的主控台。
 //
-// 背景：當使用 -ldflags="-H windowsgui" 建置時（Release 版），exe 屬於
-// GUI subsystem，不會自動分配主控台視窗。若使用者從 cmd.exe 或 PowerShell
-// 執行 CLI 子命令，stdout/stderr 會無法輸出。
+// 背景：Release 版不再使用 -H windowsgui（GUI subsystem），改為 console subsystem，
+// 讓 CLI 模式下 PowerShell/cmd.exe 能正常等待程式結束、stdin/stdout/stderr 正常運作。
 //
-// 解法：呼叫 Windows API AttachConsole(ATTACH_PARENT_PROCESS) 附加到父行程
-// 的主控台，然後將 Go 的 os.Stdout/os.Stderr 重新指向 CONOUT$（主控台輸出裝置）。
-//
-// 若沒有父主控台（例如雙擊 exe 啟動），AttachConsole 會失敗並直接返回，
-// 此時由 main() 進入 GUI 模式，不需要主控台輸出。
-func attachParentConsole() {
+// 副作用：以 console subsystem 建置時，雙擊 exe 會短暫顯示主控台視窗。
+// 在 GUI 模式啟動時，盡早呼叫 FreeConsole() 脫離主控台，使視窗立即消失。
+// CLI 模式不需呼叫此函式——直接使用繼承的主控台即可。
+func freeConsole() {
 	kernel32 := syscall.NewLazyDLL("kernel32.dll")
-	proc := kernel32.NewProc("AttachConsole")
-	// ATTACH_PARENT_PROCESS = 0xFFFFFFFF，表示附加到父行程的主控台
-	const ATTACH_PARENT_PROCESS = ^uintptr(0)
-	r, _, _ := proc.Call(ATTACH_PARENT_PROCESS)
-	if r == 0 {
-		return // 沒有父主控台（例如雙擊啟動），直接返回
-	}
-	// 重新開啟 CONOUT$（主控台輸出裝置），取得新的 file descriptor
-	conout, err := syscall.Open("CONOUT$", syscall.O_RDWR, 0)
-	if err != nil {
-		return // GUI 應用中若無法開啟也無妨，不影響 GUI 運作
-	}
-	os.Stdout = os.NewFile(uintptr(conout), "CONOUT$")
-	os.Stderr = os.NewFile(uintptr(conout), "CONOUT$")
+	proc := kernel32.NewProc("FreeConsole")
+	proc.Call()
 }
