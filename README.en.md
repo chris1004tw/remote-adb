@@ -18,7 +18,7 @@ Forward Android devices from a remote host to your local machine via P2P network
 - **Single Binary Deployment** -- no dependencies to install
 - **Interactive CLI** -- one-key device selection with automatic port allocation
 - **Supports adb shell, scrcpy, large file transfers** (100MB+ stable)
-- **Direct Mode** -- TCP direct connection over LAN/VPN, no Signal Server needed
+- **Direct Mode** -- TCP direct connection over LAN/VPN, no server needed at all
 - **mDNS Auto-Discovery** -- automatically find Agents on the local network
 - **Manual SDP Pairing** -- NAT hole-punching without any server
 - **GUI** -- double-click to open, no terminal needed (Gio, pure Go)
@@ -35,7 +35,7 @@ graph LR
     end
 
     subgraph Cloud / Intranet
-        Signal[radb server]
+        Signal[radb relay server]
     end
 
     subgraph Remote Host
@@ -125,28 +125,28 @@ sudo codesign --force --deep --sign - /Applications/radb.app
 
 ## Quick Start
 
-**Step 1: Start the Server**
+**Step 1: Start the Relay Server**
 
 ```bash
-RADB_TOKEN=your-secret radb server --port 8080
+RADB_TOKEN=your-secret radb relay server --port 8080
 ```
 
 **Step 2: Start the Agent on the remote host**
 
 ```bash
-RADB_TOKEN=your-secret radb agent --server ws://your-server:8080 --host-id lab-pc-01
+RADB_TOKEN=your-secret radb relay agent --server ws://your-server:8080 --host-id lab-pc-01
 ```
 
 **Step 3: Start the local Daemon**
 
 ```bash
-RADB_TOKEN=your-secret radb daemon --server ws://your-server:8080
+RADB_TOKEN=your-secret radb relay daemon --server ws://your-server:8080
 ```
 
 **Step 4: Bind a device interactively**
 
 ```bash
-radb bind
+radb relay bind
 # Select host → Select device → Auto-assigned port
 # Output: Bound DEVICE_SERIAL → localhost:15555
 ```
@@ -163,26 +163,23 @@ See [Configuration Guide](docs/configuration.md) for all options.
 
 ---
 
-## Direct Mode (No Server Required)
+## Direct Mode (LAN Direct, No Server Required)
 
 ### TCP Direct Connection (LAN/VPN)
 
 ```bash
-# Agent: start direct mode
-radb agent --direct-port 15555 --direct-token mysecret
-
-# Can also connect to Signal Server simultaneously
-radb agent --server ws://signal:8080 --token abc --direct-port 15555
+# Agent: start listening on LAN
+radb direct agent --port 9000 --token mysecret
 
 # Client: auto-discover Agents on LAN (mDNS)
 radb direct discover
 
 # List devices
-radb direct list 192.168.1.100:15555 --token mysecret
+radb direct connect 192.168.1.100:9000 --list --token mysecret
 
-# Direct TCP connection (forward all devices, local ports starting from 5555)
-radb direct connect 192.168.1.100:15555 --serial pixel-7 --token mysecret
-# → ADB forwarded 127.0.0.1:5555 → pixel-7
+# TCP direct connection (per-device proxy ports, supports adb shell / scrcpy / forward)
+radb direct connect 192.168.1.100:9000 --token mysecret
+# → Each device gets its own port (starting from 5555), auto adb connect
 ```
 
 ---
@@ -193,63 +190,42 @@ Run `radb` without arguments to open the graphical interface with three tabs:
 
 - **Easy Connect**: Cross-NAT manual SDP exchange (Client / Agent dual mode)
 - **LAN Direct**: Start an Agent server or scan LAN for auto-discovery, one-click forwarding
-- **Relay Server**: Connect via a central Signal Server
-- **Settings** (gear icon, bottom-right): Manage ADB Port, Proxy Port, Direct Port, STUN Server, language switch. Supports manual update check. Settings are persisted in TOML at `%APPDATA%/radb/radb.toml` (Windows) or `~/.config/radb/radb.toml` (Linux/macOS)
+- **Relay Server**: Connect via a central Relay Server
+- **Settings** (gear icon, bottom-right): Manage ADB Port, Proxy Port, Direct Port, STUN Server, TURN mode (Cloudflare free / custom), language switch. Supports manual update check. TURN defaults to Cloudflare free credentials (auto-fetched, works out of the box); selecting custom mode shows URL/username/password fields. Settings are persisted in TOML at `%APPDATA%/radb/radb.toml` (Windows) or `~/.config/radb/radb.toml` (Linux/macOS)
 - **Bilingual UI**: Traditional Chinese / English, auto-detected from system locale, switchable in settings (no restart needed)
 - **Auto Update Check**: Checks for new versions on startup, shows a notification banner with "Update Now" or "Later" options
+- GUI/CLI share the ADB bridge (`internal/bridge/`) with **16KB chunked transfer** on DataChannels for better `scrcpy` video and high-throughput stability
+- **Per-device Proxy Port**: Each remote device gets its own port (starting from 5555), so `scrcpy` / UIAutomator can target a specific device via `adb -s 127.0.0.1:<port>`
+- Built-in forward interception maps local proxy serial to remote real device serial, preventing `scrcpy` forward mismatch
+- ADB transport host→device `WRTE` path also uses **16KB chunked writes** to avoid large-packet failures during `sync`/`scrcpy` startup
 
 ```bash
-# GUI mode
+# GUI mode (double-click or run without arguments)
 radb
-
-# Windows release build (hide console window)
-go build -ldflags="-H windowsgui" ./cmd/radb
 ```
 
 ---
 
-### Manual SDP Pairing (Cross-NAT Hole Punching)
+### P2P Manual Pairing (Cross-NAT Hole Punching)
 
 For scenarios where you can't deploy a Server but need cross-network connectivity:
 
 ```bash
-# Client: generate offer
-radb pair offer --serial pixel-7
-# → Copy the offer token to the Agent
+# Client: generate offer (compact SDP token)
+radb p2p connect
+# → Copy the offer token to the Agent, then wait for the answer token
+# → Retry on invalid input (offer is one-time-use, won't be wasted by accidental Enter)
 
-# Agent: process offer
-radb pair answer <offer-token>
+# Agent: process offer and return answer
+radb p2p agent <offer-token>
 # → Copy the answer token back to the Client
 
-# Client pastes answer → connection established
-# → ADB forwarded 127.0.0.1:15555 → pixel-7
-```
+# Client pastes answer → P2P connection established
+# → Each device gets its own port (starting from 5555), auto adb connect
 
----
-
-## Quick scrcpy Setup (Windows)
-
-If your environment requires `adb forward`, run:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/windows/setup-scrcpy-radb.ps1
-```
-
-This writes `%APPDATA%\scrcpy\scrcpy.conf` with:
-
-- `serial=127.0.0.1:15037`
-- `force_adb_forward=true`
-
-To also set `--no-audio` as default:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/windows/setup-scrcpy-radb.ps1 -NoAudioDefault
-```
-
-Or use the launcher directly:
-
-```cmd
-scripts\windows\scrcpy-radb.cmd
+# Uses Cloudflare free TURN by default, switch with --turn-mode:
+radb p2p connect --turn-mode none      # STUN only, no TURN
+radb p2p connect --turn-mode custom    # Use custom TURN server
 ```
 
 ---
@@ -261,7 +237,8 @@ scripts\windows\scrcpy-radb.cmd
 | `RADB_TOKEN` | (required) | PSK authentication token |
 | `RADB_SERVER_URL` | `ws://localhost:8080` | Server URL |
 | `RADB_STUN_URLS` | `stun:stun.l.google.com:19302` | STUN Server |
-| `RADB_TURN_URL` | (empty) | TURN Server (needed for symmetric NAT) |
+| `RADB_TURN_MODE` | `cloudflare` | TURN mode (`cloudflare` / `custom` / `none`) |
+| `RADB_TURN_URL` | (empty) | Custom TURN Server URL (used with `--turn-mode custom`) |
 | `RADB_DIRECT_PORT` | (empty) | Agent Direct TCP listen port |
 | `RADB_DIRECT_TOKEN` | (empty) | Direct connection token |
 | `RADB_PORT_START` | `5555` | Client starting port |
@@ -275,19 +252,20 @@ See [Configuration Guide](docs/configuration.md) for the full reference.
 ```
 remote-adb/
 ├── cmd/
-│   └── radb/              # Unified entry point (server/agent/daemon/bind/direct/pair/gui/update)
+│   └── radb/              # Unified entry point (p2p/direct/relay modules + update/version + GUI)
 ├── internal/
 │   ├── adb/               # ADB protocol, device management, auto-download platform-tools
 │   ├── agent/             # Remote agent core logic
 │   ├── buildinfo/         # Build-time version info (Version/Commit/Date)
 │   ├── cli/               # bubbletea interactive bind menu
 │   ├── daemon/            # Background service, port allocation, binding table, IPC
-│   ├── directsrv/         # TCP direct connection service + mDNS broadcast
-│   ├── gui/               # Gio GUI (settings panel + ADB transport + forward interception + i18n)
+│   ├── bridge/            # Shared GUI/CLI logic (SDP codec, ADB transport, forward management, per-device proxy)
+│   ├── directsrv/         # TCP direct connection service + mDNS broadcast + client connection
+│   ├── gui/               # Gio GUI (Easy Connect/LAN Direct/Relay tabs + settings + i18n + Cloudflare TURN + TURN prefetch cache)
 │   ├── proxy/             # TCP proxy (16KB chunking, single-connection replacement)
 │   ├── signal/            # WebSocket signaling hub, PSK auth
 │   ├── updater/           # Auto-update (GitHub Releases download + cross-platform binary replacement)
-│   └── webrtc/            # PeerConnection and DataChannel management (detach mode)
+│   └── webrtc/            # PeerConnection and DataChannel management (detach mode + relay detection + Cloudflare TURN)
 ├── pkg/protocol/          # Shared signaling JSON format (Envelope + Payload types)
 ├── assets/                # Cross-platform resources (app SVG icon)
 ├── macos/                 # macOS .app bundle metadata (Info.plist)
@@ -334,13 +312,13 @@ See [Development Guide](docs/development.md) for details.
 ## FAQ
 
 **Q: Can't connect to the remote device?**
-A: Check that the Server is reachable, tokens match, and firewalls aren't blocking WebRTC traffic. If behind symmetric NAT, configure a TURN Server.
+A: Check that the Server is reachable, tokens match, and firewalls aren't blocking WebRTC traffic. If behind symmetric NAT, configure a TURN Server (GUI defaults to Cloudflare free TURN, usually no extra setup needed).
 
 **Q: Device shows as offline?**
 A: Ensure the ADB server is running on the remote host (`adb start-server`) and the device has authorized USB debugging.
 
 **Q: Port already in use?**
-A: Use `--port-start` to specify a different starting port, or run `radb list` to see occupied ports.
+A: Use `--port-start` to specify a different starting port, or run `radb relay list` to see occupied ports.
 
 **Q: Large file transfer interrupted?**
 A: If using TURN relay, check the TURN server's bandwidth limits. Use STUN direct connection (P2P) when possible.
