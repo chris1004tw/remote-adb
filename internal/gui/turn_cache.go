@@ -55,17 +55,23 @@ func (tc *turnCache) startFetch() {
 }
 
 // getServers 回傳快取的 TURN 伺服器清單。
-// 若背景取得尚未完成，最多等待 timeout 時間。
+// 若背景取得尚未完成：
+//   - timeout > 0：最多等待 timeout 時間
+//   - timeout <= 0：無限等待直到背景取得完成
 //
 // 回傳值：
 //   - servers：TURN 伺服器清單（取得失敗或超時時為 nil）
 //   - warning：非空字串表示 TURN 不可用，應向使用者顯示警告
 func (tc *turnCache) getServers(timeout time.Duration) ([]webrtc.TURNServer, string) {
-	select {
-	case <-tc.done:
-		// fetch 已完成
-	case <-time.After(timeout):
-		return nil, msg().Pair.WarnTURNUnavailable
+	if timeout <= 0 {
+		<-tc.done
+	} else {
+		select {
+		case <-tc.done:
+			// fetch 已完成
+		case <-time.After(timeout):
+			return nil, msg().Pair.WarnTURNUnavailable
+		}
 	}
 
 	tc.mu.Lock()

@@ -14,7 +14,7 @@ import "sync/atomic"
 // --- 語言代碼常數 ---
 
 const (
-	LangAuto = ""     // 自動偵測
+	LangAuto = "" // 自動偵測
 	LangZhTW = "zh-TW"
 	LangEN   = "en"
 )
@@ -43,33 +43,34 @@ type appMsg struct {
 
 // commonMsg 是跨分頁共用的文字。
 type commonMsg struct {
-	Controller       string // 主控端
-	Agent            string // 被控端
-	StatusPrefix     string // "狀態: "
-	DevicesFmt       string // "設備 (%d):"
-	Stopped          string // "已停止"
-	Disconnected     string // "未連線"
-	CheckingADB      string // "檢查 ADB..."
-	ADBErrorFmt      string // "ADB 錯誤: %v"
-	ErrorFmt         string // "錯誤: %v"
-	RunningFmt       string // "運行中（port %d）"
-	StartServer      string // "啟動伺服器"
-	StopServer       string // "停止伺服器"
-	Connect          string // "連線"
-	DisconnectBtn    string // "中斷連線"
-	TokenLabel       string // "Token:"
+	Controller        string // 主控端
+	Agent             string // 被控端
+	StatusPrefix      string // "狀態: "
+	DevicesFmt        string // "設備 (%d):"
+	Stopped           string // "已停止"
+	Disconnected      string // "未連線"
+	CheckingADB       string // "檢查 ADB..."
+	ADBErrorFmt       string // "ADB 錯誤: %v"
+	ErrorFmt          string // "錯誤: %v"
+	RunningFmt        string // "運行中（port %d）"
+	StartServer       string // "啟動伺服器"
+	StopServer        string // "停止伺服器"
+	Connect           string // "連線"
+	DisconnectBtn     string // "中斷連線"
+	TokenLabel        string // "Token:"
 	TokenHintOptional string // "（可選）"
-	TokenHintPSK     string // "PSK 認證 Token"
-	Connecting       string // "連線中..."
-	RelayNotice      string // TURN 中繼通知訊息
+	TokenHintPSK      string // "PSK 認證 Token"
+	Connecting        string // "連線中..."
+	RelayNotice       string // TURN 中繼通知訊息
 }
 
 // pairMsg 是「簡易連線」分頁的文字。
 type pairMsg struct {
 	// 按鈕
-	GenerateOffer string // "產生邀請碼"
-	ClearBtn      string // "清除邀請碼 / 回應碼"
-	DisconnectBtn string // "結束連線"
+	GenerateOffer     string // "產生邀請碼"
+	GenerateOfferFast string // "立即產生邀請碼（有無法連接的風險）"
+	ClearBtn          string // "清除邀請碼 / 回應碼"
+	DisconnectBtn     string // "結束連線"
 
 	// 標籤 / Hint
 	OfferOutLabel  string // "邀請碼（已複製到剪貼簿，僅限使用一次）:"
@@ -83,21 +84,28 @@ type pairMsg struct {
 	LatencyFmt     string // "延遲: %d ms"
 
 	// 狀態
-	StatusNotStarted        string // "未開始"
-	StatusGenerating        string // "正在產生邀請碼..."
-	StatusOfferReady        string // "邀請碼已產生（已複製到剪貼簿）"
-	StatusPleaseGenerate    string // "請先產生邀請碼"
-	StatusPleaseAnswer      string // "請貼入對方的回應碼"
-	StatusPleaseOffer       string // "請貼入對方的邀請碼"
-	StatusProcessing        string // "正在處理邀請碼..."
-	StatusAnswerReady       string // "回應碼已產生（已複製到剪貼簿）"
-	StatusP2PConnected      string // "P2P 已連線"
-	StatusP2PDisconnected   string // "P2P 已斷線"
-	StatusP2PProxyFmt       string // "P2P 已連線，ADB Proxy: 127.0.0.1:%d"
-	StatusP2PDevicesProxy   string // "P2P 已連線，遠端 %d 個設備（ADB Proxy: 127.0.0.1:%d）"
-	StatusP2PWaiting        string // "P2P 已連線，等待設備..."
-	StatusP2PDevicesFmt     string // "P2P 已連線，%d 個設備"
-	StatusControlClosed     string // "control channel 已關閉"
+	StatusNotStarted      string // "未開始"
+	StatusGenerating      string // "正在產生邀請碼..."
+	StatusPreparingTURN   string // "正在準備 TURN 候選..."
+	StatusCreatingPC      string // "正在建立 P2P 連線元件..."
+	StatusCreatingOffer   string // "正在蒐集網路候選並產生邀請碼..."
+	StatusEncodingOffer   string // "正在壓縮邀請碼..."
+	StatusOfferReady      string // "邀請碼已產生（已複製到剪貼簿）"
+	StatusPleaseGenerate  string // "請先產生邀請碼"
+	StatusPleaseAnswer    string // "請貼入對方的回應碼"
+	StatusPleaseOffer     string // "請貼入對方的邀請碼"
+	StatusProcessing      string // "正在處理邀請碼..."
+	StatusDecodingOffer   string // "正在解析邀請碼..."
+	StatusCreatingAnswer  string // "正在蒐集網路候選並產生回應碼..."
+	StatusEncodingAnswer  string // "正在壓縮回應碼..."
+	StatusAnswerReady     string // "回應碼已產生（已複製到剪貼簿）"
+	StatusP2PConnected    string // "P2P 已連線"
+	StatusP2PDisconnected string // "P2P 已斷線"
+	StatusP2PProxyFmt     string // "P2P 已連線，ADB Proxy: 127.0.0.1:%d"
+	StatusP2PDevicesProxy string // "P2P 已連線，遠端 %d 個設備（ADB Proxy: 127.0.0.1:%d）"
+	StatusP2PWaiting      string // "P2P 已連線，等待設備..."
+	StatusP2PDevicesFmt   string // "P2P 已連線，%d 個設備"
+	StatusControlClosed   string // "control channel 已關閉"
 
 	// 錯誤（格式字串，用 fmt.Sprintf 填入）
 	ErrCreatePCFmt      string // "建立 PeerConnection 失敗: %v"
@@ -122,15 +130,15 @@ type lanMsg struct {
 	Scanning string // "掃描中..."
 
 	// 標籤
-	AgentAddr     string // "Agent 地址:"
+	AgentAddr      string // "Agent 地址:"
 	AgentsFoundFmt string // "發現 %d 個 Agent:"
-	ProxyDevFmt   string // "ADB Proxy: 127.0.0.1:%d（%d 個設備）:"
+	ProxyDevFmt    string // "ADB Proxy: 127.0.0.1:%d（%d 個設備）:"
 
 	// 狀態
-	StatusDisconnected string // "已中斷"
-	StatusPleaseAddr   string // "請填入 Agent 地址"
-	StatusQuerying     string // "查詢設備中..."
-	StatusNoDevices    string // "Agent 上沒有可用設備"
+	StatusDisconnected    string // "已中斷"
+	StatusPleaseAddr      string // "請填入 Agent 地址"
+	StatusQuerying        string // "查詢設備中..."
+	StatusNoDevices       string // "Agent 上沒有可用設備"
 	StatusConnectedFmt    string // "已連線，ADB Proxy: 127.0.0.1:%d"
 	StatusConnectedDevFmt string // "已連線，%d 個設備"
 
@@ -148,62 +156,62 @@ type lanMsg struct {
 // signalMsg 是「Relay 伺服器」分頁的文字。
 type signalMsg struct {
 	// 按鈕 / 標籤
-	Server         string // "伺服器"
-	StartAgent     string // "啟動被控端"
-	StopAgent      string // "停止被控端"
-	ConnectServer  string // "連線到伺服器"
-	HostnameLabel  string // "主機名稱:"
-	HostnameHint   string // "自動偵測"
-	HostsFmt       string // "主機 (%d):"
-	HostDevFmt     string // "%d 設備"
-	Locked         string // "(已鎖定)"
-	BindingsFmt    string // "已綁定 (%d):"
-	BindLabel      string // "[Bind]"
-	UnbindLabel    string // "[解綁]"
+	Server        string // "伺服器"
+	StartAgent    string // "啟動被控端"
+	StopAgent     string // "停止被控端"
+	ConnectServer string // "連線到伺服器"
+	HostnameLabel string // "主機名稱:"
+	HostnameHint  string // "自動偵測"
+	HostsFmt      string // "主機 (%d):"
+	HostDevFmt    string // "%d 設備"
+	Locked        string // "(已鎖定)"
+	BindingsFmt   string // "已綁定 (%d):"
+	BindLabel     string // "[Bind]"
+	UnbindLabel   string // "[解綁]"
 
 	// 狀態
-	StatusPleaseToken   string // "請輸入 Token"
+	StatusPleaseToken    string // "請輸入 Token"
 	StatusPleaseURLToken string // "請輸入 Server URL 和 Token"
-	StatusRunning       string // "運行中"
-	StatusConnected     string // "已連線"
-	StatusDisconnected  string // "已斷線"
-	StatusBindOKFmt     string // "綁定成功 127.0.0.1:%d → %s"
-	StatusBindFailFmt   string // "綁定失敗: %s"
-	StatusUnbindOKFmt   string // "已解綁 port %d"
-	StatusUnbindFailFmt string // "解綁失敗: %s"
+	StatusRunning        string // "運行中"
+	StatusConnected      string // "已連線"
+	StatusDisconnected   string // "已斷線"
+	StatusBindOKFmt      string // "綁定成功 127.0.0.1:%d → %s"
+	StatusBindFailFmt    string // "綁定失敗: %s"
+	StatusUnbindOKFmt    string // "已解綁 port %d"
+	StatusUnbindFailFmt  string // "解綁失敗: %s"
 
 	// 錯誤
-	ErrIPCFmt    string // "建立 IPC 失敗: %v"
-	ErrDaemonFmt string // "Daemon 錯誤: %v"
+	ErrIPCFmt      string // "建立 IPC 失敗: %v"
+	ErrDaemonFmt   string // "Daemon 錯誤: %v"
 	ErrIPCNotReady string // "IPC 未就緒"
 }
 
 // settingsMsg 是設定面板的文字。
 type settingsMsg struct {
-	Title             string // "設定"
-	ConnectionSection string // "連線設定"
-	SaveBtn           string // "儲存設定"
-	CloseBtn          string // "關閉"
-	AboutSection      string // "關於"
-	CurrentVerFmt     string // "目前版本：%s"
-	LatestVerFmt      string // "最新版本：%s"
-	CheckUpdate       string // "檢查更新"
-	Checking          string // "檢查中..."
-	Updating          string // "更新中..."
-	UpdateNow         string // "立即更新"
-	BannerNewVerFmt   string // "新版本 %s 可用"
-	BannerDismiss     string // "稍後再說"
-	CustomStun        string // "自訂"
-	CustomStunOption  string // "自訂..."
-	TURNModeLabel     string // "TURN 伺服器"
+	Title              string // "設定"
+	ConnectionSection  string // "連線設定"
+	SaveBtn            string // "儲存設定"
+	CloseBtn           string // "關閉"
+	AboutSection       string // "關於"
+	CurrentVerFmt      string // "目前版本：%s"
+	LatestVerFmt       string // "最新版本：%s"
+	CheckUpdate        string // "檢查更新"
+	Checking           string // "檢查中..."
+	Updating           string // "更新中..."
+	UpdateNow          string // "立即更新"
+	BannerNewVerFmt    string // "新版本 %s 可用"
+	BannerDismiss      string // "稍後再說"
+	CustomStun         string // "自訂"
+	CustomStunOption   string // "自訂..."
+	TURNModeLabel      string // "TURN 伺服器"
 	TURNModeCloudflare string // "Cloudflare（免費）"
-	TURNModeCustom    string // "自訂"
-	TURNLabel         string // "TURN 位址"
-	TURNHint          string // "turn:your.server.com:3478"
-	TURNUserLabel     string // "TURN 帳號"
-	TURNPassLabel     string // "TURN 密碼"
-	LanguageLabel     string // "語言"
-	LanguageAuto      string // "自動"
+	TURNModeCustom     string // "自訂"
+	TURNLabel          string // "TURN 位址"
+	TURNHint           string // "turn:your.server.com:3478"
+	TURNUserLabel      string // "TURN 帳號"
+	TURNPassLabel      string // "TURN 密碼"
+	LanguageLabel      string // "語言"
+	LanguageAuto       string // "自動"
 
 	// 更新狀態
 	StatusChecking       string // "正在檢查更新..."
@@ -258,37 +266,38 @@ func init() {
 
 var messagesZhTW = Messages{
 	App: appMsg{
-		WindowTitle: "radb — 遠端 ADB 工具",
+		WindowTitle: "遠端 ADB 工具",
 		TabPair:     "P2P 直連",
 		TabLAN:      "區網直連",
 		TabSignal:   "Relay 伺服器",
 		GearTooltip: "設定",
 	},
 	Common: commonMsg{
-		Controller:       "主控端",
-		Agent:            "被控端",
-		StatusPrefix:     "狀態: ",
-		DevicesFmt:       "設備 (%d):",
-		Stopped:          "已停止",
-		Disconnected:     "未連線",
-		CheckingADB:      "檢查 ADB...",
-		ADBErrorFmt:      "ADB 錯誤: %v",
-		ErrorFmt:         "錯誤: %v",
-		RunningFmt:       "運行中（port %d）",
-		StartServer:      "啟動伺服器",
-		StopServer:       "停止伺服器",
-		Connect:          "連線",
-		DisconnectBtn:    "中斷連線",
-		TokenLabel:       "Token:",
+		Controller:        "主控端",
+		Agent:             "被控端",
+		StatusPrefix:      "狀態: ",
+		DevicesFmt:        "設備 (%d):",
+		Stopped:           "已停止",
+		Disconnected:      "未連線",
+		CheckingADB:       "檢查 ADB...",
+		ADBErrorFmt:       "ADB 錯誤: %v",
+		ErrorFmt:          "錯誤: %v",
+		RunningFmt:        "運行中（port %d）",
+		StartServer:       "啟動伺服器",
+		StopServer:        "停止伺服器",
+		Connect:           "連線",
+		DisconnectBtn:     "中斷連線",
+		TokenLabel:        "Token:",
 		TokenHintOptional: "（可選）",
-		TokenHintPSK:     "PSK 認證 Token",
-		Connecting:       "連線中...",
-		RelayNotice:      "因主控或被控端的網路環境受限，目前透過 Cloudflare 中繼伺服器連線",
+		TokenHintPSK:      "PSK 認證 Token",
+		Connecting:        "連線中...",
+		RelayNotice:       "因主控或被控端的網路環境受限，目前透過 Cloudflare 中繼伺服器連線",
 	},
 	Pair: pairMsg{
-		GenerateOffer: "產生邀請碼",
-		ClearBtn:      "清除邀請碼 / 回應碼",
-		DisconnectBtn: "結束連線",
+		GenerateOffer:     "產生邀請碼",
+		GenerateOfferFast: "立即產生邀請碼（有無法連接的風險）",
+		ClearBtn:          "清除邀請碼 / 回應碼",
+		DisconnectBtn:     "結束連線",
 
 		OfferOutLabel:  "邀請碼（已複製到剪貼簿，僅限使用一次）:",
 		AnswerInLabel:  "回應碼（貼入後自動連線）:",
@@ -302,11 +311,18 @@ var messagesZhTW = Messages{
 
 		StatusNotStarted:      "未開始",
 		StatusGenerating:      "正在產生邀請碼...",
+		StatusPreparingTURN:   "正在準備 TURN 候選...",
+		StatusCreatingPC:      "正在建立 P2P 連線元件...",
+		StatusCreatingOffer:   "正在蒐集網路候選並產生邀請碼...",
+		StatusEncodingOffer:   "正在壓縮邀請碼...",
 		StatusOfferReady:      "邀請碼已產生（已複製到剪貼簿）",
 		StatusPleaseGenerate:  "請先產生邀請碼",
 		StatusPleaseAnswer:    "請貼入對方的回應碼",
 		StatusPleaseOffer:     "請貼入對方的邀請碼",
 		StatusProcessing:      "正在處理邀請碼...",
+		StatusDecodingOffer:   "正在解析邀請碼...",
+		StatusCreatingAnswer:  "正在蒐集網路候選並產生回應碼...",
+		StatusEncodingAnswer:  "正在壓縮回應碼...",
 		StatusAnswerReady:     "回應碼已產生（已複製到剪貼簿）",
 		StatusP2PConnected:    "P2P 已連線",
 		StatusP2PDisconnected: "P2P 已斷線",
@@ -337,10 +353,10 @@ var messagesZhTW = Messages{
 		AgentsFoundFmt: "發現 %d 個 Agent:",
 		ProxyDevFmt:    "ADB Proxy: 127.0.0.1:%d（%d 個設備）:",
 
-		StatusDisconnected: "已中斷",
-		StatusPleaseAddr:   "請填入 Agent 地址",
-		StatusQuerying:     "查詢設備中...",
-		StatusNoDevices:    "Agent 上沒有可用設備",
+		StatusDisconnected:    "已中斷",
+		StatusPleaseAddr:      "請填入 Agent 地址",
+		StatusQuerying:        "查詢設備中...",
+		StatusNoDevices:       "Agent 上沒有可用設備",
 		StatusConnectedFmt:    "已連線，ADB Proxy: 127.0.0.1:%d",
 		StatusConnectedDevFmt: "已連線，%d 個設備",
 
@@ -382,30 +398,30 @@ var messagesZhTW = Messages{
 		ErrIPCNotReady: "IPC 未就緒",
 	},
 	Settings: settingsMsg{
-		Title:             "設定",
-		ConnectionSection: "連線設定",
-		SaveBtn:           "儲存設定",
-		CloseBtn:          "關閉",
-		AboutSection:      "關於",
-		CurrentVerFmt:     "目前版本：%s",
-		LatestVerFmt:      "最新版本：%s",
-		CheckUpdate:       "檢查更新",
-		Checking:          "檢查中...",
-		Updating:          "更新中...",
-		UpdateNow:         "立即更新",
-		BannerNewVerFmt:   "新版本 %s 可用",
-		BannerDismiss:     "稍後再說",
-		CustomStun:        "自訂",
-		CustomStunOption:  "自訂...",
-		TURNModeLabel:     "TURN 伺服器",
+		Title:              "設定",
+		ConnectionSection:  "連線設定",
+		SaveBtn:            "儲存設定",
+		CloseBtn:           "關閉",
+		AboutSection:       "關於",
+		CurrentVerFmt:      "目前版本：%s",
+		LatestVerFmt:       "最新版本：%s",
+		CheckUpdate:        "檢查更新",
+		Checking:           "檢查中...",
+		Updating:           "更新中...",
+		UpdateNow:          "立即更新",
+		BannerNewVerFmt:    "新版本 %s 可用",
+		BannerDismiss:      "稍後再說",
+		CustomStun:         "自訂",
+		CustomStunOption:   "自訂...",
+		TURNModeLabel:      "TURN 伺服器",
 		TURNModeCloudflare: "Cloudflare（免費）",
-		TURNModeCustom:    "自訂...",
-		TURNLabel:         "TURN 位址",
-		TURNHint:          "turn:your.server.com:3478",
-		TURNUserLabel:     "TURN 帳號",
-		TURNPassLabel:     "TURN 密碼",
-		LanguageLabel:     "語言",
-		LanguageAuto:      "自動",
+		TURNModeCustom:     "自訂...",
+		TURNLabel:          "TURN 位址",
+		TURNHint:           "turn:your.server.com:3478",
+		TURNUserLabel:      "TURN 帳號",
+		TURNPassLabel:      "TURN 密碼",
+		LanguageLabel:      "語言",
+		LanguageAuto:       "自動",
 
 		StatusChecking:       "正在檢查更新...",
 		StatusCheckFailFmt:   "檢查失敗：%v",
@@ -422,37 +438,38 @@ var messagesZhTW = Messages{
 
 var messagesEN = Messages{
 	App: appMsg{
-		WindowTitle: "radb — Remote ADB Tool",
+		WindowTitle: "Remote ADB Tool",
 		TabPair:     "P2P Direct",
 		TabLAN:      "LAN Direct",
 		TabSignal:   "Relay Server",
 		GearTooltip: "Settings",
 	},
 	Common: commonMsg{
-		Controller:       "Controller",
-		Agent:            "Agent",
-		StatusPrefix:     "Status: ",
-		DevicesFmt:       "Devices (%d):",
-		Stopped:          "Stopped",
-		Disconnected:     "Not connected",
-		CheckingADB:      "Checking ADB...",
-		ADBErrorFmt:      "ADB error: %v",
-		ErrorFmt:         "Error: %v",
-		RunningFmt:       "Running (port %d)",
-		StartServer:      "Start Server",
-		StopServer:       "Stop Server",
-		Connect:          "Connect",
-		DisconnectBtn:    "Disconnect",
-		TokenLabel:       "Token:",
+		Controller:        "Controller",
+		Agent:             "Agent",
+		StatusPrefix:      "Status: ",
+		DevicesFmt:        "Devices (%d):",
+		Stopped:           "Stopped",
+		Disconnected:      "Not connected",
+		CheckingADB:       "Checking ADB...",
+		ADBErrorFmt:       "ADB error: %v",
+		ErrorFmt:          "Error: %v",
+		RunningFmt:        "Running (port %d)",
+		StartServer:       "Start Server",
+		StopServer:        "Stop Server",
+		Connect:           "Connect",
+		DisconnectBtn:     "Disconnect",
+		TokenLabel:        "Token:",
 		TokenHintOptional: "(optional)",
-		TokenHintPSK:     "PSK auth token",
-		Connecting:       "Connecting...",
-		RelayNotice:      "Due to network restrictions, the connection is routed through a Cloudflare relay server",
+		TokenHintPSK:      "PSK auth token",
+		Connecting:        "Connecting...",
+		RelayNotice:       "Due to network restrictions, the connection is routed through a Cloudflare relay server",
 	},
 	Pair: pairMsg{
-		GenerateOffer: "Generate Invite Code",
-		ClearBtn:      "Clear Codes",
-		DisconnectBtn: "Disconnect",
+		GenerateOffer:     "Generate Invite Code",
+		GenerateOfferFast: "Generate Now (risk of connection failure)",
+		ClearBtn:          "Clear Codes",
+		DisconnectBtn:     "Disconnect",
 
 		OfferOutLabel:  "Invite code (copied to clipboard, single use):",
 		AnswerInLabel:  "Response code (auto-connect on paste):",
@@ -466,11 +483,18 @@ var messagesEN = Messages{
 
 		StatusNotStarted:      "Not started",
 		StatusGenerating:      "Generating invite code...",
+		StatusPreparingTURN:   "Preparing TURN candidates...",
+		StatusCreatingPC:      "Creating P2P connection components...",
+		StatusCreatingOffer:   "Gathering network candidates and creating invite code...",
+		StatusEncodingOffer:   "Compressing invite code...",
 		StatusOfferReady:      "Invite code generated (copied to clipboard)",
 		StatusPleaseGenerate:  "Please generate an invite code first",
 		StatusPleaseAnswer:    "Please paste the response code",
 		StatusPleaseOffer:     "Please paste the invite code",
 		StatusProcessing:      "Processing invite code...",
+		StatusDecodingOffer:   "Decoding invite code...",
+		StatusCreatingAnswer:  "Gathering network candidates and creating response code...",
+		StatusEncodingAnswer:  "Compressing response code...",
 		StatusAnswerReady:     "Response code generated (copied to clipboard)",
 		StatusP2PConnected:    "P2P connected",
 		StatusP2PDisconnected: "P2P disconnected",
@@ -501,10 +525,10 @@ var messagesEN = Messages{
 		AgentsFoundFmt: "Found %d Agent(s):",
 		ProxyDevFmt:    "ADB Proxy: 127.0.0.1:%d (%d device(s)):",
 
-		StatusDisconnected: "Disconnected",
-		StatusPleaseAddr:   "Please enter Agent address",
-		StatusQuerying:     "Querying devices...",
-		StatusNoDevices:    "No available devices on Agent",
+		StatusDisconnected:    "Disconnected",
+		StatusPleaseAddr:      "Please enter Agent address",
+		StatusQuerying:        "Querying devices...",
+		StatusNoDevices:       "No available devices on Agent",
 		StatusConnectedFmt:    "Connected, ADB Proxy: 127.0.0.1:%d",
 		StatusConnectedDevFmt: "Connected, %d device(s)",
 
@@ -546,30 +570,30 @@ var messagesEN = Messages{
 		ErrIPCNotReady: "IPC not ready",
 	},
 	Settings: settingsMsg{
-		Title:             "Settings",
-		ConnectionSection: "Connection",
-		SaveBtn:           "Save Settings",
-		CloseBtn:          "Close",
-		AboutSection:      "About",
-		CurrentVerFmt:     "Current version: %s",
-		LatestVerFmt:      "Latest version: %s",
-		CheckUpdate:       "Check for Updates",
-		Checking:          "Checking...",
-		Updating:          "Updating...",
-		UpdateNow:         "Update Now",
-		BannerNewVerFmt:   "Version %s available",
-		BannerDismiss:     "Later",
-		CustomStun:        "Custom",
-		CustomStunOption:  "Custom...",
-		TURNModeLabel:     "TURN Server",
+		Title:              "Settings",
+		ConnectionSection:  "Connection",
+		SaveBtn:            "Save Settings",
+		CloseBtn:           "Close",
+		AboutSection:       "About",
+		CurrentVerFmt:      "Current version: %s",
+		LatestVerFmt:       "Latest version: %s",
+		CheckUpdate:        "Check for Updates",
+		Checking:           "Checking...",
+		Updating:           "Updating...",
+		UpdateNow:          "Update Now",
+		BannerNewVerFmt:    "Version %s available",
+		BannerDismiss:      "Later",
+		CustomStun:         "Custom",
+		CustomStunOption:   "Custom...",
+		TURNModeLabel:      "TURN Server",
 		TURNModeCloudflare: "Cloudflare (Free)",
-		TURNModeCustom:    "Custom...",
-		TURNLabel:         "TURN Address",
-		TURNHint:          "turn:your.server.com:3478",
-		TURNUserLabel:     "TURN User",
-		TURNPassLabel:     "TURN Password",
-		LanguageLabel:     "Language",
-		LanguageAuto:      "Auto",
+		TURNModeCustom:     "Custom...",
+		TURNLabel:          "TURN Address",
+		TURNHint:           "turn:your.server.com:3478",
+		TURNUserLabel:      "TURN User",
+		TURNPassLabel:      "TURN Password",
+		LanguageLabel:      "Language",
+		LanguageAuto:       "Auto",
 
 		StatusChecking:       "Checking for updates...",
 		StatusCheckFailFmt:   "Check failed: %v",

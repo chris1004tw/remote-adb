@@ -47,6 +47,11 @@ import (
 	"github.com/chris1004tw/remote-adb/internal/webrtc"
 )
 
+const (
+	quickTurnCacheWaitTimeout = 300 * time.Millisecond
+	quickOfferGatherTimeout   = 1500 * time.Millisecond
+)
+
 // pairTab 是「簡易連線」分頁的完整狀態。
 // 提供兩個角色：主控模式（客戶端）和被控模式（伺服器）。
 //
@@ -65,10 +70,11 @@ type pairTab struct {
 	isServer  bool // false=客戶端, true=伺服器
 
 	// --- 客戶端模式 ---
-	cliGenOfferBtn    widget.Clickable
-	cliOfferOutEditor widget.Editor // 顯示邀請碼（唯讀）
-	cliAnswerInEditor widget.Editor // 貼入回應碼
-	cliApplyBtn       widget.Clickable
+	cliGenOfferBtn     widget.Clickable
+	cliGenOfferFastBtn widget.Clickable
+	cliOfferOutEditor  widget.Editor // 顯示邀請碼（唯讀）
+	cliAnswerInEditor  widget.Editor // 貼入回應碼
+	cliApplyBtn        widget.Clickable
 
 	// --- 被控模式 ---
 	srvOfferInEditor   widget.Editor // 貼入邀請碼
@@ -86,6 +92,13 @@ type pairTab struct {
 
 	// 剪貼簿：產生 token 後自動複製
 	pendingClipboard string
+
+	// 背景預產生邀請碼（完整 ICE gathering）
+	prewarmInFlight bool
+	prewarmDone     chan struct{}
+	prewarmPM       *webrtc.PeerManager
+	prewarmControl  io.ReadWriteCloser
+	prewarmOffer    string
 
 	// 伺服器模式：設備清單
 	srvDevices []bridge.DeviceInfo
@@ -133,6 +146,7 @@ func newPairTab(w *app.Window, cfg *AppConfig, tc *turnCache) *pairTab {
 	t.srvAnswerOutEditor.ReadOnly = true
 
 	t.list.Axis = layout.Vertical
+	t.maybeStartOfferPrewarm()
 	return t
 }
 
@@ -161,9 +175,11 @@ func (t *pairTab) layout(gtx layout.Context, th *material.Theme) layout.Dimensio
 	// 角色切換
 	for t.clientBtn.Clicked(gtx) {
 		t.isServer = false
+		t.maybeStartOfferPrewarm()
 	}
 	for t.serverBtn.Clicked(gtx) {
 		t.isServer = true
+		t.clearReadyPrewarm()
 	}
 
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
@@ -335,7 +351,10 @@ func (t *pairTab) layoutClientWidgets(gtx layout.Context, th *material.Theme) []
 
 	// 未連線：顯示完整設定 UI
 	for t.cliGenOfferBtn.Clicked(gtx) {
-		t.clientGenerateOffer()
+		t.clientGenerateOffer(false)
+	}
+	for t.cliGenOfferFastBtn.Clicked(gtx) {
+		t.clientGenerateOffer(true)
 	}
 
 	// 自動偵測回應碼貼入（offer 已產生時）
@@ -352,6 +371,14 @@ func (t *pairTab) layoutClientWidgets(gtx layout.Context, th *material.Theme) []
 		func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				btn := material.Button(th, &t.cliGenOfferBtn, msg().Pair.GenerateOffer)
+				return btn.Layout(gtx)
+			})
+		},
+		// 立即產生邀請碼（快速模式）
+		func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				btn := material.Button(th, &t.cliGenOfferFastBtn, msg().Pair.GenerateOfferFast)
+				btn.Background = color.NRGBA{R: 255, G: 152, B: 0, A: 255}
 				return btn.Layout(gtx)
 			})
 		},
@@ -502,23 +529,35 @@ func (t *pairTab) layoutServerWidgets(gtx layout.Context, th *material.Theme) []
 	return widgets
 }
 
-// === 客戶端（主控）模式邏輯 ===
-
-// clientGenerateOffer 產生 WebRTC Offer 並編碼為邀請碼 token。
-// 流程：建立 PeerConnection → 建立 control DataChannel → 建立 Offer →
-// SDP 壓縮編碼 → 顯示在 UI 並自動複製到剪貼簿。
-func (t *pairTab) clientGenerateOffer() {
+// maybeStartOfferPrewarm 在背景預先建立一組完整 gathering 的邀請碼。
+// 僅在主控模式且目前無活動連線/等待中的 offer 時啟動。
+func (t *pairTab) maybeStartOfferPrewarm() {
 	t.mu.Lock()
-	t.status = msg().Pair.StatusGenerating
+	if t.isServer || t.connected || t.pm != nil || t.prewarmInFlight || t.prewarmPM != nil {
+		t.mu.Unlock()
+		return
+	}
+	done := make(chan struct{})
+	t.prewarmInFlight = true
+	t.prewarmDone = done
 	t.mu.Unlock()
-	t.window.Invalidate()
 
-	go func() {
+	go func(done chan struct{}) {
+		defer close(done)
+		startedAt := time.Now()
+		defer func() {
+			t.mu.Lock()
+			if t.prewarmDone == done {
+				t.prewarmInFlight = false
+			}
+			t.mu.Unlock()
+		}()
+
 		iceConfig := parseICEConfig(t.config)
 		if t.config.TURNMode == TURNModeCloudflare {
-			servers, warning := t.tc.getServers(2 * time.Second)
+			servers, warning := t.tc.getServers(0)
 			if warning != "" {
-				slog.Warn("Cloudflare TURN unavailable for offer generation", "warning", warning)
+				slog.Warn("Cloudflare TURN unavailable for prewarm offer generation", "warning", warning)
 				t.mu.Lock()
 				t.turnWarning = warning
 				t.mu.Unlock()
@@ -530,6 +569,174 @@ func (t *pairTab) clientGenerateOffer() {
 
 		pm, err := webrtc.NewPeerManager(iceConfig)
 		if err != nil {
+			slog.Warn("prewarm offer failed", "step", "new_peer_manager", "elapsed_ms", time.Since(startedAt).Milliseconds(), "error", err)
+			return
+		}
+
+		controlCh, err := pm.OpenChannel("control")
+		if err != nil {
+			slog.Warn("prewarm offer failed", "step", "open_control_channel", "elapsed_ms", time.Since(startedAt).Milliseconds(), "error", err)
+			pm.Close()
+			return
+		}
+
+		offerSDP, err := pm.CreateOffer()
+		if err != nil {
+			slog.Warn("prewarm offer failed", "step", "create_offer", "elapsed_ms", time.Since(startedAt).Milliseconds(), "error", err)
+			pm.Close()
+			controlCh.Close()
+			return
+		}
+
+		offerToken, err := bridge.EncodeToken(bridge.SDPToCompact(offerSDP))
+		if err != nil {
+			slog.Warn("prewarm offer failed", "step", "encode_offer", "elapsed_ms", time.Since(startedAt).Milliseconds(), "error", err)
+			pm.Close()
+			controlCh.Close()
+			return
+		}
+
+		var oldPM *webrtc.PeerManager
+		var oldControl io.ReadWriteCloser
+
+		t.mu.Lock()
+		// 若 prewarm 期間狀態改變（切到被控端、已連線、或 prewarm 已被重置），丟棄本次結果
+		if t.prewarmDone != done || t.isServer || t.connected || t.pm != nil {
+			t.mu.Unlock()
+			pm.Close()
+			controlCh.Close()
+			return
+		}
+		oldPM = t.prewarmPM
+		oldControl = t.prewarmControl
+		t.prewarmPM = pm
+		t.prewarmControl = controlCh
+		t.prewarmOffer = offerToken
+		t.prewarmInFlight = false
+		t.prewarmDone = nil
+		t.mu.Unlock()
+
+		if oldPM != nil {
+			oldPM.Close()
+		}
+		if oldControl != nil {
+			oldControl.Close()
+		}
+		slog.Info("invite code prewarmed", "elapsed_ms", time.Since(startedAt).Milliseconds(), "token_len", len(offerToken))
+	}(done)
+}
+
+// usePrewarmedOffer 將背景預產生的 offer 套用到目前會話。
+func (t *pairTab) usePrewarmedOffer() bool {
+	t.mu.Lock()
+	if t.prewarmPM == nil || t.prewarmControl == nil || t.prewarmOffer == "" {
+		t.mu.Unlock()
+		return false
+	}
+
+	pm := t.prewarmPM
+	controlCh := t.prewarmControl
+	offerToken := t.prewarmOffer
+
+	t.prewarmPM = nil
+	t.prewarmControl = nil
+	t.prewarmOffer = ""
+	t.prewarmDone = nil
+	t.prewarmInFlight = false
+
+	t.pm = pm
+	t.controlCh = controlCh
+	t.pendingClipboard = offerToken
+	t.status = msg().Pair.StatusOfferReady
+	t.mu.Unlock()
+
+	t.cliOfferOutEditor.SetText(offerToken)
+	t.window.Invalidate()
+	slog.Info("invite code served from prewarm cache", "token_len", len(offerToken))
+	return true
+}
+
+// clearReadyPrewarm 清除已完成但尚未使用的 prewarm 資源。
+func (t *pairTab) clearReadyPrewarm() {
+	t.mu.Lock()
+	pm := t.prewarmPM
+	controlCh := t.prewarmControl
+	t.prewarmPM = nil
+	t.prewarmControl = nil
+	t.prewarmOffer = ""
+	t.mu.Unlock()
+
+	if pm != nil {
+		pm.Close()
+	}
+	if controlCh != nil {
+		controlCh.Close()
+	}
+}
+
+// === 客戶端（主控）模式邏輯 ===
+
+// clientGenerateOffer 產生 WebRTC Offer 並編碼為邀請碼 token。
+// 流程：建立 PeerConnection → 建立 control DataChannel → 建立 Offer →
+// SDP 壓縮編碼 → 顯示在 UI 並自動複製到剪貼簿。
+func (t *pairTab) clientGenerateOffer(quick bool) {
+	if !quick {
+		if t.usePrewarmedOffer() {
+			return
+		}
+		// 若 prewarm 尚未就緒，確保背景任務已啟動
+		t.maybeStartOfferPrewarm()
+	} else {
+		// 快速模式不重用背景完整 gathering 結果，避免同時維持兩組待連線 offer。
+		t.clearReadyPrewarm()
+	}
+
+	t.mu.Lock()
+	t.status = msg().Pair.StatusGenerating
+	t.mu.Unlock()
+	t.window.Invalidate()
+
+	go func() {
+		startedAt := time.Now()
+		mode := "normal"
+		if quick {
+			mode = "quick"
+		}
+		iceConfig := parseICEConfig(t.config)
+		if t.config.TURNMode == TURNModeCloudflare {
+			t.mu.Lock()
+			t.status = msg().Pair.StatusPreparingTURN
+			t.mu.Unlock()
+			t.window.Invalidate()
+
+			stepStarted := time.Now()
+			waitTimeout := time.Duration(0)
+			if quick {
+				waitTimeout = quickTurnCacheWaitTimeout
+			}
+			servers, warning := t.tc.getServers(waitTimeout)
+			slog.Debug("pair offer step", "mode", mode, "step", "turn_cache", "elapsed_ms", time.Since(stepStarted).Milliseconds(), "servers", len(servers), "warning", warning != "", "wait_timeout_ms", waitTimeout.Milliseconds())
+			if warning != "" {
+				slog.Warn("Cloudflare TURN unavailable for offer generation", "warning", warning)
+				t.mu.Lock()
+				t.turnWarning = warning
+				t.mu.Unlock()
+				t.window.Invalidate()
+			} else {
+				iceConfig.TURNServers = servers
+			}
+		}
+
+		t.mu.Lock()
+		t.status = msg().Pair.StatusCreatingPC
+		t.mu.Unlock()
+		t.window.Invalidate()
+
+		stepStarted := time.Now()
+		pm, err := webrtc.NewPeerManager(iceConfig)
+		slog.Debug("pair offer step", "step", "new_peer_manager", "elapsed_ms", time.Since(stepStarted).Milliseconds())
+		if err != nil {
+			slog.Warn("pair offer failed", "step", "new_peer_manager", "elapsed_ms", time.Since(startedAt).Milliseconds(), "error", err)
 			t.mu.Lock()
 			t.status = fmt.Sprintf(msg().Pair.ErrCreatePCFmt, err)
 			t.mu.Unlock()
@@ -538,8 +745,11 @@ func (t *pairTab) clientGenerateOffer() {
 		}
 
 		// 建立 control DataChannel
+		stepStarted = time.Now()
 		controlCh, err := pm.OpenChannel("control")
+		slog.Debug("pair offer step", "step", "open_control_channel", "elapsed_ms", time.Since(stepStarted).Milliseconds())
 		if err != nil {
+			slog.Warn("pair offer failed", "step", "open_control_channel", "elapsed_ms", time.Since(startedAt).Milliseconds(), "error", err)
 			pm.Close()
 			t.mu.Lock()
 			t.status = fmt.Sprintf(msg().Pair.ErrCreateCtrlChFmt, err)
@@ -548,8 +758,21 @@ func (t *pairTab) clientGenerateOffer() {
 			return
 		}
 
-		offerSDP, err := pm.CreateOffer()
+		t.mu.Lock()
+		t.status = msg().Pair.StatusCreatingOffer
+		t.mu.Unlock()
+		t.window.Invalidate()
+
+		stepStarted = time.Now()
+		var offerSDP string
+		if quick {
+			offerSDP, err = pm.CreateOfferWithGatherTimeout(quickOfferGatherTimeout)
+		} else {
+			offerSDP, err = pm.CreateOffer()
+		}
+		slog.Debug("pair offer step", "mode", mode, "step", "create_offer", "elapsed_ms", time.Since(stepStarted).Milliseconds())
 		if err != nil {
+			slog.Warn("pair offer failed", "step", "create_offer", "elapsed_ms", time.Since(startedAt).Milliseconds(), "error", err)
 			pm.Close()
 			t.mu.Lock()
 			t.status = fmt.Sprintf(msg().Pair.ErrCreateOfferFmt, err)
@@ -558,8 +781,16 @@ func (t *pairTab) clientGenerateOffer() {
 			return
 		}
 
+		t.mu.Lock()
+		t.status = msg().Pair.StatusEncodingOffer
+		t.mu.Unlock()
+		t.window.Invalidate()
+
+		stepStarted = time.Now()
 		offerToken, err := bridge.EncodeToken(bridge.SDPToCompact(offerSDP))
+		slog.Debug("pair offer step", "step", "encode_offer", "elapsed_ms", time.Since(stepStarted).Milliseconds())
 		if err != nil {
+			slog.Warn("pair offer failed", "step", "encode_offer", "elapsed_ms", time.Since(startedAt).Milliseconds(), "error", err)
 			t.mu.Lock()
 			t.status = fmt.Sprintf(msg().Pair.ErrEncodeOfferFmt, err)
 			t.mu.Unlock()
@@ -575,6 +806,7 @@ func (t *pairTab) clientGenerateOffer() {
 		t.mu.Unlock()
 		t.cliOfferOutEditor.SetText(offerToken)
 		t.window.Invalidate()
+		slog.Info("invite code generated", "mode", mode, "elapsed_ms", time.Since(startedAt).Milliseconds(), "token_len", len(offerToken))
 	}()
 }
 
@@ -786,30 +1018,37 @@ func (t *pairTab) serverProcessOffer() {
 	t.window.Invalidate()
 
 	go func() {
+		startedAt := time.Now()
 		adbAddr := fmt.Sprintf("127.0.0.1:%d", adbPort)
 
 		// 確保 ADB 可用
+		stepStarted := time.Now()
 		if err := adb.EnsureADB(context.Background(), adbAddr, func(status string) {
 			t.mu.Lock()
 			t.status = status
 			t.mu.Unlock()
 			t.window.Invalidate()
 		}); err != nil {
+			slog.Warn("pair answer failed", "step", "ensure_adb", "elapsed_ms", time.Since(startedAt).Milliseconds(), "error", err)
 			t.mu.Lock()
 			t.status = fmt.Sprintf(msg().Common.ADBErrorFmt, err)
 			t.mu.Unlock()
 			t.window.Invalidate()
 			return
 		}
+		slog.Debug("pair answer step", "step", "ensure_adb", "elapsed_ms", time.Since(stepStarted).Milliseconds())
 
 		t.mu.Lock()
-		t.status = msg().Pair.StatusProcessing
+		t.status = msg().Pair.StatusDecodingOffer
 		t.mu.Unlock()
 		t.window.Invalidate()
 
 		// 解碼 Offer
+		stepStarted = time.Now()
 		offer, err := bridge.DecodeToken(offerToken)
+		slog.Debug("pair answer step", "step", "decode_offer", "elapsed_ms", time.Since(stepStarted).Milliseconds())
 		if err != nil {
+			slog.Warn("pair answer failed", "step", "decode_offer", "elapsed_ms", time.Since(startedAt).Milliseconds(), "error", err)
 			t.mu.Lock()
 			t.status = fmt.Sprintf(msg().Pair.ErrInvalidOfferFmt, err)
 			t.mu.Unlock()
@@ -819,7 +1058,14 @@ func (t *pairTab) serverProcessOffer() {
 
 		iceConfig := parseICEConfig(t.config)
 		if t.config.TURNMode == TURNModeCloudflare {
-			servers, warning := t.tc.getServers(2 * time.Second)
+			t.mu.Lock()
+			t.status = msg().Pair.StatusPreparingTURN
+			t.mu.Unlock()
+			t.window.Invalidate()
+
+			stepStarted = time.Now()
+			servers, warning := t.tc.getServers(0)
+			slog.Debug("pair answer step", "step", "turn_cache", "elapsed_ms", time.Since(stepStarted).Milliseconds(), "servers", len(servers), "warning", warning != "")
 			if warning != "" {
 				slog.Warn("Cloudflare TURN unavailable for answer generation", "warning", warning)
 				t.mu.Lock()
@@ -830,8 +1076,17 @@ func (t *pairTab) serverProcessOffer() {
 				iceConfig.TURNServers = servers
 			}
 		}
+
+		t.mu.Lock()
+		t.status = msg().Pair.StatusCreatingPC
+		t.mu.Unlock()
+		t.window.Invalidate()
+
+		stepStarted = time.Now()
 		pm, err := webrtc.NewPeerManager(iceConfig)
+		slog.Debug("pair answer step", "step", "new_peer_manager", "elapsed_ms", time.Since(stepStarted).Milliseconds())
 		if err != nil {
+			slog.Warn("pair answer failed", "step", "new_peer_manager", "elapsed_ms", time.Since(startedAt).Milliseconds(), "error", err)
 			t.mu.Lock()
 			t.status = fmt.Sprintf(msg().Pair.ErrCreatePCFmt, err)
 			t.mu.Unlock()
@@ -883,8 +1138,16 @@ func (t *pairTab) serverProcessOffer() {
 		})
 
 		// 處理 Offer 並生成 Answer
+		t.mu.Lock()
+		t.status = msg().Pair.StatusCreatingAnswer
+		t.mu.Unlock()
+		t.window.Invalidate()
+
+		stepStarted = time.Now()
 		answerSDP, err := pm.HandleOffer(bridge.CompactToSDP(offer))
+		slog.Debug("pair answer step", "step", "handle_offer", "elapsed_ms", time.Since(stepStarted).Milliseconds())
 		if err != nil {
+			slog.Warn("pair answer failed", "step", "handle_offer", "elapsed_ms", time.Since(startedAt).Milliseconds(), "error", err)
 			pm.Close()
 			cancel()
 			t.mu.Lock()
@@ -894,8 +1157,16 @@ func (t *pairTab) serverProcessOffer() {
 			return
 		}
 
+		t.mu.Lock()
+		t.status = msg().Pair.StatusEncodingAnswer
+		t.mu.Unlock()
+		t.window.Invalidate()
+
+		stepStarted = time.Now()
 		answerToken, err := bridge.EncodeToken(bridge.SDPToCompact(answerSDP))
+		slog.Debug("pair answer step", "step", "encode_answer", "elapsed_ms", time.Since(stepStarted).Milliseconds())
 		if err != nil {
+			slog.Warn("pair answer failed", "step", "encode_answer", "elapsed_ms", time.Since(startedAt).Milliseconds(), "error", err)
 			pm.Close()
 			cancel()
 			t.mu.Lock()
@@ -914,6 +1185,7 @@ func (t *pairTab) serverProcessOffer() {
 		t.mu.Unlock()
 		t.srvAnswerOutEditor.SetText(answerToken)
 		t.window.Invalidate()
+		slog.Info("answer code generated", "elapsed_ms", time.Since(startedAt).Milliseconds(), "token_len", len(answerToken))
 
 		// 啟動 RTT 延遲輪詢
 		go t.rttPollLoop(ctx, pm)
@@ -996,8 +1268,13 @@ func (t *pairTab) disconnect() {
 	t.remoteAddr = ""
 	t.turnWarning = ""
 	t.status = msg().Pair.StatusNotStarted
+	isServer := t.isServer
 	t.mu.Unlock()
 	t.window.Invalidate()
+
+	if !isServer {
+		t.maybeStartOfferPrewarm()
+	}
 }
 
 func (t *pairTab) cleanup() {
@@ -1007,10 +1284,17 @@ func (t *pairTab) cleanup() {
 	dpm := t.dpm
 	controlCh := t.controlCh
 	pm := t.pm
+	prewarmControl := t.prewarmControl
+	prewarmPM := t.prewarmPM
 	t.cancel = nil
 	t.dpm = nil
 	t.controlCh = nil
 	t.pm = nil
+	t.prewarmControl = nil
+	t.prewarmPM = nil
+	t.prewarmOffer = ""
+	t.prewarmDone = nil
+	t.prewarmInFlight = false
 	t.connected = false
 	t.relayed = false
 	t.srvDevices = nil
@@ -1032,5 +1316,11 @@ func (t *pairTab) cleanup() {
 	}
 	if controlCh != nil {
 		controlCh.Close()
+	}
+	if prewarmPM != nil {
+		prewarmPM.Close()
+	}
+	if prewarmControl != nil {
+		prewarmControl.Close()
 	}
 }

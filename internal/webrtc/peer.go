@@ -46,11 +46,11 @@ type PeerManager struct {
 	config ICEConfig                  // ICE 伺服器設定（STUN/TURN）
 	doneCh chan struct{}              // 關閉通知，Close() 時 close，讓所有 pendingChannel.wait() 解除阻塞
 
-	mu             sync.Mutex                                  // 保護以下回呼函式與 closed 旗標
-	onChannelFn    func(label string, rwc io.ReadWriteCloser)  // 對方開啟 DataChannel 時的回呼
-	onDisconnectFn func()                                      // 連線斷開時的回呼
-	onConnectedFn  func(relayed bool)                          // 連線建立時的回呼（relayed 表示是否走 TURN 中繼）
-	closed         bool                                        // 防止重複關閉
+	mu             sync.Mutex                                 // 保護以下回呼函式與 closed 旗標
+	onChannelFn    func(label string, rwc io.ReadWriteCloser) // 對方開啟 DataChannel 時的回呼
+	onDisconnectFn func()                                     // 連線斷開時的回呼
+	onConnectedFn  func(relayed bool)                         // 連線建立時的回呼（relayed 表示是否走 TURN 中繼）
+	closed         bool                                       // 防止重複關閉
 }
 
 // NewPeerManager 建立一個新的 PeerManager。
@@ -149,11 +149,34 @@ func (pm *PeerManager) CreateOffer() (string, error) {
 		return "", fmt.Errorf("設定 local description 失敗: %w", err)
 	}
 
-	// 等待 ICE gathering 完成：GatheringCompletePromise 回傳一個 channel，
-	// 當所有網路介面的 candidate 蒐集完畢時 close，確保 SDP 包含完整資訊
-	<-pionwebrtc.GatheringCompletePromise(pm.pc)
+	pm.waitGatheringComplete("offer")
 
-	return pm.pc.LocalDescription().SDP, nil
+	local := pm.pc.LocalDescription()
+	if local == nil {
+		return "", errors.New("local description is nil after CreateOffer")
+	}
+	return local.SDP, nil
+}
+
+// CreateOfferWithGatherTimeout 產生 SDP Offer，但只等待指定時間蒐集 ICE candidate。
+// timeout 到達後會回傳目前已蒐集到的 candidate，適用於需要快速產生邀請碼的場景。
+func (pm *PeerManager) CreateOfferWithGatherTimeout(timeout time.Duration) (string, error) {
+	offer, err := pm.pc.CreateOffer(nil)
+	if err != nil {
+		return "", fmt.Errorf("建立 offer 失敗: %w", err)
+	}
+
+	if err := pm.pc.SetLocalDescription(offer); err != nil {
+		return "", fmt.Errorf("設定 local description 失敗: %w", err)
+	}
+
+	pm.waitGatheringCompleteWithTimeout("offer", timeout)
+
+	local := pm.pc.LocalDescription()
+	if local == nil {
+		return "", errors.New("local description is nil after CreateOfferWithGatherTimeout")
+	}
+	return local.SDP, nil
 }
 
 // HandleOffer 處理遠端的 SDP Offer，產生 Answer 並回傳。
@@ -183,10 +206,46 @@ func (pm *PeerManager) HandleOffer(sdp string) (string, error) {
 		return "", fmt.Errorf("設定 local description 失敗: %w", err)
 	}
 
-	// 同 CreateOffer，等待所有 ICE candidate 蒐集完畢再回傳
-	<-pionwebrtc.GatheringCompletePromise(pm.pc)
+	pm.waitGatheringComplete("answer")
 
-	return pm.pc.LocalDescription().SDP, nil
+	local := pm.pc.LocalDescription()
+	if local == nil {
+		return "", errors.New("local description is nil after HandleOffer")
+	}
+	return local.SDP, nil
+}
+
+// waitGatheringComplete 等待 ICE candidate 蒐集完成（不設逾時）。
+func (pm *PeerManager) waitGatheringComplete(phase string) {
+	start := time.Now()
+	<-pionwebrtc.GatheringCompletePromise(pm.pc)
+	slog.Debug("ICE gathering complete", "phase", phase, "elapsed_ms", time.Since(start).Milliseconds())
+}
+
+// waitGatheringCompleteWithTimeout 等待 ICE candidate 蒐集，逾時時回傳目前已蒐集的結果。
+func (pm *PeerManager) waitGatheringCompleteWithTimeout(phase string, timeout time.Duration) {
+	if timeout <= 0 {
+		pm.waitGatheringComplete(phase)
+		return
+	}
+
+	start := time.Now()
+	done := pionwebrtc.GatheringCompletePromise(pm.pc)
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-done:
+		slog.Debug("ICE gathering complete", "phase", phase, "elapsed_ms", time.Since(start).Milliseconds())
+	case <-timer.C:
+		slog.Warn(
+			"ICE gathering timeout; proceeding with partial candidates",
+			"phase", phase,
+			"elapsed_ms", time.Since(start).Milliseconds(),
+			"timeout_ms", timeout.Milliseconds(),
+			"state", pm.pc.ICEGatheringState().String(),
+		)
+	}
 }
 
 // HandleAnswer 處理遠端的 SDP Answer。
@@ -287,8 +346,8 @@ func (pm *PeerManager) OpenChannel(label string) (io.ReadWriteCloser, error) {
 //   - DataChannel 開啟後：close(readyCh) → 所有等待者被喚醒，讀取 rwc/err
 //   - PeerManager 關閉：close(doneCh) → 所有等待者回傳 ErrPeerClosed
 type pendingChannel struct {
-	readyCh chan struct{}              // DataChannel 就緒信號，close 後表示 rwc 或 err 已設定
-	doneCh  chan struct{}              // PeerManager 關閉信號，close 後 wait() 回傳 ErrPeerClosed
+	readyCh chan struct{}               // DataChannel 就緒信號，close 後表示 rwc 或 err 已設定
+	doneCh  chan struct{}               // PeerManager 關閉信號，close 後 wait() 回傳 ErrPeerClosed
 	rwc     datachannel.ReadWriteCloser // detach 後的底層 SCTP stream
 	err     error                       // detach 失敗時的錯誤
 }
