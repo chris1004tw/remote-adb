@@ -50,8 +50,8 @@ type lanTab struct {
 	isServerMode   bool
 
 	// --- 開啟伺服器子模式（原 agentTab）---
-	srvTokenEditor   widget.Editor
-	srvStartBtn      widget.Clickable
+	srvTokenEditor widget.Editor
+	srvStartBtn    widget.Clickable
 
 	srvMu      sync.Mutex
 	srvRunning bool
@@ -498,9 +498,12 @@ func (t *lanTab) scan() {
 	t.window.Invalidate()
 
 	go func() {
-		agents, _ := directsrv.DiscoverMDNS(3 * time.Second)
+		agents, err := directsrv.DiscoverMDNS(3 * time.Second)
 		t.cliMu.Lock()
 		t.agents = agents
+		if err != nil {
+			t.cliStatus = fmt.Sprintf(msg().Common.ErrorFmt, err)
+		}
 		t.scanning = false
 		t.agentBtns = make([]widget.Clickable, len(agents))
 		t.cliMu.Unlock()
@@ -558,32 +561,13 @@ func (t *lanTab) connect() {
 
 		// 2. 建立 per-device proxy 管理器
 		openCh := makeLANOpenChannel(addr, token)
+		onReady, onRemoved := guiDeviceProxyCallbacks(t.window, "LAN device proxy")
 		dpm := bridge.NewDeviceProxyManager(bridge.DeviceProxyConfig{
 			PortStart: proxyPort,
 			OpenCh:    openCh,
 			ADBAddr:   fmt.Sprintf("127.0.0.1:%d", t.config.ADBPort),
-			OnReady: func(serial string, port int) {
-				slog.Info("LAN device proxy ready", "serial", serial, "port", port)
-				t.window.Invalidate()
-				// 自動 adb connect
-				go func() {
-					time.Sleep(300 * time.Millisecond)
-					dialer := adb.NewDialer("")
-					target := fmt.Sprintf("127.0.0.1:%d", port)
-					if err := dialer.Connect(target); err != nil {
-						slog.Debug("auto adb connect failed", "target", target, "error", err)
-					}
-				}()
-			},
-			OnRemoved: func(serial string, port int) {
-				slog.Info("LAN device proxy removed", "serial", serial, "port", port)
-				t.window.Invalidate()
-				// 自動 adb disconnect
-				go func() {
-					dialer := adb.NewDialer("")
-					dialer.Disconnect(fmt.Sprintf("127.0.0.1:%d", port))
-				}()
-			},
+			OnReady:   onReady,
+			OnRemoved: onRemoved,
 		})
 
 		// 初始設備
@@ -642,7 +626,6 @@ func (t *lanTab) queryDevices(addr, token string) ([]directsrv.DeviceInfo, error
 	return online, nil
 }
 
-
 // makeLANOpenChannel 建立 LAN 用的 bridge.OpenChannelFunc。
 // 根據 label 前綴路由到不同的 directsrv action。
 // 獨立函式（不依賴 lanTab），供 DeviceProxyManager 和 CLI 共用。
@@ -676,7 +659,6 @@ func makeLANOpenChannel(addr, token string) bridge.OpenChannelFunc {
 		}
 	}
 }
-
 
 // pollRemoteDevices 定期查詢遠端設備清單並透過 DeviceProxyManager 更新 per-device proxy。
 func (t *lanTab) pollRemoteDevices(ctx context.Context, addr, token string) {

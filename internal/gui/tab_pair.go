@@ -48,8 +48,9 @@ import (
 )
 
 const (
-	quickTurnCacheWaitTimeout = 300 * time.Millisecond
-	quickOfferGatherTimeout   = 1500 * time.Millisecond
+	quickTurnCacheWaitTimeout   = 300 * time.Millisecond
+	quickOfferGatherTimeout     = 1500 * time.Millisecond
+	prewarmTurnCacheTimeout     = 10 * time.Second // 預產生邀請碼的 TURN 快取等待上限，避免 goroutine 永久阻塞
 )
 
 // pairTab 是「簡易連線」分頁的完整狀態。
@@ -99,6 +100,10 @@ type pairTab struct {
 	prewarmPM       *webrtc.PeerManager
 	prewarmControl  io.ReadWriteCloser
 	prewarmOffer    string
+
+	// 防重入旗標（mutex 保護）
+	generatingOffer bool // 防止 clientGenerateOffer 重複觸發
+	processingOffer bool // 防止 serverProcessOffer 並行執行
 
 	// 伺服器模式：設備清單
 	srvDevices []bridge.DeviceInfo
@@ -555,7 +560,7 @@ func (t *pairTab) maybeStartOfferPrewarm() {
 
 		iceConfig := parseICEConfig(t.config)
 		if t.config.TURNMode == TURNModeCloudflare {
-			servers, warning := t.tc.getServers(0)
+			servers, warning := t.tc.getServers(prewarmTurnCacheTimeout)
 			if warning != "" {
 				slog.Warn("Cloudflare TURN unavailable for prewarm offer generation", "warning", warning)
 				t.mu.Lock()
@@ -680,8 +685,20 @@ func (t *pairTab) clearReadyPrewarm() {
 // 流程：建立 PeerConnection → 建立 control DataChannel → 建立 Offer →
 // SDP 壓縮編碼 → 顯示在 UI 並自動複製到剪貼簿。
 func (t *pairTab) clientGenerateOffer(quick bool) {
+	// 防重入：快速雙擊按鈕時，避免第二個 goroutine 覆寫 t.pm 導致舊 PeerConnection 洩漏
+	t.mu.Lock()
+	if t.generatingOffer || t.connected {
+		t.mu.Unlock()
+		return
+	}
+	t.generatingOffer = true
+	t.mu.Unlock()
+
 	if !quick {
 		if t.usePrewarmedOffer() {
+			t.mu.Lock()
+			t.generatingOffer = false
+			t.mu.Unlock()
 			return
 		}
 		// 若 prewarm 尚未就緒，確保背景任務已啟動
@@ -697,6 +714,11 @@ func (t *pairTab) clientGenerateOffer(quick bool) {
 	t.window.Invalidate()
 
 	go func() {
+		defer func() {
+			t.mu.Lock()
+			t.generatingOffer = false
+			t.mu.Unlock()
+		}()
 		startedAt := time.Now()
 		mode := "normal"
 		if quick {
@@ -849,6 +871,12 @@ func (t *pairTab) clientApplyAnswer() {
 			return
 		}
 
+		// 提前建立 context 以便 cleanup 可取消後續操作（M28 修復）
+		ctx, cancel := context.WithCancel(context.Background())
+		t.mu.Lock()
+		t.cancel = cancel
+		t.mu.Unlock()
+
 		// 先註冊回呼再啟動 ICE，避免 LAN 環境下 ICE 在毫秒內完成導致回呼未觸發
 		pm.OnDisconnect(func() {
 			// 連線斷開時必須釋放本機 per-device proxy，
@@ -890,50 +918,31 @@ func (t *pairTab) clientApplyAnswer() {
 		})
 
 		if err := pm.HandleAnswer(bridge.CompactToSDP(answer)); err != nil {
+			cancel()
 			pm.Close() // 清理 ICE agent、DTLS transport、UDP socket
 			t.mu.Lock()
 			t.pm = nil
 			t.controlCh = nil
+			t.cancel = nil
 			t.status = fmt.Sprintf(msg().Pair.ErrHandleAnswerFmt, err)
 			t.mu.Unlock()
 			t.window.Invalidate()
 			return
 		}
 
-		ctx, cancel := context.WithCancel(context.Background())
-
 		// 建立 per-device proxy 管理器（每台設備獨立 port）
+		onReady, onRemoved := guiDeviceProxyCallbacks(t.window, "device proxy")
 		dpm := bridge.NewDeviceProxyManager(bridge.DeviceProxyConfig{
 			PortStart: proxyPort,
 			OpenCh:    pm.OpenChannel,
 			ADBAddr:   fmt.Sprintf("127.0.0.1:%d", t.config.ADBPort),
-			OnReady: func(serial string, port int) {
-				slog.Info("device proxy ready", "serial", serial, "port", port)
-				t.window.Invalidate()
-				// 自動 adb connect
-				go func() {
-					time.Sleep(300 * time.Millisecond)
-					dialer := adb.NewDialer("")
-					target := fmt.Sprintf("127.0.0.1:%d", port)
-					if err := dialer.Connect(target); err != nil {
-						slog.Debug("auto adb connect failed", "target", target, "error", err)
-					}
-				}()
-			},
-			OnRemoved: func(serial string, port int) {
-				slog.Info("device proxy removed", "serial", serial, "port", port)
-				t.window.Invalidate()
-				// 自動 adb disconnect
-				go func() {
-					dialer := adb.NewDialer("")
-					dialer.Disconnect(fmt.Sprintf("127.0.0.1:%d", port))
-				}()
-			},
+			OnReady:   onReady,
+			OnRemoved: onRemoved,
 		})
 
 		t.mu.Lock()
 		t.connected = true
-		t.cancel = cancel
+		// t.cancel 已在 HandleAnswer 前存入，此處不需重複設定
 		t.dpm = dpm
 		t.status = msg().Pair.StatusP2PConnected
 		t.mu.Unlock()
@@ -985,11 +994,36 @@ func (t *pairTab) controlReadLoop(ctx context.Context, controlCh io.ReadWriteClo
 		}
 	})
 	if err != nil {
+		// 套用「鎖內擷取引用、鎖外關閉」模式，與 client OnDisconnect 冪等：
+		// 若 OnDisconnect 先觸發已 nil 化所有引用，此處取出全是 nil → no-op；反之亦然。
 		t.mu.Lock()
+		cancel := t.cancel
+		dpm := t.dpm
+		pm := t.pm
+		control := t.controlCh
+		t.cancel = nil
+		t.dpm = nil
+		t.pm = nil
+		t.controlCh = nil
 		t.status = msg().Pair.StatusControlClosed
 		t.connected = false
+		t.relayed = false
 		t.mu.Unlock()
+
+		if cancel != nil {
+			cancel()
+		}
+		if dpm != nil {
+			dpm.Close()
+		}
+		if pm != nil {
+			pm.Close()
+		}
+		if control != nil {
+			control.Close()
+		}
 		t.window.Invalidate()
+		t.maybeStartOfferPrewarm()
 	}
 }
 
@@ -1012,12 +1046,23 @@ func (t *pairTab) serverProcessOffer() {
 		return
 	}
 
+	// 防並行：auto-detect 與手動點擊可能同時觸發，避免兩個 goroutine 競爭覆寫 t.pm
 	t.mu.Lock()
+	if t.processingOffer || t.connected {
+		t.mu.Unlock()
+		return
+	}
+	t.processingOffer = true
 	t.status = msg().Common.CheckingADB
 	t.mu.Unlock()
 	t.window.Invalidate()
 
 	go func() {
+		defer func() {
+			t.mu.Lock()
+			t.processingOffer = false
+			t.mu.Unlock()
+		}()
 		startedAt := time.Now()
 		adbAddr := fmt.Sprintf("127.0.0.1:%d", adbPort)
 
@@ -1118,12 +1163,26 @@ func (t *pairTab) serverProcessOffer() {
 		})
 
 		pm.OnDisconnect(func() {
+			// 套用「鎖內擷取引用、鎖外關閉」模式，與 client OnDisconnect 對稱。
+			// server-mode 沒有 dpm/controlCh（control channel 由 OnChannel callback 管理），
+			// 只需清理 cancel + nil 化 pm 引用。
 			t.mu.Lock()
+			cancel := t.cancel
+			t.cancel = nil
+			t.pm = nil
 			t.status = msg().Pair.StatusP2PDisconnected
 			t.connected = false
 			t.relayed = false
 			t.srvDevices = nil
 			t.mu.Unlock()
+
+			if cancel != nil {
+				cancel()
+			}
+			// 注意：不在 OnDisconnect callback 內呼叫 pm.Close()，
+			// 因為此 callback 從 pion 的 OnConnectionStateChange 觸發，
+			// 在 callback 內關閉 PeerConnection 可能造成重入問題。
+			// pm 引用已 nil 化，確保 cleanup() 不會重複關閉。
 			t.window.Invalidate()
 		})
 
@@ -1300,27 +1359,32 @@ func (t *pairTab) cleanup() {
 	t.srvDevices = nil
 	t.mu.Unlock()
 
-	// 鎖外依序關閉資源：
-	// 1. cancel 停止背景 goroutine（非阻塞）
-	// 2. dpm.Close() 停止所有 per-device proxy（含 auto adb disconnect）
-	// 3. pm.Close() → close(doneCh)，解除 controlCh.Close() 的 pendingChannel.wait() 阻塞
-	// 4. controlCh.Close() 此時 wait() 已可立即回傳
-	if cancel != nil {
-		cancel()
-	}
-	if dpm != nil {
-		dpm.Close()
-	}
-	if pm != nil {
-		pm.Close()
-	}
-	if controlCh != nil {
-		controlCh.Close()
-	}
-	if prewarmPM != nil {
-		prewarmPM.Close()
-	}
-	if prewarmControl != nil {
-		prewarmControl.Close()
-	}
+	// 在 goroutine 中關閉資源，避免 pm.Close()（pion PeerConnection 關閉 ICE/DTLS）
+	// 阻塞 UI 執行緒導致視窗 "Not Responding"。
+	// 上方 lock+nil 已即時更新狀態，Close 可安全非同步執行。
+	go func() {
+		// 關閉順序：
+		// 1. cancel 停止背景 goroutine（非阻塞）
+		// 2. dpm.Close() 停止所有 per-device proxy（含 auto adb disconnect）
+		// 3. pm.Close() → close(doneCh)，解除 controlCh.Close() 的 pendingChannel.wait() 阻塞
+		// 4. controlCh.Close() 此時 wait() 已可立即回傳
+		if cancel != nil {
+			cancel()
+		}
+		if dpm != nil {
+			dpm.Close()
+		}
+		if pm != nil {
+			pm.Close()
+		}
+		if controlCh != nil {
+			controlCh.Close()
+		}
+		if prewarmPM != nil {
+			prewarmPM.Close()
+		}
+		if prewarmControl != nil {
+			prewarmControl.Close()
+		}
+	}()
 }

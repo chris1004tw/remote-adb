@@ -678,21 +678,13 @@ func cmdConnectDirect(addr, token string, portStart, adbPort int) {
 
 	// 3. 建立 per-device proxy 管理器
 	adbAddr := fmt.Sprintf("127.0.0.1:%d", adbPort)
+	onReady, onRemoved := cliDeviceProxyCallbacks(adbAddr)
 	dpm := bridge.NewDeviceProxyManager(bridge.DeviceProxyConfig{
 		PortStart: portStart,
 		OpenCh:    openCh,
 		ADBAddr:   adbAddr,
-		OnReady: func(serial string, port int) {
-			fmt.Fprintf(os.Stderr, "  設備 %s → 127.0.0.1:%d\n", serial, port)
-			go autoADBConnect(adbAddr, fmt.Sprintf("127.0.0.1:%d", port))
-		},
-		OnRemoved: func(serial string, port int) {
-			fmt.Fprintf(os.Stderr, "  設備 %s 已離線（port %d 已釋放）\n", serial, port)
-			go func() {
-				dialer := adb.NewDialer(adbAddr)
-				dialer.Disconnect(fmt.Sprintf("127.0.0.1:%d", port))
-			}()
-		},
+		OnReady:   onReady,
+		OnRemoved: onRemoved,
 	})
 	defer dpm.Close()
 
@@ -790,8 +782,25 @@ func queryDirectDevices(addr, token string) []directsrv.DeviceInfo {
 	return resp.Devices
 }
 
+// cliDeviceProxyCallbacks 回傳 CLI 用的 DeviceProxyManager OnReady/OnRemoved callback。
+// 設備上線時印出 proxy port 並自動 adb connect，離線時自動 adb disconnect。
+func cliDeviceProxyCallbacks(adbAddr string) (onReady func(string, int), onRemoved func(string, int)) {
+	onReady = func(serial string, port int) {
+		fmt.Fprintf(os.Stderr, "  設備 %s → 127.0.0.1:%d\n", serial, port)
+		go autoADBConnect(adbAddr, fmt.Sprintf("127.0.0.1:%d", port))
+	}
+	onRemoved = func(serial string, port int) {
+		fmt.Fprintf(os.Stderr, "  設備 %s 已離線（port %d 已釋放）\n", serial, port)
+		go func() {
+			dialer := adb.NewDialer(adbAddr)
+			dialer.Disconnect(fmt.Sprintf("127.0.0.1:%d", port))
+		}()
+	}
+	return
+}
+
 // queryDirectDevicesQuiet 靜默查詢遠端設備清單（不印輸出、不 exit）。
-// 供 pollDirectDevices 使用，失敗時回傳 nil。
+// 供 pollDirectDevicesDPM 輪詢使用，失敗時回傳 nil。
 func queryDirectDevicesQuiet(addr, token string) []directsrv.DeviceInfo {
 	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
@@ -812,30 +821,6 @@ func queryDirectDevicesQuiet(addr, token string) []directsrv.DeviceInfo {
 		return nil
 	}
 	return resp.Devices
-}
-
-// pollDirectDevices 定期查詢遠端設備清單並更新 ForwardManager。
-// 間隔 3 秒輪詢，僅同步 State=="device" 的在線設備。
-func pollDirectDevices(ctx context.Context, addr, token string, fm *bridge.ForwardManager) {
-	ticker := time.NewTicker(3 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			devices := queryDirectDevicesQuiet(addr, token)
-			bridgeDevices := make([]bridge.DeviceInfo, 0)
-			for _, d := range devices {
-				if d.State == "device" {
-					bridgeDevices = append(bridgeDevices, bridge.DeviceInfo{
-						Serial: d.Serial, State: d.State,
-					})
-				}
-			}
-			fm.UpdateDevices(bridgeDevices)
-		}
-	}
 }
 
 // pollDirectDevicesDPM 定期查詢遠端設備清單並更新 DeviceProxyManager。
@@ -880,7 +865,7 @@ func autoADBConnect(adbAddr, target string) {
 //  3. 使用者手動將邀請碼傳給被控端，貼入回應碼
 //  4. HandleAnswer → 等待 P2P 連線建立
 //  5. 啟動 control channel 讀取迴圈（接收設備清單）
-//  6. 建立 ADB proxy listener → ForwardManager.HandleProxyConn 多工轉發
+//  6. 建立 DeviceProxyManager（每台設備獨立 proxy port）
 func cmdConnectPair(args []string) {
 	fs := flag.NewFlagSet("p2p connect", flag.ExitOnError)
 	stunURLs := fs.String("stun", envStr("RADB_STUN_URLS", "stun:stun.l.google.com:19302"), "STUN Server URL")
@@ -988,21 +973,13 @@ func cmdConnectPair(args []string) {
 
 	// 建立 per-device proxy 管理器
 	adbAddr := fmt.Sprintf("127.0.0.1:%d", *adbPort)
+	onReady, onRemoved := cliDeviceProxyCallbacks(adbAddr)
 	dpm := bridge.NewDeviceProxyManager(bridge.DeviceProxyConfig{
 		PortStart: *portStart,
 		OpenCh:    pm.OpenChannel,
 		ADBAddr:   adbAddr,
-		OnReady: func(serial string, port int) {
-			fmt.Fprintf(os.Stderr, "  設備 %s → 127.0.0.1:%d\n", serial, port)
-			go autoADBConnect(adbAddr, fmt.Sprintf("127.0.0.1:%d", port))
-		},
-		OnRemoved: func(serial string, port int) {
-			fmt.Fprintf(os.Stderr, "  設備 %s 已離線（port %d 已釋放）\n", serial, port)
-			go func() {
-				dialer := adb.NewDialer(adbAddr)
-				dialer.Disconnect(fmt.Sprintf("127.0.0.1:%d", port))
-			}()
-		},
+		OnReady:   onReady,
+		OnRemoved: onRemoved,
 	})
 	defer dpm.Close()
 
@@ -1176,7 +1153,9 @@ func buildICEConfig(stunURLs, turnMode, turnURL, turnUser, turnPass string) webr
 
 	switch turnMode {
 	case "cloudflare":
-		servers, err := webrtc.FetchCloudflareTURN(context.Background(), nil)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		servers, err := webrtc.FetchCloudflareTURN(ctx, nil)
 		if err != nil {
 			slog.Warn("Cloudflare TURN 取得失敗，僅使用 STUN", "error", err)
 		} else {
