@@ -98,6 +98,7 @@ func NewPeerManager(config ICEConfig) (*PeerManager, error) {
 			pionwebrtc.PeerConnectionStateClosed:
 			pm.mu.Lock()
 			fn := pm.onDisconnectFn
+			pm.onDisconnectFn = nil // 確保只觸發一次，避免 Disconnected→Failed→Closed 連續轉換重複呼叫
 			pm.mu.Unlock()
 			if fn != nil {
 				fn()
@@ -215,18 +216,21 @@ func (pm *PeerManager) HandleOffer(sdp string) (string, error) {
 	return local.SDP, nil
 }
 
-// waitGatheringComplete 等待 ICE candidate 蒐集完成（不設逾時）。
+// defaultGatherTimeout 是 ICE gathering 的最大等待時間。
+// 當 STUN/TURN server 全不可達時，gathering 可能永遠不完成，
+// 此上限確保所有 CreateOffer/HandleOffer 路徑不會永久阻塞。
+const defaultGatherTimeout = 30 * time.Second
+
+// waitGatheringComplete 等待 ICE candidate 蒐集完成，最多等待 defaultGatherTimeout。
 func (pm *PeerManager) waitGatheringComplete(phase string) {
-	start := time.Now()
-	<-pionwebrtc.GatheringCompletePromise(pm.pc)
-	slog.Debug("ICE gathering complete", "phase", phase, "elapsed_ms", time.Since(start).Milliseconds())
+	pm.waitGatheringCompleteWithTimeout(phase, defaultGatherTimeout)
 }
 
-// waitGatheringCompleteWithTimeout 等待 ICE candidate 蒐集，逾時時回傳目前已蒐集的結果。
+// waitGatheringCompleteWithTimeout 等待 ICE candidate 蒐集，逾時或 PeerManager 關閉時提前返回。
+// timeout <= 0 時使用 defaultGatherTimeout 作為上限。
 func (pm *PeerManager) waitGatheringCompleteWithTimeout(phase string, timeout time.Duration) {
 	if timeout <= 0 {
-		pm.waitGatheringComplete(phase)
-		return
+		timeout = defaultGatherTimeout
 	}
 
 	start := time.Now()
@@ -237,6 +241,12 @@ func (pm *PeerManager) waitGatheringCompleteWithTimeout(phase string, timeout ti
 	select {
 	case <-done:
 		slog.Debug("ICE gathering complete", "phase", phase, "elapsed_ms", time.Since(start).Milliseconds())
+	case <-pm.doneCh:
+		slog.Warn(
+			"ICE gathering aborted: peer closed",
+			"phase", phase,
+			"elapsed_ms", time.Since(start).Milliseconds(),
+		)
 	case <-timer.C:
 		slog.Warn(
 			"ICE gathering timeout; proceeding with partial candidates",
