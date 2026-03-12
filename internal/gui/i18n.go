@@ -110,6 +110,9 @@ type pairMsg struct {
 	ErrInvalidOfferFmt  string // "無效邀請碼: %v"
 	ErrHandleOfferFmt   string // "處理 Offer 失敗: %v"
 	ErrEncodeAnswerFmt  string // "編碼回應碼失敗: %v"
+
+	// 警告
+	WarnTURNUnavailable string // "Cloudflare 中繼服務無法使用，若網路環境受限可能無法連線"
 }
 
 // lanMsg 是「區網直連」分頁的文字。
@@ -128,7 +131,8 @@ type lanMsg struct {
 	StatusPleaseAddr   string // "請填入 Agent 地址"
 	StatusQuerying     string // "查詢設備中..."
 	StatusNoDevices    string // "Agent 上沒有可用設備"
-	StatusConnectedFmt string // "已連線，ADB Proxy: 127.0.0.1:%d"
+	StatusConnectedFmt    string // "已連線，ADB Proxy: 127.0.0.1:%d"
+	StatusConnectedDevFmt string // "已連線，%d 個設備"
 
 	// 錯誤
 	ErrProxyFmt        string // "建立 proxy 失敗: %v"
@@ -322,6 +326,8 @@ var messagesZhTW = Messages{
 		ErrInvalidOfferFmt:  "無效邀請碼: %v",
 		ErrHandleOfferFmt:   "處理 Offer 失敗: %v",
 		ErrEncodeAnswerFmt:  "編碼回應碼失敗: %v",
+
+		WarnTURNUnavailable: "Cloudflare 中繼服務無法使用，若網路環境受限可能無法連線",
 	},
 	LAN: lanMsg{
 		ScanLAN:  "掃描 LAN",
@@ -335,7 +341,8 @@ var messagesZhTW = Messages{
 		StatusPleaseAddr:   "請填入 Agent 地址",
 		StatusQuerying:     "查詢設備中...",
 		StatusNoDevices:    "Agent 上沒有可用設備",
-		StatusConnectedFmt: "已連線，ADB Proxy: 127.0.0.1:%d",
+		StatusConnectedFmt:    "已連線，ADB Proxy: 127.0.0.1:%d",
+		StatusConnectedDevFmt: "已連線，%d 個設備",
 
 		ErrProxyFmt:        "建立 proxy 失敗: %v",
 		ErrConnectFmt:      "連線失敗: %v",
@@ -483,6 +490,8 @@ var messagesEN = Messages{
 		ErrInvalidOfferFmt:  "Invalid invite code: %v",
 		ErrHandleOfferFmt:   "Failed to process Offer: %v",
 		ErrEncodeAnswerFmt:  "Failed to encode response code: %v",
+
+		WarnTURNUnavailable: "Cloudflare relay unavailable, connection may fail in restricted networks",
 	},
 	LAN: lanMsg{
 		ScanLAN:  "Scan LAN",
@@ -496,7 +505,8 @@ var messagesEN = Messages{
 		StatusPleaseAddr:   "Please enter Agent address",
 		StatusQuerying:     "Querying devices...",
 		StatusNoDevices:    "No available devices on Agent",
-		StatusConnectedFmt: "Connected, ADB Proxy: 127.0.0.1:%d",
+		StatusConnectedFmt:    "Connected, ADB Proxy: 127.0.0.1:%d",
+		StatusConnectedDevFmt: "Connected, %d device(s)",
 
 		ErrProxyFmt:        "Failed to create proxy: %v",
 		ErrConnectFmt:      "Connection failed: %v",

@@ -159,10 +159,14 @@ func eventLoop(w *app.Window) error {
 	// 初始化介面語言（從設定檔或系統偵測）
 	SetLanguage(sp.config.Language)
 
-	// 建立三個分頁，傳入共用設定
-	pt := newPairTab(w, sp.config)
+	// 預先取得 Cloudflare TURN 憑證（背景 goroutine，不阻塞 UI）
+	tc := newTURNCache()
+	tc.startFetch()
+
+	// 建立三個分頁，傳入共用設定與 TURN 快取
+	pt := newPairTab(w, sp.config, tc)
 	lt := newLANTab(w, sp.config)
-	st := newSignalTab(w, sp.config)
+	st := newSignalTab(w, sp.config, tc)
 
 	tabs := &tabBar{
 		items: []tabItem{
@@ -496,7 +500,7 @@ func resolveICEConfig(ctx context.Context, cfg *AppConfig) (webrtc.ICEConfig, er
 
 	switch cfg.TURNMode {
 	case TURNModeCloudflare:
-		servers, err := fetchCloudflareTURN(ctx, nil)
+		servers, err := webrtc.FetchCloudflareTURN(ctx, nil)
 		if err != nil {
 			return ice, fmt.Errorf("Cloudflare TURN: %w", err)
 		}

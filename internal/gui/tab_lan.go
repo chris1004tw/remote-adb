@@ -21,10 +21,8 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"gioui.org/app"
@@ -75,15 +73,8 @@ type lanTab struct {
 	cliStatus string
 	cliCancel context.CancelFunc
 
-	// 單一 ADB proxy（取代舊的 per-device proxy）
-	proxyLn    net.Listener            // 本機 ADB proxy listener
-	proxyPort  int                     // proxy 實際 port
-	remoteAddr string                  // 遠端 directsrv 地址
-	remoteToken string                 // 遠端 token
-	cliDevices []directsrv.DeviceInfo  // 遠端設備清單（connect-service 用）
-
-	// forward listener 管理（委託 bridge.ForwardManager）
-	lanFm *bridge.ForwardManager
+	// per-device proxy 管理器（每台設備獨立 port）
+	dpm *bridge.DeviceProxyManager
 }
 
 // newLANTab 建立並初始化 lanTab，設定各輸入框的預設值。
@@ -94,7 +85,6 @@ func newLANTab(w *app.Window, cfg *AppConfig) *lanTab {
 		config:    cfg,
 		srvStatus: msg().Common.Stopped,
 		cliStatus: msg().Common.Disconnected,
-		lanFm:     bridge.NewForwardManager(),
 	}
 	// 伺服器子模式預設值
 	t.srvTokenEditor.SingleLine = true
@@ -362,8 +352,7 @@ func (t *lanTab) layoutConnect(gtx layout.Context, th *material.Theme) []layout.
 	agents := append([]directsrv.DiscoveredAgent{}, t.agents...)
 	connected := t.connected
 	status := t.cliStatus
-	devices := append([]directsrv.DeviceInfo{}, t.cliDevices...)
-	proxyPort := t.proxyPort
+	dpm := t.dpm
 	t.cliMu.Unlock()
 
 	for len(t.agentBtns) < len(agents) {
@@ -469,17 +458,21 @@ func (t *lanTab) layoutConnect(gtx layout.Context, th *material.Theme) []layout.
 		})
 	}))
 
-	// 已連線設備列表
-	if connected && len(devices) > 0 {
+	// 已連線 per-device 設備列表
+	var entries []bridge.DeviceEntry
+	if connected && dpm != nil {
+		entries = dpm.Entries()
+	}
+	if len(entries) > 0 {
 		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				items := []layout.FlexChild{
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return material.Body2(th, fmt.Sprintf(msg().LAN.ProxyDevFmt, proxyPort, len(devices))).Layout(gtx)
+						return material.Body2(th, fmt.Sprintf(msg().Pair.RemoteDevFmt, len(entries))).Layout(gtx)
 					}),
 				}
-				for _, d := range devices {
-					text := fmt.Sprintf("  %s [%s]", d.Serial, d.State)
+				for _, e := range entries {
+					text := fmt.Sprintf("    %s [device] → 127.0.0.1:%d", e.Serial, e.Port)
 					items = append(items, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						return layout.Inset{Left: unit.Dp(16), Top: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 							lbl := material.Body2(th, text)
@@ -561,49 +554,59 @@ func (t *lanTab) connect() {
 			return
 		}
 
-		// 2. 建立本機 ADB proxy listener
-		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort))
-		if err != nil {
-			t.cliMu.Lock()
-			t.cliStatus = fmt.Sprintf(msg().LAN.ErrProxyFmt, err)
-			t.cliMu.Unlock()
-			t.window.Invalidate()
-			return
-		}
-		actualPort := ln.Addr().(*net.TCPAddr).Port
-
 		ctx, cancel := context.WithCancel(context.Background())
+
+		// 2. 建立 per-device proxy 管理器
+		openCh := makeLANOpenChannel(addr, token)
+		dpm := bridge.NewDeviceProxyManager(bridge.DeviceProxyConfig{
+			PortStart: proxyPort,
+			OpenCh:    openCh,
+			ADBAddr:   fmt.Sprintf("127.0.0.1:%d", t.config.ADBPort),
+			OnReady: func(serial string, port int) {
+				slog.Info("LAN device proxy ready", "serial", serial, "port", port)
+				t.window.Invalidate()
+				// 自動 adb connect
+				go func() {
+					time.Sleep(300 * time.Millisecond)
+					dialer := adb.NewDialer("")
+					target := fmt.Sprintf("127.0.0.1:%d", port)
+					if err := dialer.Connect(target); err != nil {
+						slog.Debug("auto adb connect failed", "target", target, "error", err)
+					}
+				}()
+			},
+			OnRemoved: func(serial string, port int) {
+				slog.Info("LAN device proxy removed", "serial", serial, "port", port)
+				t.window.Invalidate()
+				// 自動 adb disconnect
+				go func() {
+					dialer := adb.NewDialer("")
+					dialer.Disconnect(fmt.Sprintf("127.0.0.1:%d", port))
+				}()
+			},
+		})
+
+		// 初始設備
+		bridgeDevices := make([]bridge.DeviceInfo, 0, len(devices))
+		for _, d := range devices {
+			bridgeDevices = append(bridgeDevices, bridge.DeviceInfo{
+				Serial: d.Serial, State: d.State,
+			})
+		}
+		dpm.UpdateDevices(bridgeDevices)
 
 		t.cliMu.Lock()
 		t.connected = true
 		t.cliCancel = cancel
-		t.proxyLn = ln
-		t.proxyPort = actualPort
-		t.remoteAddr = addr
-		t.remoteToken = token
-		t.cliDevices = devices
-		t.cliStatus = fmt.Sprintf(msg().LAN.StatusConnectedFmt, actualPort)
+		t.dpm = dpm
+		t.cliStatus = fmt.Sprintf(msg().LAN.StatusConnectedDevFmt, len(devices))
 		t.cliMu.Unlock()
 		t.window.Invalidate()
 
-		slog.Info("LAN proxy started", "port", actualPort, "remote", addr, "devices", len(devices))
+		slog.Info("LAN per-device proxy started", "remote", addr, "devices", len(devices))
 
-		// 3. 接受連線，智慧協定偵測
-		go t.lanProxyAccept(ctx, ln)
-
-		// 4. 定期輪詢設備清單
+		// 3. 定期輪詢設備清單
 		go t.pollRemoteDevices(ctx, addr, token)
-
-		// 5. 自動 adb connect（讓本機 ADB 知道此 proxy）
-		go func() {
-			dialer := adb.NewDialer("")
-			target := fmt.Sprintf("127.0.0.1:%d", actualPort)
-			if err := dialer.Connect(target); err != nil {
-				slog.Debug("auto adb connect failed", "target", target, "error", err)
-			} else {
-				slog.Debug("auto adb connect succeeded", "target", target)
-			}
-		}()
 	}()
 }
 
@@ -639,92 +642,11 @@ func (t *lanTab) queryDevices(addr, token string) ([]directsrv.DeviceInfo, error
 	return online, nil
 }
 
-// lanProxyAccept 接受本機 proxy 連線，智慧偵測協定類型。
-func (t *lanTab) lanProxyAccept(ctx context.Context, ln net.Listener) {
-	var connID atomic.Int64
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		id := connID.Add(1)
-		go t.lanHandleConn(ctx, conn, id)
-	}
-}
 
-// lanHandleConn 處理單一 proxy 連線。
-// 讀取前 4 bytes 判斷協定：CNXN → deviceBridge，hex → ADB server 橋接。
-func (t *lanTab) lanHandleConn(ctx context.Context, conn net.Conn, id int64) {
-	defer conn.Close()
-
-	var peek [4]byte
-	if _, err := io.ReadFull(conn, peek[:]); err != nil {
-		slog.Debug("LAN proxy: failed to read first 4 bytes", "id", id, "error", err)
-		return
-	}
-
-	openCh := t.makeOpenChannel()
-
-	// CNXN → device transport
-	if string(peek[:]) == "CNXN" {
-		t.cliMu.Lock()
-		var serial string
-		for _, d := range t.cliDevices {
-			if d.State == "device" {
-				serial = d.Serial
-				break
-			}
-		}
-		t.cliMu.Unlock()
-		bridge.StartDeviceTransport(ctx, conn, peek[:], openCh, serial, "", nil)
-		return
-	}
-
-	// hex prefix → ADB server 協定
-	n, err := strconv.ParseInt(string(peek[:]), 16, 32)
-	if err != nil {
-		slog.Debug("LAN proxy: invalid ADB request", "id", id, "first4", string(peek[:]))
-		return
-	}
-	cmdBuf := make([]byte, n)
-	if _, err := io.ReadFull(conn, cmdBuf); err != nil {
-		slog.Debug("LAN proxy: failed to read command", "id", id, "error", err)
-		return
-	}
-	raw := append(peek[:], cmdBuf...)
-	cmd := string(cmdBuf)
-
-	slog.Debug("LAN proxy ← smart socket", "id", id, "cmd", cmd)
-
-	// forward 攔截（使用 lanTab 的 ForwardManager）
-	if t.lanHandleForwardInterception(ctx, conn, cmd, openCh) {
-		return
-	}
-
-	// 一般 ADB 命令：connect-server 橋接到遠端 ADB server
-	ch, err := openCh(fmt.Sprintf("adb-server/%d", id))
-	if err != nil {
-		slog.Debug("LAN proxy: connect-server failed", "id", id, "error", err)
-		return
-	}
-	defer ch.Close()
-
-	if _, err := ch.Write(raw); err != nil {
-		slog.Debug("LAN proxy: failed to write command", "id", id, "error", err)
-		return
-	}
-
-	bridge.BiCopy(ctx, ch, conn)
-}
-
-// makeOpenChannel 建立 LAN 用的 bridge.OpenChannelFunc。
+// makeLANOpenChannel 建立 LAN 用的 bridge.OpenChannelFunc。
 // 根據 label 前綴路由到不同的 directsrv action。
-func (t *lanTab) makeOpenChannel() bridge.OpenChannelFunc {
-	t.cliMu.Lock()
-	addr := t.remoteAddr
-	token := t.remoteToken
-	t.cliMu.Unlock()
-
+// 獨立函式（不依賴 lanTab），供 DeviceProxyManager 和 CLI 共用。
+func makeLANOpenChannel(addr, token string) bridge.OpenChannelFunc {
 	return func(label string) (io.ReadWriteCloser, error) {
 		switch {
 		case strings.HasPrefix(label, "adb-server/"):
@@ -755,45 +677,8 @@ func (t *lanTab) makeOpenChannel() bridge.OpenChannelFunc {
 	}
 }
 
-// lanHandleForwardInterception 處理 LAN 模式的 forward 攔截。
-// 委託 bridge.ForwardManager 處理 forward/killforward/list-forward 命令，
-// 但設備解析使用 lanTab 自己的 cliDevices（directsrv.DeviceInfo）。
-func (t *lanTab) lanHandleForwardInterception(ctx context.Context, conn net.Conn, cmd string, openCh bridge.OpenChannelFunc) bool {
-	// forward 命令：需要先同步設備到 ForwardManager 再委託處理
-	if fc := bridge.ParseForwardCmd(cmd); fc != nil {
-		// 同步 lanTab 的 cliDevices 到 ForwardManager
-		t.syncDevicesToFm()
-		t.lanFm.HandleForward(ctx, conn, fc, openCh)
-		return true
-	}
-	if spec, ok := bridge.ParseKillForwardCmd(cmd); ok {
-		t.lanFm.HandleKillForward(conn, spec)
-		return true
-	}
-	if bridge.IsKillForwardAll(cmd) {
-		t.lanFm.HandleKillForwardAll(conn)
-		return true
-	}
-	if bridge.IsListForward(cmd) {
-		t.lanFm.HandleListForward(conn)
-		return true
-	}
-	return false
-}
 
-// syncDevicesToFm 將 lanTab 的 cliDevices（directsrv.DeviceInfo）同步到 ForwardManager。
-// ForwardManager 使用 bridge.DeviceInfo，需要轉換類型。
-func (t *lanTab) syncDevicesToFm() {
-	t.cliMu.Lock()
-	devs := make([]bridge.DeviceInfo, len(t.cliDevices))
-	for i, d := range t.cliDevices {
-		devs[i] = bridge.DeviceInfo{Serial: d.Serial, State: d.State}
-	}
-	t.cliMu.Unlock()
-	t.lanFm.UpdateDevices(devs)
-}
-
-// pollRemoteDevices 定期查詢遠端設備清單並更新 UI。
+// pollRemoteDevices 定期查詢遠端設備清單並透過 DeviceProxyManager 更新 per-device proxy。
 func (t *lanTab) pollRemoteDevices(ctx context.Context, addr, token string) {
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
@@ -807,40 +692,37 @@ func (t *lanTab) pollRemoteDevices(ctx context.Context, addr, token string) {
 				slog.Debug("LAN device polling failed", "error", err)
 				continue
 			}
+			bridgeDevices := make([]bridge.DeviceInfo, 0, len(devices))
+			for _, d := range devices {
+				bridgeDevices = append(bridgeDevices, bridge.DeviceInfo{
+					Serial: d.Serial, State: d.State,
+				})
+			}
 			t.cliMu.Lock()
-			t.cliDevices = devices
+			dpm := t.dpm
 			t.cliMu.Unlock()
+			if dpm != nil {
+				dpm.UpdateDevices(bridgeDevices)
+			}
 			t.window.Invalidate()
 		}
 	}
 }
 
-// disconnect 中斷連線，清理 proxy 和 forward listeners。
+// disconnect 中斷連線，關閉 DeviceProxyManager（內部觸發 OnRemoved 自動 adb disconnect）。
 func (t *lanTab) disconnect() {
-	// 先清理 forward listeners（ForwardManager 用獨立鎖）
-	t.lanFm.CloseFwdListeners()
-
 	t.cliMu.Lock()
 	if t.cliCancel != nil {
 		t.cliCancel()
 	}
-	if t.proxyLn != nil {
-		t.proxyLn.Close()
-		t.proxyLn = nil
-	}
-	port := t.proxyPort
-	t.proxyPort = 0
+	dpm := t.dpm
+	t.dpm = nil
 	t.connected = false
-	t.cliDevices = nil
 	t.cliStatus = msg().LAN.StatusDisconnected
 	t.cliMu.Unlock()
 
-	// 自動 adb disconnect
-	if port > 0 {
-		go func() {
-			dialer := adb.NewDialer("")
-			dialer.Disconnect(fmt.Sprintf("127.0.0.1:%d", port))
-		}()
+	if dpm != nil {
+		dpm.Close()
 	}
 
 	t.window.Invalidate()

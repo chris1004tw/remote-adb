@@ -30,7 +30,6 @@ import (
 	"image/color"
 	"io"
 	"log/slog"
-	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -66,10 +65,10 @@ type pairTab struct {
 	isServer  bool // false=客戶端, true=伺服器
 
 	// --- 客戶端模式 ---
-	cliGenOfferBtn     widget.Clickable
-	cliOfferOutEditor  widget.Editor // 顯示邀請碼（唯讀）
-	cliAnswerInEditor  widget.Editor // 貼入回應碼
-	cliApplyBtn        widget.Clickable
+	cliGenOfferBtn    widget.Clickable
+	cliOfferOutEditor widget.Editor // 顯示邀請碼（唯讀）
+	cliAnswerInEditor widget.Editor // 貼入回應碼
+	cliApplyBtn       widget.Clickable
 
 	// --- 被控模式 ---
 	srvOfferInEditor   widget.Editor // 貼入邀請碼
@@ -91,13 +90,8 @@ type pairTab struct {
 	// 伺服器模式：設備清單
 	srvDevices []bridge.DeviceInfo
 
-	// 客戶端模式
-	proxyPort int          // ADB server proxy 實際 port
-	proxyLn   net.Listener // proxy TCP listener
-	fm        *bridge.ForwardManager // 設備清單 + forward listener 管理（取代舊的 cliDevices/deviceReadyCh/fwdListeners）
-
-	// 自動 adb connect（客戶端模式）
-	autoConnected bool
+	// 客戶端模式：per-device proxy 管理器（每台設備獨立 port）
+	dpm *bridge.DeviceProxyManager
 
 	// 遠端資訊（客戶端模式，mutex 保護）
 	remoteHostname string // 遠端主機名稱（via control channel）
@@ -109,6 +103,12 @@ type pairTab struct {
 	// 是否透過 TURN 中繼連線（mutex 保護）
 	relayed bool
 
+	// TURN 憑證快取（啟動時預先取得）
+	tc *turnCache
+
+	// TURN 不可用警告（mutex 保護）
+	turnWarning string
+
 	// 結束連線 / 清除按鈕
 	disconnectBtn widget.Clickable
 	clearBtn      widget.Clickable
@@ -119,12 +119,12 @@ type pairTab struct {
 
 // newPairTab 建立並初始化 pairTab，設定各輸入框的預設值。
 // 預設顯示主控模式（isServer=false）。
-func newPairTab(w *app.Window, cfg *AppConfig) *pairTab {
+func newPairTab(w *app.Window, cfg *AppConfig, tc *turnCache) *pairTab {
 	t := &pairTab{
 		window: w,
 		config: cfg,
+		tc:     tc,
 		status: msg().Pair.StatusNotStarted,
-		fm:     bridge.NewForwardManager(),
 	}
 	// 客戶端模式
 	t.cliOfferOutEditor.ReadOnly = true
@@ -143,6 +143,7 @@ func (t *pairTab) layout(gtx layout.Context, th *material.Theme) layout.Dimensio
 	isServer := t.isServer
 	status := t.status
 	connected := t.connected
+	turnWarning := t.turnWarning
 	t.mu.Unlock()
 
 	// 自動複製到剪貼簿
@@ -219,6 +220,15 @@ func (t *pairTab) layout(gtx layout.Context, th *material.Theme) layout.Dimensio
 					})
 				})
 
+				// TURN 不可用警告（橘色文字）
+				if turnWarning != "" {
+					widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
+						return layout.Inset{Top: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							return statusText(gtx, th, turnWarning, color.NRGBA{R: 255, G: 152, B: 0, A: 255})
+						})
+					})
+				}
+
 				// 可捲動的清單
 				return material.List(th, &t.list).Layout(gtx, len(widgets), func(gtx layout.Context, i int) layout.Dimensions {
 					return widgets[i](gtx)
@@ -238,13 +248,12 @@ func (t *pairTab) layout(gtx layout.Context, th *material.Theme) layout.Dimensio
 // 邀請碼產生後會自動複製到剪貼簿；回應碼貼入後自動偵測變更並觸發連線。
 func (t *pairTab) layoutClientWidgets(gtx layout.Context, th *material.Theme) []layout.Widget {
 	t.mu.Lock()
-	proxyPort := t.proxyPort
 	connected := t.connected
 	hostname := t.remoteHostname
 	remoteAddr := t.remoteAddr
 	relayed := t.relayed
+	dpm := t.dpm
 	t.mu.Unlock()
-	devices := t.fm.OnlineDevices()
 
 	// 已連線：只顯示連線資訊 + 設備清單 + 結束連線按鈕
 	if connected {
@@ -260,13 +269,10 @@ func (t *pairTab) layoutClientWidgets(gtx layout.Context, th *material.Theme) []
 			widgets = append(widgets, relayBanner(th))
 		}
 
-		if proxyPort > 0 {
+		// 延遲顯示
+		if latency > 0 {
 			widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
-				proxyText := fmt.Sprintf("ADB Proxy: 127.0.0.1:%d", proxyPort)
-				if latency > 0 {
-					proxyText += fmt.Sprintf("  (%d ms)", latency)
-				}
-				lbl := material.Body2(th, proxyText)
+				lbl := material.Body2(th, fmt.Sprintf("RTT: %d ms", latency))
 				lbl.Font.Weight = 700
 				return lbl.Layout(gtx)
 			})
@@ -292,21 +298,23 @@ func (t *pairTab) layoutClientWidgets(gtx layout.Context, th *material.Theme) []
 			})
 		}
 
-		if len(devices) > 0 {
+		// per-device 設備列表（每台設備顯示各自的 proxy port）
+		var entries []bridge.DeviceEntry
+		if dpm != nil {
+			entries = dpm.Entries()
+		}
+		if len(entries) > 0 {
 			widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
 				return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					return material.Body2(th, fmt.Sprintf(msg().Pair.RemoteDevFmt, len(devices))).Layout(gtx)
+					return material.Body2(th, fmt.Sprintf(msg().Pair.RemoteDevFmt, len(entries))).Layout(gtx)
 				})
 			})
-			for _, d := range devices {
-				text := fmt.Sprintf("  %s [%s] → 127.0.0.1:%d", d.Serial, d.State, proxyPort)
-				state := d.State
+			for _, e := range entries {
+				text := fmt.Sprintf("    %s [device] → 127.0.0.1:%d", e.Serial, e.Port)
 				widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
 					return layout.Inset{Left: unit.Dp(16), Top: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 						lbl := material.Body2(th, text)
-						if state == "device" {
-							lbl.Color = color.NRGBA{R: 76, G: 175, B: 80, A: 255}
-						}
+						lbl.Color = color.NRGBA{R: 76, G: 175, B: 80, A: 255}
 						return lbl.Layout(gtx)
 					})
 				})
@@ -506,10 +514,18 @@ func (t *pairTab) clientGenerateOffer() {
 	t.window.Invalidate()
 
 	go func() {
-		iceConfig, err := resolveICEConfig(context.Background(), t.config)
-		if err != nil {
-			slog.Warn("failed to resolve ICE config, falling back to STUN only", "error", err)
-			iceConfig = parseICEConfig(t.config)
+		iceConfig := parseICEConfig(t.config)
+		if t.config.TURNMode == TURNModeCloudflare {
+			servers, warning := t.tc.getServers(2 * time.Second)
+			if warning != "" {
+				slog.Warn("Cloudflare TURN unavailable for offer generation", "warning", warning)
+				t.mu.Lock()
+				t.turnWarning = warning
+				t.mu.Unlock()
+				t.window.Invalidate()
+			} else {
+				iceConfig.TURNServers = servers
+			}
 		}
 
 		pm, err := webrtc.NewPeerManager(iceConfig)
@@ -601,45 +617,34 @@ func (t *pairTab) clientApplyAnswer() {
 			return
 		}
 
-		if err := pm.HandleAnswer(bridge.CompactToSDP(answer)); err != nil {
-			t.mu.Lock()
-			t.status = fmt.Sprintf(msg().Pair.ErrHandleAnswerFmt, err)
-			t.mu.Unlock()
-			t.window.Invalidate()
-			return
-		}
-
-		// 建立 ADB server proxy TCP listener
-		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort))
-		if err != nil {
-			t.mu.Lock()
-			t.status = fmt.Sprintf(msg().Pair.ErrProxyListenerFmt, err)
-			t.mu.Unlock()
-			t.window.Invalidate()
-			return
-		}
-		actualPort := ln.Addr().(*net.TCPAddr).Port
-
-		ctx, cancel := context.WithCancel(context.Background())
-
+		// 先註冊回呼再啟動 ICE，避免 LAN 環境下 ICE 在毫秒內完成導致回呼未觸發
 		pm.OnDisconnect(func() {
+			// 連線斷開時必須釋放本機 per-device proxy，
+			// 否則 adb devices 仍會看到 127.0.0.1:5555/5556，但實際 DataChannel 已失效，
+			// 後續 adb shell/scrcpy 會持續回傳 "error: closed"。
 			t.mu.Lock()
-			port := t.proxyPort
-			wasConnected := t.autoConnected
-			t.autoConnected = false
+			cancel := t.cancel
+			dpm := t.dpm
+			control := t.controlCh
+			t.cancel = nil
+			t.dpm = nil
+			t.controlCh = nil
+			t.pm = nil
 			t.status = msg().Pair.StatusP2PDisconnected
 			t.connected = false
 			t.relayed = false
 			t.mu.Unlock()
-			t.window.Invalidate()
 
-			// 自動 adb disconnect
-			if wasConnected && port > 0 {
-				go func() {
-					dialer := adb.NewDialer("")
-					dialer.Disconnect(fmt.Sprintf("127.0.0.1:%d", port))
-				}()
+			if cancel != nil {
+				cancel()
 			}
+			if dpm != nil {
+				dpm.Close()
+			}
+			if control != nil {
+				control.Close()
+			}
+			t.window.Invalidate()
 		})
 
 		pm.OnConnected(func(relayed bool) {
@@ -652,49 +657,70 @@ func (t *pairTab) clientApplyAnswer() {
 			t.window.Invalidate()
 		})
 
+		if err := pm.HandleAnswer(bridge.CompactToSDP(answer)); err != nil {
+			pm.Close() // 清理 ICE agent、DTLS transport、UDP socket
+			t.mu.Lock()
+			t.pm = nil
+			t.controlCh = nil
+			t.status = fmt.Sprintf(msg().Pair.ErrHandleAnswerFmt, err)
+			t.mu.Unlock()
+			t.window.Invalidate()
+			return
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		// 建立 per-device proxy 管理器（每台設備獨立 port）
+		dpm := bridge.NewDeviceProxyManager(bridge.DeviceProxyConfig{
+			PortStart: proxyPort,
+			OpenCh:    pm.OpenChannel,
+			ADBAddr:   fmt.Sprintf("127.0.0.1:%d", t.config.ADBPort),
+			OnReady: func(serial string, port int) {
+				slog.Info("device proxy ready", "serial", serial, "port", port)
+				t.window.Invalidate()
+				// 自動 adb connect
+				go func() {
+					time.Sleep(300 * time.Millisecond)
+					dialer := adb.NewDialer("")
+					target := fmt.Sprintf("127.0.0.1:%d", port)
+					if err := dialer.Connect(target); err != nil {
+						slog.Debug("auto adb connect failed", "target", target, "error", err)
+					}
+				}()
+			},
+			OnRemoved: func(serial string, port int) {
+				slog.Info("device proxy removed", "serial", serial, "port", port)
+				t.window.Invalidate()
+				// 自動 adb disconnect
+				go func() {
+					dialer := adb.NewDialer("")
+					dialer.Disconnect(fmt.Sprintf("127.0.0.1:%d", port))
+				}()
+			},
+		})
+
 		t.mu.Lock()
 		t.connected = true
 		t.cancel = cancel
-		t.proxyPort = actualPort
-		t.proxyLn = ln
-		t.fm = bridge.NewForwardManager() // 設備清單 + forward listener 管理
-		t.status = fmt.Sprintf(msg().Pair.StatusP2PProxyFmt, actualPort)
+		t.dpm = dpm
+		t.status = msg().Pair.StatusP2PConnected
 		t.mu.Unlock()
 		t.window.Invalidate()
-
-		// 啟動 ADB server proxy（每個 TCP 連線建立獨立 DataChannel）
-		go t.adbServerProxy(ctx, ln, pm)
 
 		// 啟動 RTT 延遲輪詢
 		go t.rttPollLoop(ctx, pm)
 
-		// 啟動 control channel 讀取迴圈（僅更新 UI 設備清單）
+		// 啟動 control channel 讀取迴圈（驅動 DeviceProxyManager 的設備增減）
 		t.controlReadLoop(ctx, controlCh)
 	}()
 }
 
-// adbServerProxy 接受本機 TCP 連線。
-// 每個連線由 handleProxyConn 處理：根據前 4 bytes 判斷是 device transport（CNXN）
-// 還是 ADB server 協定（hex 長度前綴），再決定轉發策略。
-func (t *pairTab) adbServerProxy(ctx context.Context, ln net.Listener, pm *webrtc.PeerManager) {
-	var connID atomic.Int64
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		id := connID.Add(1)
-		go t.fm.HandleProxyConn(ctx, conn, pm.OpenChannel, id)
-	}
-}
-
 // controlReadLoop 持續讀取 control channel 的 JSON 訊息，更新客戶端 UI。
-// 委託 bridge.ControlReadLoop 解析 JSON，透過 callback 更新 GUI 狀態和 ForwardManager。
+// 委託 bridge.ControlReadLoop 解析 JSON，透過 callback 驅動 DeviceProxyManager 的設備增減。
 //
 // 訊息類型處理：
 //   - "hello"：記錄遠端主機名稱（顯示在 UI 上）
-//   - "devices"：委託 ForwardManager.UpdateDevices 管理設備清單和 CNXN 等待信號，
-//     若首次偵測到在線設備則自動執行 `adb connect`
+//   - "devices"：委託 DeviceProxyManager.UpdateDevices 管理 per-device proxy
 func (t *pairTab) controlReadLoop(ctx context.Context, controlCh io.ReadWriteCloser) {
 	err := bridge.ControlReadLoop(ctx, controlCh, func(cm bridge.CtrlMessage) {
 		switch cm.Type {
@@ -705,41 +731,25 @@ func (t *pairTab) controlReadLoop(ctx context.Context, controlCh io.ReadWriteClo
 			t.window.Invalidate()
 
 		case "devices":
-			// 委託 ForwardManager 管理設備清單和 deviceReadyCh
-			t.fm.UpdateDevices(cm.Devices)
+			t.mu.Lock()
+			dpm := t.dpm
+			t.mu.Unlock()
 
-			// 統計在線設備數
+			if dpm != nil {
+				dpm.UpdateDevices(cm.Devices)
+			}
+
+			// 更新狀態文字
 			count := 0
-			hasDevice := false
 			for _, d := range cm.Devices {
 				if d.State == "device" {
 					count++
-					hasDevice = true
 				}
 			}
-
 			t.mu.Lock()
-			shouldConnect := hasDevice && !t.autoConnected && t.proxyPort > 0
-			if shouldConnect {
-				t.autoConnected = true
-			}
-			proxyPort := t.proxyPort
-			t.status = fmt.Sprintf(msg().Pair.StatusP2PDevicesProxy, count, proxyPort)
+			t.status = fmt.Sprintf(msg().Pair.StatusP2PDevicesFmt, count)
 			t.mu.Unlock()
 			t.window.Invalidate()
-
-			// 自動 adb connect：讓設備出現在 `adb devices`
-			if shouldConnect {
-				go func() {
-					dialer := adb.NewDialer("")
-					target := fmt.Sprintf("127.0.0.1:%d", proxyPort)
-					if err := dialer.Connect(target); err != nil {
-						slog.Debug("auto adb connect failed", "target", target, "error", err)
-					} else {
-						slog.Debug("auto adb connect succeeded", "target", target)
-					}
-				}()
-			}
 		}
 	})
 	if err != nil {
@@ -807,10 +817,18 @@ func (t *pairTab) serverProcessOffer() {
 			return
 		}
 
-		iceConfig, err := resolveICEConfig(context.Background(), t.config)
-		if err != nil {
-			slog.Warn("failed to resolve ICE config, falling back to STUN only", "error", err)
-			iceConfig = parseICEConfig(t.config)
+		iceConfig := parseICEConfig(t.config)
+		if t.config.TURNMode == TURNModeCloudflare {
+			servers, warning := t.tc.getServers(2 * time.Second)
+			if warning != "" {
+				slog.Warn("Cloudflare TURN unavailable for answer generation", "warning", warning)
+				t.mu.Lock()
+				t.turnWarning = warning
+				t.mu.Unlock()
+				t.window.Invalidate()
+			} else {
+				iceConfig.TURNServers = servers
+			}
 		}
 		pm, err := webrtc.NewPeerManager(iceConfig)
 		if err != nil {
@@ -976,44 +994,43 @@ func (t *pairTab) disconnect() {
 	t.mu.Lock()
 	t.remoteHostname = ""
 	t.remoteAddr = ""
+	t.turnWarning = ""
 	t.status = msg().Pair.StatusNotStarted
 	t.mu.Unlock()
 	t.window.Invalidate()
 }
 
 func (t *pairTab) cleanup() {
-	// 先關閉 forward listeners（ForwardManager 用獨立鎖）
-	if t.fm != nil {
-		t.fm.CloseFwdListeners()
-	}
-
+	// 鎖內僅擷取資源引用並重置狀態，避免持鎖時呼叫可能阻塞的 Close()
 	t.mu.Lock()
-	port := t.proxyPort
-	wasConnected := t.autoConnected
-	if t.cancel != nil {
-		t.cancel()
-	}
-	if t.proxyLn != nil {
-		t.proxyLn.Close()
-		t.proxyLn = nil
-	}
-	if t.controlCh != nil {
-		t.controlCh.Close()
-		t.controlCh = nil
-	}
-	if t.pm != nil {
-		t.pm.Close()
-	}
+	cancel := t.cancel
+	dpm := t.dpm
+	controlCh := t.controlCh
+	pm := t.pm
+	t.cancel = nil
+	t.dpm = nil
+	t.controlCh = nil
+	t.pm = nil
 	t.connected = false
 	t.relayed = false
-	t.proxyPort = 0
-	t.autoConnected = false
 	t.srvDevices = nil
 	t.mu.Unlock()
 
-	// 清理 adb connect
-	if wasConnected && port > 0 {
-		dialer := adb.NewDialer("")
-		dialer.Disconnect(fmt.Sprintf("127.0.0.1:%d", port))
+	// 鎖外依序關閉資源：
+	// 1. cancel 停止背景 goroutine（非阻塞）
+	// 2. dpm.Close() 停止所有 per-device proxy（含 auto adb disconnect）
+	// 3. pm.Close() → close(doneCh)，解除 controlCh.Close() 的 pendingChannel.wait() 阻塞
+	// 4. controlCh.Close() 此時 wait() 已可立即回傳
+	if cancel != nil {
+		cancel()
+	}
+	if dpm != nil {
+		dpm.Close()
+	}
+	if pm != nil {
+		pm.Close()
+	}
+	if controlCh != nil {
+		controlCh.Close()
 	}
 }

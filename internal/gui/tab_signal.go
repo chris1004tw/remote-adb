@@ -56,7 +56,8 @@ const (
 // STUN/TURN 設定來自全域 AppConfig（設定面板管理），不在各子模式中重複輸入。
 type signalTab struct {
 	window *app.Window
-	config *AppConfig // 全域設定（STUN/TURN 等共用設定）
+	config *AppConfig  // 全域設定（STUN/TURN 等共用設定）
+	tc     *turnCache  // TURN 憑證快取（啟動時預先取得）
 	mode   signalMode
 
 	// 子模式按鈕
@@ -106,10 +107,11 @@ type signalTab struct {
 
 // newSignalTab 建立並初始化 signalTab，設定各輸入框的預設值。
 // config 為全域設定（STUN/TURN 等共用設定），由設定面板管理。
-func newSignalTab(w *app.Window, config *AppConfig) *signalTab {
+func newSignalTab(w *app.Window, config *AppConfig, tc *turnCache) *signalTab {
 	t := &signalTab{
 		window:             w,
 		config:             config,
+		tc:                 tc,
 		srvStatus:          msg().Common.Stopped,
 		agentStatus:        msg().Common.Stopped,
 		clientStatus:       msg().Common.Disconnected,
@@ -447,10 +449,14 @@ func (t *signalTab) startSignalAgent() {
 	t.window.Invalidate()
 
 	go func() {
-		iceConfig, err := resolveICEConfig(ctx, t.config)
-		if err != nil {
-			slog.Warn("failed to resolve ICE config, falling back to STUN only", "error", err)
-			iceConfig = parseICEConfig(t.config)
+		iceConfig := parseICEConfig(t.config)
+		if t.config.TURNMode == TURNModeCloudflare {
+			servers, warning := t.tc.getServers(2 * time.Second)
+			if warning != "" {
+				slog.Warn("Cloudflare TURN unavailable for agent", "warning", warning)
+			} else {
+				iceConfig.TURNServers = servers
+			}
 		}
 
 		adbAddr := fmt.Sprintf("127.0.0.1:%d", adbPort)
@@ -800,10 +806,14 @@ func (t *signalTab) startClient() {
 	t.window.Invalidate()
 
 	go func() {
-		iceConfig, err := resolveICEConfig(ctx, t.config)
-		if err != nil {
-			slog.Warn("failed to resolve ICE config, falling back to STUN only", "error", err)
-			iceConfig = parseICEConfig(t.config)
+		iceConfig := parseICEConfig(t.config)
+		if t.config.TURNMode == TURNModeCloudflare {
+			servers, warning := t.tc.getServers(2 * time.Second)
+			if warning != "" {
+				slog.Warn("Cloudflare TURN unavailable for daemon", "warning", warning)
+			} else {
+				iceConfig.TURNServers = servers
+			}
 		}
 
 		cfg := daemon.Config{
