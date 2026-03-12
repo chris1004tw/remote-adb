@@ -226,6 +226,9 @@ jobs:
           echo "TAG=$TAG" >> "$GITHUB_ENV"
           echo "ARCHIVE_NAME=radb-${TAG}-darwin-universal" >> "$GITHUB_ENV"
 
+      - name: 安裝 create-dmg
+        run: brew install create-dmg
+
       - name: 編譯雙架構並合併 Universal Binary
         run: |
           mkdir -p dist

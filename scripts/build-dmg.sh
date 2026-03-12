@@ -12,11 +12,11 @@
 #   2. 將 Info.plist 模板中的版本號替換後寫入
 #   3. 複製 binary
 #   4. 產生圖示：優先使用預建 .icns，否則從 SVG 轉換（需 rsvg-convert + iconutil）
-#   5. 建立含 Applications 捷徑的暫存目錄
-#   6. 使用 hdiutil 產出 DMG
+#   5. 使用 create-dmg 產出帶背景圖與圖示定位的 DMG
 #
-# 環境需求（僅 SVG 轉換時）：
-#   - rsvg-convert（brew install librsvg）
+# 環境需求：
+#   - create-dmg（brew install create-dmg）
+#   - rsvg-convert（brew install librsvg，僅 SVG 轉換時需要）
 #   - iconutil（macOS 內建）
 
 set -euo pipefail
@@ -85,19 +85,26 @@ else
     echo "警告：找不到圖示檔案或 rsvg-convert，將產出無圖示的 .app"
 fi
 
-# --- 5. 建立 DMG 暫存目錄（含 Applications 捷徑） ---
-DMG_STAGING="${STAGING_DIR}/dmg"
-mkdir -p "${DMG_STAGING}"
-cp -r "${APP_DIR}" "${DMG_STAGING}/"
-ln -s /Applications "${DMG_STAGING}/Applications"
+# --- 5. 使用 create-dmg 產出帶背景圖與圖示定位的 DMG ---
+# 背景圖 654×422，箭頭置中於 (327, 200)
+# radb.app 放在箭頭左側，Applications 捷徑放在箭頭右側
+BACKGROUND="${PROJECT_ROOT}/assets/dmg-background.png"
 
-# --- 6. 產出 DMG ---
-hdiutil create \
-    -volname "radb" \
-    -srcfolder "${DMG_STAGING}" \
-    -ov \
-    -format UDZO \
-    "${OUTPUT_DMG}"
+# create-dmg 不接受已存在的輸出檔，先移除
+rm -f "${OUTPUT_DMG}"
+
+create-dmg \
+    --volname "radb" \
+    --background "${BACKGROUND}" \
+    --window-pos 200 120 \
+    --window-size 654 422 \
+    --icon-size 128 \
+    --icon "radb.app" 170 200 \
+    --hide-extension "radb.app" \
+    --app-drop-link 490 200 \
+    --no-internet-enable \
+    "${OUTPUT_DMG}" \
+    "${APP_DIR}"
 
 # --- 清理 ---
 rm -rf "${STAGING_DIR}"
