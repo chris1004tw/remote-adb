@@ -4,14 +4,15 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
 	"testing"
 )
 
 // mockSource 是用於測試的 Source 實作。
 type mockSource struct {
-	release  *ReleaseInfo
-	err      error
-	assets   map[string]string // url -> content
+	release *ReleaseInfo
+	err     error
+	assets  map[string]string // url -> content
 }
 
 func (m *mockSource) LatestRelease(ctx context.Context) (*ReleaseInfo, error) {
@@ -66,4 +67,37 @@ func TestUpdater_Check_Error(t *testing.T) {
 	if err == nil {
 		t.Fatal("預期應回傳錯誤，但沒有")
 	}
+}
+
+func TestPickExtractedBinaryForSelf(t *testing.T) {
+	t.Run("single extracted", func(t *testing.T) {
+		got, err := pickExtractedBinaryForSelf([]string{"C:\\tmp\\radb.exe"}, "C:\\app\\radb-v0.2.9.exe")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "C:\\tmp\\radb.exe" {
+			t.Fatalf("got %q, want %q", got, "C:\\tmp\\radb.exe")
+		}
+	})
+
+	t.Run("match by extension", func(t *testing.T) {
+		extracted := []string{
+			filepath.FromSlash("/tmp/radb"),
+			filepath.FromSlash("/tmp/radb.exe"),
+		}
+		got, err := pickExtractedBinaryForSelf(extracted, filepath.FromSlash("/app/radb-v0.2.9.exe"))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if filepath.Ext(got) != ".exe" {
+			t.Fatalf("got %q, expected .exe binary", got)
+		}
+	})
+
+	t.Run("no compatible binary", func(t *testing.T) {
+		_, err := pickExtractedBinaryForSelf([]string{filepath.FromSlash("/tmp/radb")}, filepath.FromSlash("/app/radb.exe"))
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
 }

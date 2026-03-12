@@ -139,7 +139,7 @@ func (u *Updater) Update(ctx context.Context) (*CheckResult, error) {
 	}
 
 	// === 階段 4: Replace ===
-	// 解析目前執行檔的真實路徑（跟隨 symlink），以此判斷安裝目錄
+	// 解析目前執行檔的真實路徑（跟隨 symlink），直接替換當前正在運行的檔案。
 	selfPath, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("取得執行檔路徑失敗: %w", err)
@@ -148,23 +148,44 @@ func (u *Updater) Update(ctx context.Context) (*CheckResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("解析執行檔路徑失敗: %w", err)
 	}
-	installDir := filepath.Dir(selfPath)
 
-	// 只替換安裝目錄中已存在的 binary，不會新增不存在的檔案
-	for _, newBin := range extracted {
-		name := filepath.Base(newBin)
-		targetPath := filepath.Join(installDir, name)
+	newBin, err := pickExtractedBinaryForSelf(extracted, selfPath)
+	if err != nil {
+		return nil, err
+	}
 
-		if _, err := os.Stat(targetPath); os.IsNotExist(err) {
-			continue
-		}
-
-		if err := ReplaceBinary(targetPath, newBin); err != nil {
-			return nil, fmt.Errorf("替換 %s 失敗: %w", name, err)
-		}
+	if err := ReplaceBinary(selfPath, newBin); err != nil {
+		return nil, fmt.Errorf("替換執行檔失敗 (%s): %w", filepath.Base(selfPath), err)
 	}
 
 	return result, nil
+}
+
+// pickExtractedBinaryForSelf 從解壓結果中挑選可用於替換目前執行檔的 binary。
+func pickExtractedBinaryForSelf(extracted []string, selfPath string) (string, error) {
+	if len(extracted) == 0 {
+		return "", fmt.Errorf("archive 中沒有可替換的 binary")
+	}
+	selfExt := strings.ToLower(filepath.Ext(selfPath))
+	if len(extracted) == 1 {
+		cand := extracted[0]
+		if strings.EqualFold(filepath.Ext(cand), selfExt) {
+			return cand, nil
+		}
+		return "", fmt.Errorf(
+			"解壓 binary 與目前執行檔副檔名不相容 (self=%s, bin=%s)",
+			filepath.Base(selfPath),
+			filepath.Base(cand),
+		)
+	}
+
+	for _, p := range extracted {
+		if strings.EqualFold(filepath.Ext(p), selfExt) {
+			return p, nil
+		}
+	}
+
+	return "", fmt.Errorf("找不到可替換目前執行檔的 binary (self=%s)", filepath.Base(selfPath))
 }
 
 // verifyChecksum 下載 checksums.txt 並驗證 archive 的 SHA256 雜湊值。
