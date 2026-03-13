@@ -186,7 +186,10 @@ func cmdBind(args []string) {
 	}
 
 	var result daemon.BindResult
-	json.Unmarshal(resp.Data, &result)
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		fmt.Fprintf(os.Stderr, "解碼回應失敗: %v\n", err)
+		os.Exit(1)
+	}
 	fmt.Printf("綁定成功！本機 port: %d, 設備: %s\n", result.LocalPort, result.Serial)
 	fmt.Printf("使用方式: adb -s 127.0.0.1:%d shell\n", result.LocalPort)
 }
@@ -219,7 +222,10 @@ func cmdList() {
 	}
 
 	var bindings []daemon.Binding
-	json.Unmarshal(resp.Data, &bindings)
+	if err := json.Unmarshal(resp.Data, &bindings); err != nil {
+		fmt.Fprintf(os.Stderr, "解碼回應失敗: %v\n", err)
+		os.Exit(1)
+	}
 
 	if len(bindings) == 0 {
 		fmt.Println("目前沒有綁定的設備")
@@ -241,7 +247,10 @@ func cmdStatus() {
 	}
 
 	var status daemon.StatusInfo
-	json.Unmarshal(resp.Data, &status)
+	if err := json.Unmarshal(resp.Data, &status); err != nil {
+		fmt.Fprintf(os.Stderr, "解碼回應失敗: %v\n", err)
+		os.Exit(1)
+	}
 
 	fmt.Printf("Server: %s\n", status.ServerURL)
 	fmt.Printf("連線狀態:      %v\n", status.Connected)
@@ -267,7 +276,10 @@ func cmdHosts() {
 			Lock   string `json:"lock"`
 		} `json:"devices"`
 	}
-	json.Unmarshal(resp.Data, &hosts)
+	if err := json.Unmarshal(resp.Data, &hosts); err != nil {
+		fmt.Fprintf(os.Stderr, "解碼回應失敗: %v\n", err)
+		os.Exit(1)
+	}
 
 	if len(hosts) == 0 {
 		fmt.Println("目前沒有可用的主機")

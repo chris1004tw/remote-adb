@@ -136,7 +136,9 @@ func (m Model) loadHosts() tea.Msg {
 			Lock   string `json:"lock"`
 		} `json:"devices"`
 	}
-	json.Unmarshal(resp.Data, &rawHosts)
+	if err := json.Unmarshal(resp.Data, &rawHosts); err != nil {
+		return errMsg{err: fmt.Sprintf("解碼主機清單失敗: %v", err)}
+	}
 
 	// 轉換為 CLI 層的 HostData/DeviceData，與 daemon 層的 JSON 結構解耦
 	hosts := make([]HostData, 0, len(rawHosts))
@@ -306,7 +308,9 @@ func (m Model) bindDevice(hostID, serial string) tea.Cmd {
 		}
 
 		var result daemon.BindResult
-		json.Unmarshal(resp.Data, &result)
+		if err := json.Unmarshal(resp.Data, &result); err != nil {
+			return errMsg{err: fmt.Sprintf("解碼綁定結果失敗: %v", err)}
+		}
 		return bindResultMsg{port: result.LocalPort, serial: result.Serial}
 	}
 }
