@@ -49,6 +49,9 @@ func DevicePushLoop(ctx context.Context, controlCh io.ReadWriteCloser, adbAddr s
 	deviceCh := tracker.Track(ctx)
 	table := adb.NewDeviceTable()
 	enc := json.NewEncoder(controlCh)
+	// features 快取：以設備 serial 為 key，避免每次設備事件都重新查詢 ADB server。
+	// 設備離線時自動清除對應快取條目，確保重新上線時取得最新 features。
+	featuresCache := make(map[string]string)
 
 	// 先發送主機名稱
 	hostname, _ := os.Hostname()
@@ -77,11 +80,25 @@ func DevicePushLoop(ctx context.Context, controlCh io.ReadWriteCloser, adbAddr s
 			table.Update(events)
 			devs := table.List()
 
+			// 清除已離線設備的 features 快取
+			online := make(map[string]bool, len(devs))
+			for _, d := range devs {
+				online[d.Serial] = true
+			}
+			for serial := range featuresCache {
+				if !online[serial] {
+					delete(featuresCache, serial)
+				}
+			}
+
 			devices := make([]DeviceInfo, len(devs))
 			for i, d := range devs {
 				devices[i] = DeviceInfo{Serial: d.Serial, State: d.State}
 				if d.State == "device" {
-					if feat, err := QueryDeviceFeatures(adbAddr, d.Serial); err == nil {
+					if feat, ok := featuresCache[d.Serial]; ok {
+						devices[i].Features = feat
+					} else if feat, err := QueryDeviceFeatures(adbAddr, d.Serial); err == nil {
+						featuresCache[d.Serial] = feat
 						devices[i].Features = feat
 					}
 				}

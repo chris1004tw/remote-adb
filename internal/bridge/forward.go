@@ -118,12 +118,14 @@ func ReadADBStatus(r io.Reader) error {
 // QueryDeviceFeatures 透過 ADB server 協定查詢指定設備的 feature 清單。
 // 回傳逗號分隔的 feature 字串（如 "shell_v2,cmd,stat_v2,..."），
 // 用於 CNXN 回應的 banner，讓遠端 adb client 知道設備支援哪些功能。
+// 連線與讀寫皆有 5 秒逾時保護，避免 ADB server 無回應時無限阻塞。
 func QueryDeviceFeatures(adbAddr, serial string) (string, error) {
-	conn, err := net.Dial("tcp", adbAddr)
+	conn, err := net.DialTimeout("tcp", adbAddr, 5*time.Second)
 	if err != nil {
 		return "", err
 	}
 	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
 
 	cmd := fmt.Sprintf("host-serial:%s:features", serial)
 	if err := SendADBCmd(conn, cmd); err != nil {
