@@ -24,11 +24,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 
 	"github.com/chris1004tw/remote-adb/internal/adb"
+	"github.com/chris1004tw/remote-adb/internal/ioutil"
 )
 
 // Request 是 Client 發送給 Direct Server 的 JSON 請求。
@@ -215,26 +215,9 @@ func (s *Server) handleConnect(ctx context.Context, conn net.Conn, req Request) 
 
 	slog.Info("direct forwarding started", "serial", req.Serial, "client", clientID)
 
-	// 步驟 5：雙向轉發 — 兩個 goroutine 分別處理上行與下行方向
-	// 使用 buffered channel（容量 2）確保兩個 goroutine 都能寫入而不阻塞
-	errc := make(chan error, 2)
-	go func() {
-		_, err := io.Copy(adbConn, conn) // Client → ADB 設備（上行）
-		errc <- err
-	}()
-	go func() {
-		_, err := io.Copy(conn, adbConn) // ADB 設備 → Client（下行）
-		errc <- err
-	}()
-
-	// 等待任一方向結束或 context 取消
-	select {
-	case err := <-errc:
-		if err != nil {
-			slog.Debug("direct forwarding ended", "serial", req.Serial, "error", err)
-		}
-	case <-ctx.Done():
-	}
+	// 步驟 5：雙向轉發 — 使用 ioutil.BiCopy 統一處理
+	// 純 TCP 使用 32KB chunk（標準 io.Copy 預設），雙向 Close + 等待兩端完成
+	ioutil.BiCopy(ctx, conn, adbConn, 32*1024)
 
 	slog.Info("direct forwarding stopped", "serial", req.Serial, "client", clientID)
 	// 函式返回時，defer 會依序：解鎖設備 → 關閉 ADB 連線 → 關閉 Client 連線
@@ -260,14 +243,8 @@ func (s *Server) handleConnectServer(ctx context.Context, conn net.Conn) {
 
 	slog.Debug("connect-server forwarding started", "adbAddr", adbAddr, "client", conn.RemoteAddr())
 
-	errc := make(chan error, 2)
-	go func() { _, err := io.Copy(adbConn, conn); errc <- err }()
-	go func() { _, err := io.Copy(conn, adbConn); errc <- err }()
-
-	select {
-	case <-errc:
-	case <-ctx.Done():
-	}
+	// 純 TCP 雙向轉發，使用 ioutil.BiCopy 統一處理
+	ioutil.BiCopy(ctx, conn, adbConn, 32*1024)
 }
 
 // handleConnectService 橋接 Client TCP 連線到指定設備的指定服務。
@@ -300,14 +277,8 @@ func (s *Server) handleConnectService(ctx context.Context, conn net.Conn, req Re
 
 	slog.Debug("connect-service forwarding started", "serial", req.Serial, "service", req.Service, "client", conn.RemoteAddr())
 
-	errc := make(chan error, 2)
-	go func() { _, err := io.Copy(adbConn, conn); errc <- err }()
-	go func() { _, err := io.Copy(conn, adbConn); errc <- err }()
-
-	select {
-	case <-errc:
-	case <-ctx.Done():
-	}
+	// 純 TCP 雙向轉發，使用 ioutil.BiCopy 統一處理
+	ioutil.BiCopy(ctx, conn, adbConn, 32*1024)
 }
 
 // writeResponse 將 JSON 回應寫入 TCP 連線。

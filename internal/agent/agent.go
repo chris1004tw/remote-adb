@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/chris1004tw/remote-adb/internal/adb"
+	"github.com/chris1004tw/remote-adb/internal/ioutil"
 	"github.com/chris1004tw/remote-adb/internal/webrtc"
 	"github.com/chris1004tw/remote-adb/pkg/protocol"
 	ws "github.com/coder/websocket"
@@ -403,25 +404,9 @@ func (a *Agent) handleDataChannel(ctx context.Context, clientID, label string, r
 	defer adbConn.Close()
 
 	// 雙向橋接：DataChannel ↔ ADB TCP
-	// 使用 buffer 為 2 的 error channel，確保兩個 goroutine 都能寫入而不阻塞。
-	// 只要任一方向結束（EOF 或錯誤），即視為轉發結束。
-	errc := make(chan error, 2)
-	go func() {
-		_, err := io.Copy(adbConn, rwc) // Client → ADB 設備
-		errc <- err
-	}()
-	go func() {
-		_, err := io.Copy(rwc, adbConn) // ADB 設備 → Client
-		errc <- err
-	}()
-
-	select {
-	case err := <-errc:
-		if err != nil {
-			slog.Debug("ADB forwarding ended", "serial", serial, "error", err)
-		}
-	case <-ctx.Done():
-	}
+	// 使用 ioutil.BiCopy 統一處理：16KB 分塊（DataChannel SCTP 限制）、
+	// 雙向 Close 保護、等待兩個 goroutine 完成。
+	ioutil.BiCopy(ctx, rwc, adbConn, 16*1024)
 
 	slog.Info("ADB forwarding stopped", "serial", serial, "client", clientID)
 }

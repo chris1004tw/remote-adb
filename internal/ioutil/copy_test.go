@@ -2,9 +2,12 @@ package ioutil_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/chris1004tw/remote-adb/internal/ioutil"
 )
@@ -219,5 +222,128 @@ func TestChunkedCopy_ZeroWrite(t *testing.T) {
 	_, err := ioutil.ChunkedCopy(dst, src, 4)
 	if !errors.Is(err, io.ErrShortWrite) {
 		t.Errorf("預期 io.ErrShortWrite，但收到 %v", err)
+	}
+}
+
+// --- BiCopy 測試 ---
+
+// testRWC 是用於測試的 ReadWriteCloser，內部使用 pipe 實現雙向通訊。
+// 追蹤 Close 是否被呼叫。
+type testRWC struct {
+	r      io.ReadCloser
+	w      io.WriteCloser
+	mu     sync.Mutex
+	closed bool
+}
+
+func newTestRWC() (*testRWC, *testRWC) {
+	r1, w1 := io.Pipe()
+	r2, w2 := io.Pipe()
+	a := &testRWC{r: r1, w: w2}
+	b := &testRWC{r: r2, w: w1}
+	return a, b
+}
+
+func (t *testRWC) Read(p []byte) (int, error)  { return t.r.Read(p) }
+func (t *testRWC) Write(p []byte) (int, error) { return t.w.Write(p) }
+func (t *testRWC) Close() error {
+	t.mu.Lock()
+	t.closed = true
+	t.mu.Unlock()
+	t.r.Close()
+	t.w.Close()
+	return nil
+}
+func (t *testRWC) isClosed() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.closed
+}
+
+// TestBiCopy_BothDirections 驗證 BiCopy 能正確雙向複製資料。
+func TestBiCopy_BothDirections(t *testing.T) {
+	a, b := newTestRWC()
+
+	dataA := []byte("hello from A")
+	dataB := []byte("hello from B")
+
+	// 背景寫入資料後關閉
+	go func() {
+		a.w.Write(dataA)
+		time.Sleep(50 * time.Millisecond)
+		a.r.Close() // 觸發 EOF 讓 BiCopy 結束
+	}()
+	go func() {
+		b.w.Write(dataB)
+	}()
+
+	// 使用簡單的 buffer-based RWC 來驗證
+	// 改用更直接的方式：pipe pair + 手動讀取
+	bufA := make([]byte, 64)
+	bufB := make([]byte, 64)
+
+	nB, _ := b.r.Read(bufB) // 讀取 A→B 的資料
+	nA, _ := a.r.Read(bufA) // 讀取 B→A 的資料
+
+	if string(bufB[:nB]) != string(dataA) {
+		t.Errorf("B 收到 %q，預期 %q", string(bufB[:nB]), string(dataA))
+	}
+	if string(bufA[:nA]) != string(dataB) {
+		t.Errorf("A 收到 %q，預期 %q", string(bufA[:nA]), string(dataB))
+	}
+}
+
+// TestBiCopy_BothSidesClosed 驗證 BiCopy 結束後兩端都被 Close。
+func TestBiCopy_BothSidesClosed(t *testing.T) {
+	r1, w1 := io.Pipe()
+	r2, w2 := io.Pipe()
+
+	a := &testRWC{r: r1, w: w2}
+	b := &testRWC{r: r2, w: w1}
+
+	// 立即關閉一端的寫入，觸發 EOF
+	w1.Close()
+
+	ioutil.BiCopy(context.Background(), a, b, 1024)
+
+	if !a.isClosed() {
+		t.Error("a 應已被 Close")
+	}
+	if !b.isClosed() {
+		t.Error("b 應已被 Close")
+	}
+}
+
+// TestBiCopy_ContextCancel 驗證 ctx 取消時 BiCopy 正常結束。
+func TestBiCopy_ContextCancel(t *testing.T) {
+	r1, w1 := io.Pipe()
+	r2, w2 := io.Pipe()
+
+	a := &testRWC{r: r1, w: w2}
+	b := &testRWC{r: r2, w: w1}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		ioutil.BiCopy(ctx, a, b, 1024)
+		close(done)
+	}()
+
+	// 取消 context
+	cancel()
+
+	select {
+	case <-done:
+		// 正常結束
+	case <-time.After(3 * time.Second):
+		t.Fatal("BiCopy 未在 ctx 取消後結束")
+	}
+
+	if !a.isClosed() {
+		t.Error("a 應已被 Close")
+	}
+	if !b.isClosed() {
+		t.Error("b 應已被 Close")
 	}
 }

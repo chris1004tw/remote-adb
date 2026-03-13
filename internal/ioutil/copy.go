@@ -5,7 +5,37 @@
 // 不與 Go 標準庫已棄用的 "io/ioutil" 衝突。
 package ioutil
 
-import "io"
+import (
+	"context"
+	"io"
+)
+
+// BiCopy 在 a 和 b 之間雙向複製資料，使用 chunkSize 分塊。
+//
+// 設計意圖：統一 agent、directsrv、bridge 的雙向橋接邏輯，
+// 確保所有路徑都有分塊保護（DataChannel SCTP 限制）和雙向 Close 保護。
+//
+// 參數：
+//   - ctx：用於取消（ctx.Done() 時結束）
+//   - a, b：雙向複製的兩端，結束時會被 Close
+//   - chunkSize：每次 Read 的 buffer 上限（DataChannel 建議 16KB，TCP 可用 32KB）
+//
+// 行為：
+//   - 啟動兩個 goroutine 分別執行 a→b 和 b→a 的 ChunkedCopy
+//   - 任一方向結束或 ctx 取消時，關閉雙方以解除另一方向的 Read 阻塞
+//   - 等待兩個 goroutine 都完成後才返回，避免 goroutine 洩漏
+func BiCopy(ctx context.Context, a, b io.ReadWriteCloser, chunkSize int) {
+	errc := make(chan error, 2)
+	go func() { _, err := ChunkedCopy(a, b, chunkSize); errc <- err }()
+	go func() { _, err := ChunkedCopy(b, a, chunkSize); errc <- err }()
+	select {
+	case <-errc:
+	case <-ctx.Done():
+	}
+	a.Close()
+	b.Close()
+	<-errc // 等待第二個 goroutine 完成
+}
 
 // ChunkedCopy 以固定大小（chunkSize）分塊從 src 讀取並寫入 dst。
 //

@@ -211,20 +211,10 @@ func (p *PrefixedRWC) Read(buf []byte) (int, error) {
 func (p *PrefixedRWC) Write(buf []byte) (int, error) { return p.Ch.Write(buf) }
 func (p *PrefixedRWC) Close() error                  { return p.Ch.Close() }
 
-// BiCopy 在兩個 ReadWriteCloser 之間雙向複製資料。
-// 當任一方向結束或 ctx 取消時，關閉雙方以解除另一方向的 Read 阻塞，
-// 避免舊模式（只關閉一方）導致的死鎖。
+// BiCopy 在兩個 ReadWriteCloser 之間雙向複製資料，使用 BiCopyChunk (16KB) 分塊。
+// 委派給 ioutil.BiCopy，保持 bridge 套件內部呼叫端簽名不變。
 func BiCopy(ctx context.Context, a, b io.ReadWriteCloser) {
-	errc := make(chan error, 2)
-	go func() { _, err := ioutil.ChunkedCopy(a, b, BiCopyChunk); errc <- err }()
-	go func() { _, err := ioutil.ChunkedCopy(b, a, BiCopyChunk); errc <- err }()
-	select {
-	case <-errc:
-	case <-ctx.Done():
-	}
-	a.Close()
-	b.Close()
-	<-errc
+	ioutil.BiCopy(ctx, a, b, BiCopyChunk)
 }
 
 // --- deviceBridge：ADB device transport 多工橋接 ---
