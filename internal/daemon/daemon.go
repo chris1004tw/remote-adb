@@ -349,10 +349,35 @@ func (d *Daemon) cmdBind(ctx context.Context, payload json.RawMessage) IPCRespon
 		Status:    "active",
 	})
 
-	// 步驟 9: 註冊 WebRTC 斷線回呼，自動將 binding 狀態更新為 "disconnected"
+	// 步驟 9: 註冊 WebRTC 斷線回呼，執行完整資源清理。
+	// 整體在獨立 goroutine 中執行，避免：
+	//  (1) pion OnConnectionStateChange callback 內呼叫 pm.Close() 的重入風險
+	//  (2) p.Stop() 阻塞 pion 的狀態通知 goroutine
+	// H24 已確保 onDisconnectFn 最多觸發一次，此處不需額外防重入。
 	pm.OnDisconnect(func() {
-		slog.Info("WebRTC 連線斷開", "port", port, "serial", req.Serial)
+		slog.Info("WebRTC disconnected, cleaning up", "port", port, "serial", req.Serial)
 		d.bindings.UpdateStatus(port, "disconnected")
+
+		go func() {
+			// 鎖內擷取引用並從 map 移除
+			d.proxyMu.Lock()
+			p := d.proxies[port]
+			peerRef := d.peers[port]
+			delete(d.proxies, port)
+			delete(d.peers, port)
+			d.proxyMu.Unlock()
+
+			// 鎖外關閉：p.Stop() 等待 accept loop 結束，peerRef.Close() 執行 DTLS teardown
+			if p != nil {
+				p.Stop()
+			}
+			if peerRef != nil {
+				peerRef.Close()
+			}
+
+			d.ports.Release(port)
+			slog.Info("WebRTC disconnect cleanup done", "port", port, "serial", req.Serial)
+		}()
 	})
 
 	slog.Info("綁定成功", "port", port, "serial", req.Serial, "host", req.HostID)
@@ -372,17 +397,22 @@ func (d *Daemon) cmdUnbind(ctx context.Context, payload json.RawMessage) IPCResp
 		return ErrorResponse(fmt.Sprintf("Port %d 未綁定", req.LocalPort))
 	}
 
-	// 停止代理和 PeerConnection
+	// 鎖內擷取引用並從 map 移除，鎖外關閉——
+	// 避免持有 proxyMu 期間呼叫 p.Stop()（等待 accept loop）
+	// 和 pm.Close()（DTLS teardown），多台設備時耗時累加會阻塞所有 IPC 請求。
 	d.proxyMu.Lock()
-	if p, ok := d.proxies[req.LocalPort]; ok {
-		p.Stop()
-		delete(d.proxies, req.LocalPort)
-	}
-	if pm, ok := d.peers[req.LocalPort]; ok {
-		pm.Close()
-		delete(d.peers, req.LocalPort)
-	}
+	p := d.proxies[req.LocalPort]
+	pm := d.peers[req.LocalPort]
+	delete(d.proxies, req.LocalPort)
+	delete(d.peers, req.LocalPort)
 	d.proxyMu.Unlock()
+
+	if p != nil {
+		p.Stop()
+	}
+	if pm != nil {
+		pm.Close()
+	}
 
 	// 通知 Agent 解鎖設備（fire-and-forget，不等待回應）
 	if d.wsConn != nil {
@@ -585,25 +615,37 @@ func (d *Daemon) deliverResponse(key string, env protocol.Envelope) {
 }
 
 // shutdown 清理所有資源：停止所有 TCP Proxy、關閉所有 PeerConnection、關閉 WebSocket 連線。
+// 採用「鎖內擷取引用、鎖外關閉」模式，避免持有 proxyMu 期間呼叫
+// p.Stop()（等待 accept loop）和 pm.Close()（DTLS teardown），
+// 多台設備時耗時累加會阻塞所有 IPC 請求。
 func (d *Daemon) shutdown() error {
-	slog.Info("Daemon 正在關閉...")
+	slog.Info("Daemon shutting down...")
 
 	d.proxyMu.Lock()
-	for port, p := range d.proxies {
-		p.Stop()
-		delete(d.proxies, port)
+	proxyList := make([]*proxy.Proxy, 0, len(d.proxies))
+	peerList := make([]*webrtc.PeerManager, 0, len(d.peers))
+	for _, p := range d.proxies {
+		proxyList = append(proxyList, p)
 	}
-	for port, pm := range d.peers {
-		pm.Close()
-		delete(d.peers, port)
+	for _, pm := range d.peers {
+		peerList = append(peerList, pm)
 	}
+	d.proxies = make(map[int]*proxy.Proxy)
+	d.peers = make(map[int]*webrtc.PeerManager)
 	d.proxyMu.Unlock()
+
+	for _, p := range proxyList {
+		p.Stop()
+	}
+	for _, pm := range peerList {
+		pm.Close()
+	}
 
 	if d.wsConn != nil {
 		d.wsConn.CloseNow()
 	}
 
-	slog.Info("Daemon 已關閉")
+	slog.Info("Daemon stopped")
 	return nil
 }
 
