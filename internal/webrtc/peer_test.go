@@ -3,6 +3,7 @@ package webrtc_test
 import (
 	"errors"
 	"io"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -330,4 +331,120 @@ func TestPeerManager_OpenChannel_NormalFlow(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("超時未收到 echo 回應")
 	}
+}
+
+// TestOnDisconnect_SingleTrigger 驗證 OnDisconnect handler 在一個
+// PeerConnection 生命週期中最多被呼叫一次（pion 可能連續觸發
+// Disconnected → Failed → Closed 多個狀態轉換）。
+func TestOnDisconnect_SingleTrigger(t *testing.T) {
+	config := webrtc.ICEConfig{}
+
+	offerer, err := webrtc.NewPeerManager(config)
+	if err != nil {
+		t.Fatalf("建立 offerer 失敗: %v", err)
+	}
+
+	answerer, err := webrtc.NewPeerManager(config)
+	if err != nil {
+		t.Fatalf("建立 answerer 失敗: %v", err)
+	}
+
+	var callCount atomic.Int32
+	answerer.OnDisconnect(func() {
+		callCount.Add(1)
+	})
+
+	offerer.OpenChannel("keepalive")
+
+	offerSDP, _ := offerer.CreateOffer()
+	answerSDP, _ := answerer.HandleOffer(offerSDP)
+	offerer.HandleAnswer(answerSDP)
+
+	// 等待連線建立
+	time.Sleep(1 * time.Second)
+
+	// 關閉 offerer（觸發 answerer 端的斷線偵測）
+	offerer.Close()
+
+	// 等待足夠時間讓所有狀態轉換完成（Disconnected → Failed → Closed）
+	time.Sleep(3 * time.Second)
+
+	count := callCount.Load()
+	if count == 0 {
+		t.Fatal("OnDisconnect handler was never called")
+	}
+	if count > 1 {
+		t.Errorf("OnDisconnect called %d times, expected exactly 1", count)
+	}
+
+	answerer.Close()
+}
+
+// TestOnConnected_Called 驗證 OnConnected handler 在連線建立時被呼叫，
+// 且 relayed 參數為 false（本地測試不經過 TURN）。
+func TestOnConnected_Called(t *testing.T) {
+	config := webrtc.ICEConfig{}
+
+	offerer, err := webrtc.NewPeerManager(config)
+	if err != nil {
+		t.Fatalf("建立 offerer 失敗: %v", err)
+	}
+	defer offerer.Close()
+
+	answerer, err := webrtc.NewPeerManager(config)
+	if err != nil {
+		t.Fatalf("建立 answerer 失敗: %v", err)
+	}
+	defer answerer.Close()
+
+	type connResult struct {
+		relayed bool
+	}
+	connCh := make(chan connResult, 1)
+	answerer.OnConnected(func(relayed bool) {
+		connCh <- connResult{relayed: relayed}
+	})
+
+	offerer.OpenChannel("test")
+
+	offerSDP, _ := offerer.CreateOffer()
+	answerSDP, _ := answerer.HandleOffer(offerSDP)
+	offerer.HandleAnswer(answerSDP)
+
+	select {
+	case result := <-connCh:
+		if result.relayed {
+			t.Error("expected relayed=false for local P2P connection")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("OnConnected handler was not called within timeout")
+	}
+}
+
+// TestOnConnected_NilHandler 驗證不設定 OnConnected handler 時不會 panic。
+func TestOnConnected_NilHandler(t *testing.T) {
+	config := webrtc.ICEConfig{}
+
+	offerer, err := webrtc.NewPeerManager(config)
+	if err != nil {
+		t.Fatalf("建立 offerer 失敗: %v", err)
+	}
+	defer offerer.Close()
+
+	answerer, err := webrtc.NewPeerManager(config)
+	if err != nil {
+		t.Fatalf("建立 answerer 失敗: %v", err)
+	}
+	defer answerer.Close()
+
+	// 不設定 OnConnected handler
+
+	offerer.OpenChannel("test")
+
+	offerSDP, _ := offerer.CreateOffer()
+	answerSDP, _ := answerer.HandleOffer(offerSDP)
+	offerer.HandleAnswer(answerSDP)
+
+	// 等待連線建立，不應 panic
+	time.Sleep(2 * time.Second)
 }
