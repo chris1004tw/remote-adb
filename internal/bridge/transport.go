@@ -586,11 +586,13 @@ func (b *deviceBridge) sendOneShot(serverID, deviceID uint32, data []byte) {
 	}
 
 	// 等 ADB server 的 OKAY（確認收到 WRTE），然後 CLSE
+	oneshotTimer := time.NewTimer(5 * time.Second)
+	defer oneshotTimer.Stop()
 	select {
 	case <-stream.ready:
 	case <-stream.doneCh:
 		return // ADB server 先 CLSE 了
-	case <-time.After(5 * time.Second):
+	case <-oneshotTimer.C:
 		slog.Debug("sendOneShot: OKAY timeout", "deviceID", deviceID)
 	}
 
@@ -634,6 +636,8 @@ func (b *deviceBridge) setupStream(ctx context.Context, ch io.ReadWriteCloser, s
 	}()
 
 	ready := false
+	readyTimer := time.NewTimer(streamReadyTimeout)
+	defer readyTimer.Stop()
 	select {
 	case res := <-readyCh:
 		ready = res.ready
@@ -643,7 +647,7 @@ func (b *deviceBridge) setupStream(ctx context.Context, ch io.ReadWriteCloser, s
 			slog.Debug("setupStream: retained prefix data", "deviceID", deviceID, "bytes", len(res.prefix))
 		}
 		slog.Debug("setupStream: received ready signal", "deviceID", deviceID, "ready", ready)
-	case <-time.After(streamReadyTimeout):
+	case <-readyTimer.C:
 		slog.Debug("setupStream: ready wait timeout", "deviceID", deviceID)
 	case <-ctx.Done():
 		slog.Debug("setupStream: context cancelled", "deviceID", deviceID)
@@ -777,6 +781,10 @@ func (b *deviceBridge) readFromRemote(ctx context.Context, stream *dStream) {
 
 	buf := make([]byte, aMaxPayload)
 	firstRead := true
+	// 在迴圈外建立一次 Timer，迴圈內重用，避免每次迭代建立新 Timer 造成記憶體洩漏。
+	// 高吞吐時每秒可能有數百次迭代，若使用 time.After 會累積大量未釋放的 30s Timer。
+	okayTimer := time.NewTimer(wrteOkayTimeout)
+	defer okayTimer.Stop()
 	for {
 		n, err := stream.ch.Read(buf)
 		if n > 0 {
@@ -793,6 +801,14 @@ func (b *deviceBridge) readFromRemote(ctx context.Context, stream *dStream) {
 				slog.Debug("readFromRemote: WRTE write failed", "deviceID", stream.deviceID, "error", writeErr)
 				return
 			}
+			// 重置 Timer：先 Stop + drain 殘留觸發事件，再 Reset
+			if !okayTimer.Stop() {
+				select {
+				case <-okayTimer.C:
+				default:
+				}
+			}
+			okayTimer.Reset(wrteOkayTimeout)
 			// 等待 ADB server 回應 OKAY 後才能繼續
 			select {
 			case <-stream.ready:
@@ -800,7 +816,7 @@ func (b *deviceBridge) readFromRemote(ctx context.Context, stream *dStream) {
 				return
 			case <-stream.doneCh:
 				return
-			case <-time.After(wrteOkayTimeout):
+			case <-okayTimer.C:
 				slog.Debug("readFromRemote: WRTE OKAY timeout", "deviceID", stream.deviceID)
 				return
 			}
