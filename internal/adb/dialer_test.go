@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestNewDialer_DefaultAddr(t *testing.T) {
@@ -153,4 +155,84 @@ func TestDialDevice_Success(t *testing.T) {
 		t.Fatalf("DialDevice error: %v", err)
 	}
 	conn.Close()
+}
+
+func TestAutoConnect_SendsCorrectCommand(t *testing.T) {
+	// 記錄 mock server 收到的命令
+	var mu sync.Mutex
+	var received []string
+
+	addr, cleanup := mockADBServer(t, func(cmd string) []byte {
+		mu.Lock()
+		received = append(received, cmd)
+		mu.Unlock()
+		return []byte("OKAY")
+	})
+	defer cleanup()
+
+	// AutoConnect 使用 delay=0 立即執行，不阻塞測試
+	AutoConnect(addr, "127.0.0.1:5555", 0)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(received))
+	}
+	want := "host:connect:127.0.0.1:5555"
+	if received[0] != want {
+		t.Errorf("command: got %q, want %q", received[0], want)
+	}
+}
+
+func TestAutoConnect_WithDelay(t *testing.T) {
+	addr, cleanup := mockADBServer(t, func(cmd string) []byte {
+		return []byte("OKAY")
+	})
+	defer cleanup()
+
+	start := time.Now()
+	AutoConnect(addr, "127.0.0.1:5555", 100*time.Millisecond)
+	elapsed := time.Since(start)
+
+	// 確認至少等待了指定的延遲時間
+	if elapsed < 100*time.Millisecond {
+		t.Errorf("expected delay >= 100ms, got %v", elapsed)
+	}
+}
+
+func TestAutoConnect_ServerFail_NoError(t *testing.T) {
+	// 即使 server 回應 FAIL，AutoConnect 也不應 panic（僅記錄 debug 日誌）
+	addr, cleanup := mockADBServer(t, func(cmd string) []byte {
+		msg := "connection refused"
+		return []byte(fmt.Sprintf("FAIL%04x%s", len(msg), msg))
+	})
+	defer cleanup()
+
+	// 不應 panic 或回傳錯誤
+	AutoConnect(addr, "127.0.0.1:5555", 0)
+}
+
+func TestAutoDisconnect_SendsCorrectCommand(t *testing.T) {
+	var mu sync.Mutex
+	var received []string
+
+	addr, cleanup := mockADBServer(t, func(cmd string) []byte {
+		mu.Lock()
+		received = append(received, cmd)
+		mu.Unlock()
+		return []byte("OKAY")
+	})
+	defer cleanup()
+
+	AutoDisconnect(addr, "127.0.0.1:5555")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(received))
+	}
+	want := "host:disconnect:127.0.0.1:5555"
+	if received[0] != want {
+		t.Errorf("command: got %q, want %q", received[0], want)
+	}
 }

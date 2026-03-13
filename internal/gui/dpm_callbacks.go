@@ -17,6 +17,9 @@ import (
 	"github.com/chris1004tw/remote-adb/internal/adb"
 )
 
+// 設備上線後延遲多久再執行 adb connect（讓 proxy listener 就緒）。
+const guiAutoConnectDelay = 300 * time.Millisecond
+
 // guiDeviceProxyCallbacks 回傳 DeviceProxyManager 的 OnReady/OnRemoved callback，
 // 適用於 GUI 各分頁。callback 會：
 //   - 記錄 slog.Info（使用指定的 logPrefix 區分來源）
@@ -28,22 +31,12 @@ func guiDeviceProxyCallbacks(win *app.Window, logPrefix string) (onReady func(st
 	onReady = func(serial string, port int) {
 		slog.Info(logPrefix+" ready", "serial", serial, "port", port)
 		win.Invalidate()
-		go func() {
-			time.Sleep(300 * time.Millisecond)
-			dialer := adb.NewDialer("")
-			target := fmt.Sprintf("127.0.0.1:%d", port)
-			if err := dialer.Connect(target); err != nil {
-				slog.Debug("auto adb connect failed", "target", target, "error", err)
-			}
-		}()
+		go adb.AutoConnect("", fmt.Sprintf("127.0.0.1:%d", port), guiAutoConnectDelay)
 	}
 	onRemoved = func(serial string, port int) {
 		slog.Info(logPrefix+" removed", "serial", serial, "port", port)
 		win.Invalidate()
-		go func() {
-			dialer := adb.NewDialer("")
-			dialer.Disconnect(fmt.Sprintf("127.0.0.1:%d", port))
-		}()
+		go adb.AutoDisconnect("", fmt.Sprintf("127.0.0.1:%d", port))
 	}
 	return
 }

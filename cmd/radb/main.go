@@ -787,14 +787,11 @@ func queryDirectDevices(addr, token string) []directsrv.DeviceInfo {
 func cliDeviceProxyCallbacks(adbAddr string) (onReady func(string, int), onRemoved func(string, int)) {
 	onReady = func(serial string, port int) {
 		fmt.Fprintf(os.Stderr, "  設備 %s → 127.0.0.1:%d\n", serial, port)
-		go autoADBConnect(adbAddr, fmt.Sprintf("127.0.0.1:%d", port))
+		go adb.AutoConnect(adbAddr, fmt.Sprintf("127.0.0.1:%d", port), 500*time.Millisecond)
 	}
 	onRemoved = func(serial string, port int) {
 		fmt.Fprintf(os.Stderr, "  設備 %s 已離線（port %d 已釋放）\n", serial, port)
-		go func() {
-			dialer := adb.NewDialer(adbAddr)
-			dialer.Disconnect(fmt.Sprintf("127.0.0.1:%d", port))
-		}()
+		go adb.AutoDisconnect(adbAddr, fmt.Sprintf("127.0.0.1:%d", port))
 	}
 	return
 }
@@ -842,19 +839,6 @@ func pollDirectDevicesDPM(ctx context.Context, addr, token string, dpm *bridge.D
 			}
 			dpm.UpdateDevices(bridgeDevices)
 		}
-	}
-}
-
-// autoADBConnect 嘗試自動執行 `adb connect` 到 proxy port。
-// 若本機 ADB server 沒有在運行，靜默失敗（使用者可手動 connect）。
-// 等待 500ms 讓 proxy listener 就緒後再嘗試。
-func autoADBConnect(adbAddr, target string) {
-	time.Sleep(500 * time.Millisecond)
-	dialer := adb.NewDialer(adbAddr)
-	if err := dialer.Connect(target); err != nil {
-		slog.Debug("auto adb connect failed", "target", target, "error", err)
-	} else {
-		slog.Debug("auto adb connect succeeded", "target", target)
 	}
 }
 

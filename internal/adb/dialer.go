@@ -3,7 +3,9 @@ package adb
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
+	"time"
 )
 
 // Dialer 負責透過本機 ADB server 建立與指定設備的 TCP 連線。
@@ -129,6 +131,35 @@ func (d *Dialer) Disconnect(target string) error {
 		return fmt.Errorf("發送 disconnect 指令失敗: %w", err)
 	}
 	return readOKAY(conn)
+}
+
+// AutoConnect 等待指定延遲後嘗試 adb connect。
+// 失敗時僅記錄 debug 日誌，不回傳錯誤。適合在背景 goroutine 中呼叫。
+//
+// 參數：
+//   - adbAddr: ADB server 地址（空字串使用預設 127.0.0.1:5037）
+//   - target: 連線目標，格式為 "host:port"
+//   - delay: 連線前等待時間（讓 proxy listener 就緒）
+func AutoConnect(adbAddr, target string, delay time.Duration) {
+	if delay > 0 {
+		time.Sleep(delay)
+	}
+	dialer := NewDialer(adbAddr)
+	if err := dialer.Connect(target); err != nil {
+		slog.Debug("auto adb connect failed", "target", target, "error", err)
+	} else {
+		slog.Debug("auto adb connect succeeded", "target", target)
+	}
+}
+
+// AutoDisconnect 嘗試 adb disconnect。失敗時靜默忽略。適合在背景 goroutine 中呼叫。
+//
+// 參數：
+//   - adbAddr: ADB server 地址（空字串使用預設 127.0.0.1:5037）
+//   - target: 中斷連線目標，格式為 "host:port"
+func AutoDisconnect(adbAddr, target string) {
+	dialer := NewDialer(adbAddr)
+	dialer.Disconnect(target)
 }
 
 // readOKAY 讀取 ADB server 的 4-byte 回應，預期為 "OKAY"。
