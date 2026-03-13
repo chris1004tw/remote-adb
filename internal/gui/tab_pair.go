@@ -94,6 +94,13 @@ type pairTab struct {
 	// 剪貼簿：產生 token 後自動複製
 	pendingClipboard string
 
+	// 從背景 goroutine 延遲設定 Editor 文字。
+	// Gio Editor 非 goroutine-safe，直接從背景 goroutine 呼叫 SetText 會與
+	// UI 執行緒的 layout 競爭 Editor 內部 buffer，造成 slice bounds out of range panic。
+	// goroutine 將文字存入此欄位（mutex 保護），layout() 在 UI 執行緒消費並呼叫 SetText。
+	pendingCliOfferSet  *string // 非 nil 時，下一幀對 cliOfferOutEditor 呼叫 SetText
+	pendingSrvAnswerSet *string // 非 nil 時，下一幀對 srvAnswerOutEditor 呼叫 SetText
+
 	// 背景預產生邀請碼（完整 ICE gathering）
 	prewarmInFlight bool
 	prewarmDone     chan struct{}
@@ -165,10 +172,14 @@ func (t *pairTab) layout(gtx layout.Context, th *material.Theme) layout.Dimensio
 	turnWarning := t.turnWarning
 	t.mu.Unlock()
 
-	// 自動複製到剪貼簿
+	// 消費背景 goroutine 的延遲操作（必須在 UI 執行緒執行）
 	t.mu.Lock()
 	clip := t.pendingClipboard
 	t.pendingClipboard = ""
+	cliOfferSet := t.pendingCliOfferSet
+	srvAnswerSet := t.pendingSrvAnswerSet
+	t.pendingCliOfferSet = nil
+	t.pendingSrvAnswerSet = nil
 	t.mu.Unlock()
 	if clip != "" {
 		gtx.Execute(clipboard.WriteCmd{
@@ -176,15 +187,28 @@ func (t *pairTab) layout(gtx layout.Context, th *material.Theme) layout.Dimensio
 			Data: io.NopCloser(strings.NewReader(clip)),
 		})
 	}
+	// Editor.SetText 必須在 UI 執行緒呼叫，避免與 layout 的 text shaping 競爭 buffer
+	if cliOfferSet != nil {
+		t.cliOfferOutEditor.SetText(*cliOfferSet)
+	}
+	if srvAnswerSet != nil {
+		t.srvAnswerOutEditor.SetText(*srvAnswerSet)
+	}
 
-	// 角色切換
+	// 角色切換：切換時呼叫 disconnect() 清理舊資源與 Editor 文字，
+	// 避免殘留失效的邀請碼/回應碼（對應的 PeerManager 已不存在）誤導使用者。
+	// disconnect() 內部會根據新的 isServer 值決定是否啟動 prewarm。
 	for t.clientBtn.Clicked(gtx) {
-		t.isServer = false
-		t.maybeStartOfferPrewarm()
+		if t.isServer {
+			t.isServer = false
+			t.disconnect()
+		}
 	}
 	for t.serverBtn.Clicked(gtx) {
-		t.isServer = true
-		t.clearReadyPrewarm()
+		if !t.isServer {
+			t.isServer = true
+			t.disconnect()
+		}
 	}
 
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
@@ -293,7 +317,7 @@ func (t *pairTab) layoutClientWidgets(gtx layout.Context, th *material.Theme) []
 		// 延遲顯示
 		if latency > 0 {
 			widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
-				lbl := material.Body2(th, fmt.Sprintf("RTT: %d ms", latency))
+				lbl := material.Body2(th, fmt.Sprintf(msg().Pair.LatencyFmt, latency))
 				lbl.Font.Weight = 700
 				return lbl.Layout(gtx)
 			})
@@ -824,9 +848,9 @@ func (t *pairTab) clientGenerateOffer(quick bool) {
 		t.pm = pm
 		t.controlCh = controlCh
 		t.pendingClipboard = offerToken
+		t.pendingCliOfferSet = &offerToken
 		t.status = msg().Pair.StatusOfferReady
 		t.mu.Unlock()
-		t.cliOfferOutEditor.SetText(offerToken)
 		t.window.Invalidate()
 		slog.Info("invite code generated", "mode", mode, "elapsed_ms", time.Since(startedAt).Milliseconds(), "token_len", len(offerToken))
 	}()
@@ -1253,9 +1277,9 @@ func (t *pairTab) serverProcessOffer() {
 		t.cancel = cancel
 		// 注意：不在此設 connected = true，等 control DataChannel 開啟才切換
 		t.pendingClipboard = answerToken
+		t.pendingSrvAnswerSet = &answerToken
 		t.status = msg().Pair.StatusAnswerReady
 		t.mu.Unlock()
-		t.srvAnswerOutEditor.SetText(answerToken)
 		t.window.Invalidate()
 		slog.Info("answer code generated", "elapsed_ms", time.Since(startedAt).Milliseconds(), "token_len", len(answerToken))
 
