@@ -71,6 +71,7 @@ type pairMsg struct {
 	GenerateOfferFast string // "立即產生邀請碼（有無法連接的風險）"
 	ClearBtn          string // "清除邀請碼 / 回應碼"
 	DisconnectBtn     string // "結束連線"
+	ReconnectADB      string // "重新添加遠端 ADB 設備到本機"
 
 	// 標籤 / Hint
 	OfferOutLabel  string // "邀請碼（已複製到剪貼簿，僅限使用一次）:"
@@ -86,18 +87,18 @@ type pairMsg struct {
 	// 狀態
 	StatusNotStarted      string // "未開始"
 	StatusGenerating      string // "正在產生邀請碼..."
-	StatusPreparingTURN   string // "正在準備 TURN 候選..."
-	StatusCreatingPC      string // "正在建立 P2P 連線元件..."
-	StatusCreatingOffer   string // "正在蒐集網路候選並產生邀請碼..."
-	StatusEncodingOffer   string // "正在壓縮邀請碼..."
+	StatusPreparingTURN   string // "正在準備網路中繼..."
+	StatusCreatingPC      string // "正在建立連線..."
+	StatusCreatingOffer   string // "正在尋找最佳連線路徑，請稍候..."
+	StatusEncodingOffer   string // "正在產生邀請碼..."
 	StatusOfferReady      string // "邀請碼已產生（已複製到剪貼簿）"
 	StatusPleaseGenerate  string // "請先產生邀請碼"
 	StatusPleaseAnswer    string // "請貼入對方的回應碼"
 	StatusPleaseOffer     string // "請貼入對方的邀請碼"
 	StatusProcessing      string // "正在處理邀請碼..."
 	StatusDecodingOffer   string // "正在解析邀請碼..."
-	StatusCreatingAnswer  string // "正在蒐集網路候選並產生回應碼..."
-	StatusEncodingAnswer  string // "正在壓縮回應碼..."
+	StatusCreatingAnswer  string // "正在尋找最佳連線路徑，請稍候..."
+	StatusEncodingAnswer  string // "正在產生回應碼..."
 	StatusAnswerReady     string // "回應碼已產生（已複製到剪貼簿）"
 	StatusP2PConnected    string // "P2P 已連線"
 	StatusP2PDisconnected string // "P2P 已斷線"
@@ -298,6 +299,7 @@ var messagesZhTW = Messages{
 		GenerateOfferFast: "立即產生邀請碼（有無法連接的風險）",
 		ClearBtn:          "清除邀請碼 / 回應碼",
 		DisconnectBtn:     "結束連線",
+		ReconnectADB:      "重新添加遠端 ADB 設備到本機",
 
 		OfferOutLabel:  "邀請碼（已複製到剪貼簿，僅限使用一次）:",
 		AnswerInLabel:  "回應碼（貼入後自動連線）:",
@@ -311,18 +313,18 @@ var messagesZhTW = Messages{
 
 		StatusNotStarted:      "未開始",
 		StatusGenerating:      "正在產生邀請碼...",
-		StatusPreparingTURN:   "正在準備 TURN 候選...",
-		StatusCreatingPC:      "正在建立 P2P 連線元件...",
-		StatusCreatingOffer:   "正在蒐集網路候選並產生邀請碼...",
-		StatusEncodingOffer:   "正在壓縮邀請碼...",
+		StatusPreparingTURN:   "正在準備網路中繼...",
+		StatusCreatingPC:      "正在建立連線...",
+		StatusCreatingOffer:   "正在尋找最佳連線路徑，請稍候...",
+		StatusEncodingOffer:   "正在產生邀請碼...",
 		StatusOfferReady:      "邀請碼已產生（已複製到剪貼簿）",
 		StatusPleaseGenerate:  "請先產生邀請碼",
 		StatusPleaseAnswer:    "請貼入對方的回應碼",
 		StatusPleaseOffer:     "請貼入對方的邀請碼",
 		StatusProcessing:      "正在處理邀請碼...",
 		StatusDecodingOffer:   "正在解析邀請碼...",
-		StatusCreatingAnswer:  "正在蒐集網路候選並產生回應碼...",
-		StatusEncodingAnswer:  "正在壓縮回應碼...",
+		StatusCreatingAnswer:  "正在尋找最佳連線路徑，請稍候...",
+		StatusEncodingAnswer:  "正在產生回應碼...",
 		StatusAnswerReady:     "回應碼已產生（已複製到剪貼簿）",
 		StatusP2PConnected:    "P2P 已連線",
 		StatusP2PDisconnected: "P2P 已斷線",
@@ -470,6 +472,7 @@ var messagesEN = Messages{
 		GenerateOfferFast: "Generate Now (risk of connection failure)",
 		ClearBtn:          "Clear Codes",
 		DisconnectBtn:     "Disconnect",
+		ReconnectADB:      "Reconnect Remote ADB Devices",
 
 		OfferOutLabel:  "Invite code (copied to clipboard, single use):",
 		AnswerInLabel:  "Response code (auto-connect on paste):",
@@ -483,18 +486,18 @@ var messagesEN = Messages{
 
 		StatusNotStarted:      "Not started",
 		StatusGenerating:      "Generating invite code...",
-		StatusPreparingTURN:   "Preparing TURN candidates...",
-		StatusCreatingPC:      "Creating P2P connection components...",
-		StatusCreatingOffer:   "Gathering network candidates and creating invite code...",
-		StatusEncodingOffer:   "Compressing invite code...",
+		StatusPreparingTURN:   "Preparing network relay...",
+		StatusCreatingPC:      "Establishing connection...",
+		StatusCreatingOffer:   "Finding the best connection path, please wait...",
+		StatusEncodingOffer:   "Generating invite code...",
 		StatusOfferReady:      "Invite code generated (copied to clipboard)",
 		StatusPleaseGenerate:  "Please generate an invite code first",
 		StatusPleaseAnswer:    "Please paste the response code",
 		StatusPleaseOffer:     "Please paste the invite code",
 		StatusProcessing:      "Processing invite code...",
 		StatusDecodingOffer:   "Decoding invite code...",
-		StatusCreatingAnswer:  "Gathering network candidates and creating response code...",
-		StatusEncodingAnswer:  "Compressing response code...",
+		StatusCreatingAnswer:  "Finding the best connection path, please wait...",
+		StatusEncodingAnswer:  "Generating response code...",
 		StatusAnswerReady:     "Response code generated (copied to clipboard)",
 		StatusP2PConnected:    "P2P connected",
 		StatusP2PDisconnected: "P2P disconnected",
