@@ -11,6 +11,7 @@ import (
 )
 
 // sendIPCCommand 連線到 IPC 服務，發送指令，回傳回應。
+// 命令收發委派給 daemon.SendCommand（共用邏輯）。
 func sendIPCCommand(t *testing.T, addr string, cmd daemon.IPCCommand) daemon.IPCResponse {
 	t.Helper()
 
@@ -20,15 +21,9 @@ func sendIPCCommand(t *testing.T, addr string, cmd daemon.IPCCommand) daemon.IPC
 	}
 	defer conn.Close()
 
-	conn.SetDeadline(time.Now().Add(5 * time.Second))
-
-	if err := json.NewEncoder(conn).Encode(cmd); err != nil {
-		t.Fatalf("發送指令失敗: %v", err)
-	}
-
-	var resp daemon.IPCResponse
-	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
-		t.Fatalf("讀取回應失敗: %v", err)
+	resp, err := daemon.SendCommand(conn, cmd)
+	if err != nil {
+		t.Fatalf("IPC 命令失敗: %v", err)
 	}
 	return resp
 }

@@ -1,4 +1,4 @@
-// ipc.go 定義 CLI 與 Daemon 之間的 IPC 通訊格式。
+// ipc.go 定義 CLI 與 Daemon 之間的 IPC 通訊格式，以及客戶端共用的命令收發邏輯。
 //
 // IPC 採用 JSON-over-TCP/UnixSocket 的一問一答模式：
 // CLI 發送一個 IPCCommand → Daemon 回傳一個 IPCResponse → 連線關閉。
@@ -14,7 +14,33 @@
 //	| "unbind" | UnbindRequest      | null                 | 解除指定 port 的綁定       |
 package daemon
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+	"net"
+	"time"
+)
+
+// sendCmdDeadline 是 IPC 客戶端（CLI/GUI）發送命令的讀寫逾時。
+// 與 daemon.go 的 ipcDeadline（50s，server 端）不同，客戶端只需涵蓋
+// 一般命令的回應時間；bind 命令因 ICE gathering 較慢，由 server 端
+// ipcDeadline 控制整體上限。
+const sendCmdDeadline = 30 * time.Second
+
+// SendCommand 透過已建立的 IPC 連線發送命令並讀取回應。
+// 設定 sendCmdDeadline（30 秒）讀寫 deadline。
+// 連線的建立與關閉由呼叫端負責。
+func SendCommand(conn net.Conn, cmd IPCCommand) (IPCResponse, error) {
+	conn.SetDeadline(time.Now().Add(sendCmdDeadline))
+	if err := json.NewEncoder(conn).Encode(cmd); err != nil {
+		return IPCResponse{}, fmt.Errorf("IPC send: %w", err)
+	}
+	var resp IPCResponse
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		return IPCResponse{}, fmt.Errorf("IPC read: %w", err)
+	}
+	return resp, nil
+}
 
 // IPCCommand 是 CLI 透過 IPC 發送給 Daemon 的指令。
 // Action 指定操作類型，Payload 攜帶操作所需的參數（部分 Action 不需要 Payload）。

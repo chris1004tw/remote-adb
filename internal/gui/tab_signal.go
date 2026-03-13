@@ -902,7 +902,7 @@ func (t *signalTab) pollClientState(ctx context.Context) {
 }
 
 // sendIPC 向內建 Daemon 發送 IPC 命令並等待回應。
-// 使用 JSON over TCP 協定，連線逾時 5 秒、讀寫逾時 30 秒。
+// 連線逾時 5 秒，命令收發委派給 daemon.SendCommand（共用邏輯，讀寫逾時 30 秒）。
 func (t *signalTab) sendIPC(cmd daemon.IPCCommand) daemon.IPCResponse {
 	t.clientMu.Lock()
 	addr := t.clientIPCAddr
@@ -917,15 +917,10 @@ func (t *signalTab) sendIPC(cmd daemon.IPCCommand) daemon.IPCResponse {
 		return daemon.ErrorResponse(fmt.Sprintf("IPC connect failed: %v", err))
 	}
 	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(30 * time.Second))
 
-	if err := json.NewEncoder(conn).Encode(cmd); err != nil {
-		return daemon.ErrorResponse(fmt.Sprintf("IPC send failed: %v", err))
-	}
-
-	var resp daemon.IPCResponse
-	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
-		return daemon.ErrorResponse(fmt.Sprintf("IPC read failed: %v", err))
+	resp, err := daemon.SendCommand(conn, cmd)
+	if err != nil {
+		return daemon.ErrorResponse(err.Error())
 	}
 	return resp
 }
