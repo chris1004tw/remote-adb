@@ -216,18 +216,13 @@ func (t *pairTab) maybeStartOfferPrewarm() {
 			t.mu.Unlock()
 		}()
 
-		iceConfig := parseICEConfig(t.config)
-		if t.config.TURNMode == TURNModeCloudflare {
-			servers, warning := t.tc.getServers(prewarmTurnCacheTimeout)
-			if warning != "" {
-				slog.Warn("Cloudflare TURN unavailable for prewarm offer generation", "warning", warning)
-				t.mu.Lock()
-				t.turnWarning = warning
-				t.mu.Unlock()
-				t.window.Invalidate()
-			} else {
-				iceConfig.TURNServers = servers
-			}
+		iceConfig, turnWarn := resolveICEWithTURN(t.config, t.tc, prewarmTurnCacheTimeout)
+		if turnWarn != "" {
+			slog.Warn("Cloudflare TURN unavailable for prewarm offer generation", "warning", turnWarn)
+			t.mu.Lock()
+			t.turnWarning = turnWarn
+			t.mu.Unlock()
+			t.window.Invalidate()
 		}
 
 		pm, err := webrtc.NewPeerManager(iceConfig)
@@ -382,29 +377,25 @@ func (t *pairTab) clientGenerateOffer(quick bool) {
 		if quick {
 			mode = "quick"
 		}
-		iceConfig := parseICEConfig(t.config)
 		if t.config.TURNMode == TURNModeCloudflare {
 			t.mu.Lock()
 			t.status = msg().Pair.StatusPreparingTURN
 			t.mu.Unlock()
 			t.window.Invalidate()
-
-			stepStarted := time.Now()
-			waitTimeout := time.Duration(0)
-			if quick {
-				waitTimeout = quickTurnCacheWaitTimeout
-			}
-			servers, warning := t.tc.getServers(waitTimeout)
-			slog.Debug("pair offer step", "mode", mode, "step", "turn_cache", "elapsed_ms", time.Since(stepStarted).Milliseconds(), "servers", len(servers), "warning", warning != "", "wait_timeout_ms", waitTimeout.Milliseconds())
-			if warning != "" {
-				slog.Warn("Cloudflare TURN unavailable for offer generation", "warning", warning)
-				t.mu.Lock()
-				t.turnWarning = warning
-				t.mu.Unlock()
-				t.window.Invalidate()
-			} else {
-				iceConfig.TURNServers = servers
-			}
+		}
+		turnStart := time.Now()
+		waitTimeout := time.Duration(0)
+		if quick {
+			waitTimeout = quickTurnCacheWaitTimeout
+		}
+		iceConfig, turnWarn := resolveICEWithTURN(t.config, t.tc, waitTimeout)
+		slog.Debug("pair offer step", "mode", mode, "step", "turn_cache", "elapsed_ms", time.Since(turnStart).Milliseconds(), "warning", turnWarn != "", "wait_timeout_ms", waitTimeout.Milliseconds())
+		if turnWarn != "" {
+			slog.Warn("Cloudflare TURN unavailable for offer generation", "warning", turnWarn)
+			t.mu.Lock()
+			t.turnWarning = turnWarn
+			t.mu.Unlock()
+			t.window.Invalidate()
 		}
 
 		t.mu.Lock()

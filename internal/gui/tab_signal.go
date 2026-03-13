@@ -449,14 +449,9 @@ func (t *signalTab) startSignalAgent() {
 	t.window.Invalidate()
 
 	go func() {
-		iceConfig := parseICEConfig(t.config)
-		if t.config.TURNMode == TURNModeCloudflare {
-			servers, warning := t.tc.getServers(2 * time.Second)
-			if warning != "" {
-				slog.Warn("Cloudflare TURN unavailable for agent", "warning", warning)
-			} else {
-				iceConfig.TURNServers = servers
-			}
+		iceConfig, turnWarn := resolveICEWithTURN(t.config, t.tc, 2*time.Second)
+		if turnWarn != "" {
+			slog.Warn("Cloudflare TURN unavailable for agent", "warning", turnWarn)
 		}
 
 		adbAddr := fmt.Sprintf("127.0.0.1:%d", adbPort)
@@ -806,14 +801,9 @@ func (t *signalTab) startClient() {
 	t.window.Invalidate()
 
 	go func() {
-		iceConfig := parseICEConfig(t.config)
-		if t.config.TURNMode == TURNModeCloudflare {
-			servers, warning := t.tc.getServers(2 * time.Second)
-			if warning != "" {
-				slog.Warn("Cloudflare TURN unavailable for daemon", "warning", warning)
-			} else {
-				iceConfig.TURNServers = servers
-			}
+		iceConfig, turnWarn := resolveICEWithTURN(t.config, t.tc, 2*time.Second)
+		if turnWarn != "" {
+			slog.Warn("Cloudflare TURN unavailable for daemon", "warning", turnWarn)
 		}
 
 		cfg := daemon.Config{

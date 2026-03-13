@@ -230,25 +230,21 @@ func (t *pairTab) serverProcessOffer() {
 			return
 		}
 
-		iceConfig := parseICEConfig(t.config)
 		if t.config.TURNMode == TURNModeCloudflare {
 			t.mu.Lock()
 			t.status = msg().Pair.StatusPreparingTURN
 			t.mu.Unlock()
 			t.window.Invalidate()
-
-			stepStarted = time.Now()
-			servers, warning := t.tc.getServers(10 * time.Second)
-			slog.Debug("pair answer step", "step", "turn_cache", "elapsed_ms", time.Since(stepStarted).Milliseconds(), "servers", len(servers), "warning", warning != "")
-			if warning != "" {
-				slog.Warn("Cloudflare TURN unavailable for answer generation", "warning", warning)
-				t.mu.Lock()
-				t.turnWarning = warning
-				t.mu.Unlock()
-				t.window.Invalidate()
-			} else {
-				iceConfig.TURNServers = servers
-			}
+		}
+		stepStarted = time.Now()
+		iceConfig, turnWarn := resolveICEWithTURN(t.config, t.tc, 10*time.Second)
+		slog.Debug("pair answer step", "step", "turn_cache", "elapsed_ms", time.Since(stepStarted).Milliseconds(), "warning", turnWarn != "")
+		if turnWarn != "" {
+			slog.Warn("Cloudflare TURN unavailable for answer generation", "warning", turnWarn)
+			t.mu.Lock()
+			t.turnWarning = turnWarn
+			t.mu.Unlock()
+			t.window.Invalidate()
 		}
 
 		t.mu.Lock()

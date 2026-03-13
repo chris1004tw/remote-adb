@@ -492,9 +492,25 @@ func generateToken() string {
 	return fmt.Sprintf("%x", b)
 }
 
+// resolveICEWithTURN 建構 ICE config 並整合 TURN 快取結果。
+// Cloudflare 模式下從 turnCache 取得憑證（等待最多 timeout），其他模式直接使用 parseICEConfig。
+// 回傳 ICE config 和 TURN 警告訊息（空字串表示無警告或非 Cloudflare 模式）。
+// tab_signal.go、tab_pair_client.go、tab_pair_server.go 共用此邏輯。
+func resolveICEWithTURN(config *AppConfig, tc *turnCache, timeout time.Duration) (webrtc.ICEConfig, string) {
+	iceConfig := parseICEConfig(config)
+	if config.TURNMode == TURNModeCloudflare {
+		servers, warning := tc.getServers(timeout)
+		if warning != "" {
+			return iceConfig, warning
+		}
+		iceConfig.TURNServers = servers
+	}
+	return iceConfig, ""
+}
+
 // parseICEConfig 根據 AppConfig 的 STUN/TURN 設定建構 ICEConfig。
 // STUN 設定為逗號分隔的 URL 字串；自訂 TURN 設定包含 URL、帳號、密碼三個欄位。
-// 注意：此函式僅處理 custom 模式的 TURN，Cloudflare 模式請用 resolveICEConfig。
+// 注意：此函式僅處理 custom 模式的 TURN，Cloudflare 模式請用 resolveICEWithTURN。
 func parseICEConfig(cfg *AppConfig) webrtc.ICEConfig {
 	ice := webrtc.ICEConfig{}
 	if cfg.STUNServer != "" {
