@@ -93,13 +93,23 @@ func SDPToCompact(sdp string) CompactSDP {
 //     多張網卡映射到相同公網 IP 時只需保留一個 srflx candidate
 //
 // 設計意圖：減少手動複製 token 的長度，從 ~375 字元降至接近 200 字元。
+// 每條 candidate 字串只做一次 strings.Split 解析，避免重複分割。
 func FilterCandidates(candidates []string) []string {
 	if len(candidates) == 0 {
 		return nil
 	}
 
-	// 第一輪：過濾 loopback 和 link-local
-	var filtered []string
+	// candidateEntry 為已解析的 candidate 欄位，避免同一條字串重複 Split。
+	type candidateEntry struct {
+		raw      string // 原始字串，最終結果直接取用
+		ip       net.IP // 解析後的 IP，用於 loopback/link-local 判斷
+		proto    string // 協定（udp/tcp），srflx 去重 key 組成
+		priority uint64 // 優先度，srflx 去重時保留最高者
+		typ      string // candidate 類型（host/srflx/prflx/relay）
+	}
+
+	// 第一步：一次解析全部 candidate，同時過濾 loopback 和 link-local
+	var entries []candidateEntry
 	for _, c := range candidates {
 		parts := strings.Split(c, ",")
 		if len(parts) < 5 {
@@ -109,51 +119,52 @@ func FilterCandidates(candidates []string) []string {
 		if ip == nil {
 			continue
 		}
-		if ip.IsLoopback() {
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() {
 			continue
 		}
-		if ip.IsLinkLocalUnicast() {
-			continue
-		}
-		filtered = append(filtered, c)
-	}
-
-	// 第二輪：srflx 同公網 IP + 同協定去重，保留最高 priority
-	// key = "proto,ip"（srflx 的公網 IP），value = 該 key 中最高 priority 的索引
-	type srflxEntry struct {
-		idx      int
-		priority uint64
-	}
-	bestSrflx := make(map[string]srflxEntry)
-
-	for i, c := range filtered {
-		parts := strings.Split(c, ",")
-		if len(parts) < 5 || parts[4] != "srflx" {
-			continue
-		}
-		key := parts[0] + "," + parts[1] // proto,ip（公網 IP）
 		pri, _ := strconv.ParseUint(parts[3], 10, 64)
-		if existing, ok := bestSrflx[key]; !ok || pri > existing.priority {
-			bestSrflx[key] = srflxEntry{idx: i, priority: pri}
+		entries = append(entries, candidateEntry{
+			raw:      c,
+			ip:       ip,
+			proto:    parts[0],
+			priority: pri,
+			typ:      parts[4],
+		})
+	}
+
+	// 第二步：srflx 同公網 IP + 同協定去重，保留最高 priority
+	// key = "proto,ip"（srflx 的公網 IP），value = 該 key 中最高 priority 的索引
+	type srflxBest struct {
+		idx      int    // entries 中的索引
+		priority uint64 // 該 key 中目前最高的 priority
+	}
+	bestSrflx := make(map[string]srflxBest)
+
+	for i, e := range entries {
+		if e.typ != "srflx" {
+			continue
+		}
+		key := e.proto + "," + e.ip.String()
+		if existing, ok := bestSrflx[key]; !ok || e.priority > existing.priority {
+			bestSrflx[key] = srflxBest{idx: i, priority: e.priority}
 		}
 	}
 
 	// 建立保留的 srflx 索引集合
-	keepIdx := make(map[int]bool)
-	for _, entry := range bestSrflx {
-		keepIdx[entry.idx] = true
+	keepIdx := make(map[int]bool, len(bestSrflx))
+	for _, best := range bestSrflx {
+		keepIdx[best.idx] = true
 	}
 
+	// 第三步：組裝結果——非 srflx 全部保留，srflx 只保留去重勝出者
 	var result []string
-	for i, c := range filtered {
-		parts := strings.Split(c, ",")
-		if len(parts) >= 5 && parts[4] == "srflx" {
-			if keepIdx[i] {
-				result = append(result, c)
+	for i, e := range entries {
+		if e.typ == "srflx" {
+			if !keepIdx[i] {
+				continue
 			}
-		} else {
-			result = append(result, c)
 		}
+		result = append(result, e.raw)
 	}
 	return result
 }
