@@ -87,7 +87,7 @@ fi
 
 # --- 5. 使用 create-dmg 產出帶背景圖與圖示定位的 DMG ---
 # 背景圖 654×422，箭頭置中於 (327, 200)
-# radb.app 放在箭頭左側，Applications 捷徑放在箭頭右側
+# radb.app (167) 與 Applications (487) 各距中心 160px，確保對稱
 BACKGROUND="${PROJECT_ROOT}/assets/dmg-background.png"
 
 # create-dmg 不接受已存在的輸出檔，先移除
@@ -99,9 +99,9 @@ create-dmg \
     --window-pos 200 120 \
     --window-size 654 422 \
     --icon-size 128 \
-    --icon "radb.app" 170 200 \
+    --icon "radb.app" 167 200 \
     --hide-extension "radb.app" \
-    --app-drop-link 490 200 \
+    --app-drop-link 487 200 \
     --no-internet-enable \
     "${OUTPUT_DMG}" \
     "${APP_DIR}"
