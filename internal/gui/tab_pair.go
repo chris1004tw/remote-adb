@@ -134,9 +134,10 @@ type pairTab struct {
 	// TURN 不可用警告（mutex 保護）
 	turnWarning string
 
-	// 結束連線 / 清除按鈕
-	disconnectBtn widget.Clickable
-	clearBtn      widget.Clickable
+	// 結束連線 / 清除 / 重新加入 ADB 按鈕
+	disconnectBtn   widget.Clickable
+	clearBtn        widget.Clickable
+	reconnectADBBtn widget.Clickable
 
 	// 捲動清單
 	list widget.List
@@ -305,6 +306,15 @@ func (t *pairTab) layoutClientWidgets(gtx layout.Context, th *material.Theme) []
 		for t.disconnectBtn.Clicked(gtx) {
 			t.disconnect()
 		}
+		// 重新添加遠端 ADB 設備到本機（不小心在 Scrcpy GUI 等工具按了 disconnect 時使用）
+		for t.reconnectADBBtn.Clicked(gtx) {
+			if dpm != nil {
+				for _, e := range dpm.Entries() {
+					target := fmt.Sprintf("127.0.0.1:%d", e.Port)
+					go adb.AutoConnect("", target, 0)
+				}
+			}
+		}
 
 		var widgets []layout.Widget
 		latency := t.latencyMs.Load()
@@ -364,6 +374,17 @@ func (t *pairTab) layoutClientWidgets(gtx layout.Context, th *material.Theme) []
 					})
 				})
 			}
+		}
+
+		// 重新添加遠端 ADB 設備到本機按鈕（藍色，設備列表非空時顯示）
+		if len(entries) > 0 {
+			widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Top: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					btn := material.Button(th, &t.reconnectADBBtn, msg().Pair.ReconnectADB)
+					btn.Background = color.NRGBA{R: 33, G: 150, B: 243, A: 255} // #2196F3 藍色
+					return btn.Layout(gtx)
+				})
+			})
 		}
 
 		// 結束連線按鈕
