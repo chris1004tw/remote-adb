@@ -1,6 +1,6 @@
 # radb -- 遠端 ADB P2P 轉發工具
 
-[![English README](https://img.shields.io/badge/lang-English-blue)](README.en.md)
+[English Version](README.en.md)
 
 透過 P2P 網路穿透，讓你在本機像操作本地 USB 設備一樣，使用遠端主機上的 Android 手機。支援 `adb shell`、`scrcpy` 投影與大檔案傳輸。
 
@@ -13,15 +13,12 @@
 ## 核心特色
 
 - **P2P 穿透 NAT/防火牆**，無需 VPN 或 Port Forwarding
-- **單一主機管理多支設備**，支援多開發者同時使用
+- **三種連線模式**：P2P 直連 / 區網 TCP 直連 / Relay Server 中繼
+- **單一主機管理多支設備**，每台設備獨立 port，支援多開發者同時使用
 - **DTLS 全程加密**，Token 身分驗證
 - **單一執行檔部署**，免安裝相依套件
-- **互動式 CLI**，一鍵選機、自動分配 Port
+- **CLI + GUI 雙介面**，一鍵選機、自動分配 Port
 - **支援 adb shell、scrcpy、大檔案傳輸**（100MB+ 穩定）
-- **Direct 模式**：LAN/VPN 內 TCP 直連，不需要任何伺服器
-- **mDNS 自動發現**：自動找到區域網路內的被控端
-- **手動 SDP 配對**：跨 NAT 打洞，不需要任何 Server
-- **GUI 介面**：雙擊即開，免開 Terminal（Gio 純 Go 實作）
 
 ---
 
@@ -123,7 +120,60 @@ sudo codesign --force --deep --sign - /Applications/radb.app
 
 ---
 
-## 快速開始
+## 使用方式
+
+radb 提供三種連線模式，所有模式都同時支援 CLI 和 GUI：
+
+| 模式 | 適用場景 | 需要伺服器 |
+|------|---------|-----------|
+| **P2P** | 跨 NAT，一對一快速配對 | 不需要（預設使用 Cloudflare 免費 TURN） |
+| **Direct** | 同一區網 / VPN | 不需要 |
+| **Relay** | 多人多設備，長期部署 | 需要自架 Relay Server |
+
+### P2P 模式（跨 NAT，不需要任何 Server）
+
+透過 WebRTC 打洞，交換邀請碼/回應碼即可建立 P2P 連線：
+
+```bash
+# 主控端：生成邀請碼
+radb p2p connect
+# → 複製邀請碼給被控端，等待輸入回應碼
+# → 回應碼輸入錯誤時會重新提示（邀請碼為一次性，不會因誤按而浪費）
+
+# 被控端：處理邀請碼並回傳回應碼
+radb p2p agent <邀請碼>
+# → 複製回應碼回主控端
+
+# 主控端貼上回應碼 → P2P 連線建立
+# → 每台設備分配獨立 port（從 5555 起），自動 adb connect
+
+# 預設使用 Cloudflare 免費 TURN，可用 --turn-mode 切換：
+radb p2p connect --turn-mode none      # 僅 STUN，不使用 TURN
+radb p2p connect --turn-mode custom    # 使用自訂 TURN Server
+```
+
+### Direct 模式（區網直連，無需 Server）
+
+適用於同一 LAN 或 VPN 內的場景：
+
+```bash
+# 被控端：在區網內開啟監聽
+radb direct agent --port 9000 --token mysecret
+
+# 主控端：自動發現 LAN 上的被控端（mDNS）
+radb direct discover
+
+# 查詢設備
+radb direct connect 192.168.1.100:9000 --list --token mysecret
+
+# TCP 直連（每台設備分配獨立 port，支援 adb shell / scrcpy / forward）
+radb direct connect 192.168.1.100:9000 --token mysecret
+# → 每台設備分配獨立 port（從 5555 起），自動 adb connect
+```
+
+### Relay 模式（透過中繼伺服器）
+
+適用於多人多設備的團隊環境：
 
 **步驟 1：啟動 Relay Server**
 
@@ -163,74 +213,42 @@ adb -s localhost:15555 push large_file.apk /sdcard/
 
 ---
 
-## Direct 模式（區網直連，無需 Server）
+## GUI 介面
 
-### TCP 直連（LAN/VPN 場景）
-
-```bash
-# 被控端：在區網內開啟監聽
-radb direct agent --port 9000 --token mysecret
-
-# 主控端：自動發現 LAN 上的被控端（mDNS）
-radb direct discover
-
-# 查詢設備
-radb direct connect 192.168.1.100:9000 --list --token mysecret
-
-# TCP 直連（每台設備分配獨立 port，支援 adb shell / scrcpy / forward）
-radb direct connect 192.168.1.100:9000 --token mysecret
-# → 每台設備分配獨立 port（從 5555 起），自動 adb connect
-```
-
----
-
-## GUI 模式
-
-直接執行 `radb`（不帶引數）即可開啟圖形介面，包含三個分頁：
-
-- **簡易連線**：跨 NAT 手動 SDP 交換（主控端 / 被控端雙模式）
-- **區網直連**：開啟被控端伺服器或掃描 LAN 自動發現，一鍵轉發全部設備
-- **Relay 伺服器**：透過中央 Relay Server 連線
-- **設定面板**（右下角齒輪）：集中管理 ADB Port、Proxy Port、Direct Port、STUN Server、TURN 模式（Cloudflare 免費 / 自訂）、語言切換，支援手動檢查更新。TURN 預設使用 Cloudflare 免費 TURN 憑證（自動取得，開箱即用）；選擇自訂模式時顯示 URL/帳號/密碼輸入框。設定以 TOML 格式持久化於 `%APPDATA%/radb/radb.toml`（Windows）或 `~/.config/radb/radb.toml`（Linux/macOS）
-- **多語系支援**：繁體中文 / English 雙語介面，預設根據系統語系自動偵測，可在設定面板即時切換（不需重啟）
-- **啟動自動檢查更新**：程式啟動後背景檢查新版本，有更新時在主畫面底部顯示通知橫幅，使用者可選擇「立即更新」或「稍後再說」
-- GUI/CLI 共用 ADB bridge（`internal/bridge/`）針對 DataChannel 採用 **16KB 分塊傳輸**，提升 `scrcpy` 視訊與大流量穩定性
-- **快速邀請碼模式**：P2P 直連分頁新增「立即產生邀請碼」按鈕，縮短 ICE candidate 蒐集時間，快速產生邀請碼（可能缺少部分候選，有無法連接的風險）
-- **邀請碼背景預產生**：切入主控模式時自動在背景預先建立完整邀請碼，點擊「產生邀請碼」時可秒出結果
-- **連線進度顯示**：P2P 連線過程細分為多階段進度（準備 TURN → 建立元件 → 蒐集候選 → 壓縮），使用者可即時了解目前步驟
-- GUI 視窗標題顯示版本號（如 `radb - 遠端 ADB 工具 - v1.2.0`）
-- **Per-device Proxy Port**：每台遠端設備分配獨立 port（從 5555 起遞增），`scrcpy` / UIAutomator 可直接以 `adb -s 127.0.0.1:<port>` 操作特定設備
-- 內建 forward 攔截會將本機 proxy 序號映射為遠端真實設備序號，避免 `scrcpy` forward 失配
-- ADB transport 的 host→device `WRTE` 路徑同樣採 **16KB 分塊寫入**，避免 `sync`/`scrcpy` 啟動階段的大封包失敗
+直接執行 `radb`（不帶引數）即可開啟圖形介面。
 
 ```bash
-# GUI 模式（雙擊或無引數執行）
 radb
 ```
 
----
+### 分頁
 
-### P2P 手動配對（跨 NAT 打洞）
+| 分頁 | 功能 | 對應 CLI |
+|------|------|---------|
+| **簡易連線** | 跨 NAT 手動 SDP 交換（主控端 / 被控端雙模式） | `radb p2p` |
+| **區網直連** | 開啟被控端伺服器或掃描 LAN 自動發現 | `radb direct` |
+| **Relay 伺服器** | 透過中央 Relay Server 連線 | `radb relay` |
 
-適用於無法部署 Server、但需要跨網路連線的場景：
+### 功能特色
 
-```bash
-# 主控端：生成邀請碼（compact SDP token）
-radb p2p connect
-# → 複製邀請碼給被控端，等待輸入回應碼
-# → 回應碼輸入錯誤時會重新提示（邀請碼為一次性，不會因誤按而浪費）
+- **Per-device Proxy Port**：每台遠端設備分配獨立 port（從 5555 起遞增），`scrcpy` / UIAutomator 可直接以 `adb -s 127.0.0.1:<port>` 操作特定設備
+- **重新添加遠端 ADB 設備**：P2P 主控端提供一鍵重新 `adb connect` 按鈕，Scrcpy GUI 等工具誤斷 ADB 時不需重建 P2P 連線
+- **快速邀請碼**：P2P 分頁提供「立即產生邀請碼」按鈕，犧牲部分候選換取速度
+- **邀請碼預產生**：切入主控模式時自動在背景預產生邀請碼，點擊時可秒出結果
+- **連線進度顯示**：多階段進度回報（準備 TURN → 建立元件 → 蒐集候選 → 壓縮）
+- **多語系**：繁體中文 / English，根據系統語系自動偵測，可即時切換（不需重啟）
+- **自動更新**：啟動後背景檢查新版本，主畫面底部顯示通知橫幅
 
-# 被控端：處理邀請碼並回傳回應碼
-radb p2p agent <邀請碼>
-# → 複製回應碼回主控端
+### 設定面板
 
-# 主控端貼上回應碼 → P2P 連線建立
-# → 每台設備分配獨立 port（從 5555 起），自動 adb connect
+點擊右下角齒輪圖示開啟，可管理：
 
-# 預設使用 Cloudflare 免費 TURN，可用 --turn-mode 切換：
-radb p2p connect --turn-mode none      # 僅 STUN，不使用 TURN
-radb p2p connect --turn-mode custom    # 使用自訂 TURN Server
-```
+- ADB Port、Proxy Port、Direct Port
+- STUN Server
+- TURN 模式（Cloudflare 免費 / 自訂 URL + 帳號密碼）
+- 語言切換、手動檢查更新
+
+TURN 預設使用 Cloudflare 免費憑證（自動取得，開箱即用）。設定以 TOML 格式持久化於 `%APPDATA%/radb/radb.toml`（Windows）或 `~/.config/radb/radb.toml`（Linux/macOS）。
 
 ---
 

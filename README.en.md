@@ -1,6 +1,6 @@
 # radb -- Remote ADB P2P Forwarding Tool
 
-[![繁體中文 README](https://img.shields.io/badge/lang-%E7%B9%81%E9%AB%94%E4%B8%AD%E6%96%87-blue)](README.md)
+[繁體中文版](README.md)
 
 Forward Android devices from a remote host to your local machine via P2P network traversal. Use `adb shell`, `scrcpy` screen mirroring, and large file transfers as if the device were plugged in locally.
 
@@ -13,15 +13,12 @@ Forward Android devices from a remote host to your local machine via P2P network
 ## Key Features
 
 - **P2P NAT/Firewall Traversal** -- no VPN or port forwarding required
-- **Multi-device, Multi-user** -- one host manages multiple devices for multiple developers
+- **Three Connection Modes**: P2P direct / LAN TCP direct / Relay Server
+- **Multi-device, Multi-user** -- each device gets its own port, supports multiple developers
 - **DTLS Encryption** with token-based authentication
 - **Single Binary Deployment** -- no dependencies to install
-- **Interactive CLI** -- one-key device selection with automatic port allocation
+- **CLI + GUI** -- one-key device selection with automatic port allocation
 - **Supports adb shell, scrcpy, large file transfers** (100MB+ stable)
-- **Direct Mode** -- TCP direct connection over LAN/VPN, no server needed at all
-- **mDNS Auto-Discovery** -- automatically find Agents on the local network
-- **Manual SDP Pairing** -- NAT hole-punching without any server
-- **GUI** -- double-click to open, no terminal needed (Gio, pure Go)
 
 ---
 
@@ -123,7 +120,60 @@ sudo codesign --force --deep --sign - /Applications/radb.app
 
 ---
 
-## Quick Start
+## Usage
+
+radb offers three connection modes, all supported in both CLI and GUI:
+
+| Mode | Use Case | Server Required |
+|------|----------|-----------------|
+| **P2P** | Cross-NAT, one-to-one quick pairing | No (uses free Cloudflare TURN by default) |
+| **Direct** | Same LAN / VPN | No |
+| **Relay** | Multi-user, multi-device, long-term deployment | Yes (self-hosted Relay Server) |
+
+### P2P Mode (Cross-NAT, No Server Required)
+
+Establish a P2P connection via WebRTC by exchanging offer/answer tokens:
+
+```bash
+# Client: generate offer
+radb p2p connect
+# → Copy the offer token to the Agent, then wait for the answer token
+# → Retry on invalid input (offer is one-time-use, won't be wasted by accidental Enter)
+
+# Agent: process offer and return answer
+radb p2p agent <offer-token>
+# → Copy the answer token back to the Client
+
+# Client pastes answer → P2P connection established
+# → Each device gets its own port (starting from 5555), auto adb connect
+
+# Uses Cloudflare free TURN by default, switch with --turn-mode:
+radb p2p connect --turn-mode none      # STUN only, no TURN
+radb p2p connect --turn-mode custom    # Use custom TURN server
+```
+
+### Direct Mode (LAN Direct, No Server Required)
+
+For same LAN or VPN scenarios:
+
+```bash
+# Agent: start listening on LAN
+radb direct agent --port 9000 --token mysecret
+
+# Client: auto-discover Agents on LAN (mDNS)
+radb direct discover
+
+# List devices
+radb direct connect 192.168.1.100:9000 --list --token mysecret
+
+# TCP direct connection (per-device proxy ports, supports adb shell / scrcpy / forward)
+radb direct connect 192.168.1.100:9000 --token mysecret
+# → Each device gets its own port (starting from 5555), auto adb connect
+```
+
+### Relay Mode (Via Relay Server)
+
+For multi-user, multi-device team environments:
 
 **Step 1: Start the Relay Server**
 
@@ -163,70 +213,42 @@ See [Configuration Guide](docs/configuration.md) for all options.
 
 ---
 
-## Direct Mode (LAN Direct, No Server Required)
+## GUI
 
-### TCP Direct Connection (LAN/VPN)
-
-```bash
-# Agent: start listening on LAN
-radb direct agent --port 9000 --token mysecret
-
-# Client: auto-discover Agents on LAN (mDNS)
-radb direct discover
-
-# List devices
-radb direct connect 192.168.1.100:9000 --list --token mysecret
-
-# TCP direct connection (per-device proxy ports, supports adb shell / scrcpy / forward)
-radb direct connect 192.168.1.100:9000 --token mysecret
-# → Each device gets its own port (starting from 5555), auto adb connect
-```
-
----
-
-## GUI Mode
-
-Run `radb` without arguments to open the graphical interface with three tabs:
-
-- **Easy Connect**: Cross-NAT manual SDP exchange (Client / Agent dual mode)
-- **LAN Direct**: Start an Agent server or scan LAN for auto-discovery, one-click forwarding
-- **Relay Server**: Connect via a central Relay Server
-- **Settings** (gear icon, bottom-right): Manage ADB Port, Proxy Port, Direct Port, STUN Server, TURN mode (Cloudflare free / custom), language switch. Supports manual update check. TURN defaults to Cloudflare free credentials (auto-fetched, works out of the box); selecting custom mode shows URL/username/password fields. Settings are persisted in TOML at `%APPDATA%/radb/radb.toml` (Windows) or `~/.config/radb/radb.toml` (Linux/macOS)
-- **Bilingual UI**: Traditional Chinese / English, auto-detected from system locale, switchable in settings (no restart needed)
-- **Auto Update Check**: Checks for new versions on startup, shows a notification banner with "Update Now" or "Later" options
-- GUI/CLI share the ADB bridge (`internal/bridge/`) with **16KB chunked transfer** on DataChannels for better `scrcpy` video and high-throughput stability
-- **Per-device Proxy Port**: Each remote device gets its own port (starting from 5555), so `scrcpy` / UIAutomator can target a specific device via `adb -s 127.0.0.1:<port>`
-- Built-in forward interception maps local proxy serial to remote real device serial, preventing `scrcpy` forward mismatch
-- ADB transport host→device `WRTE` path also uses **16KB chunked writes** to avoid large-packet failures during `sync`/`scrcpy` startup
+Run `radb` without arguments to open the graphical interface.
 
 ```bash
-# GUI mode (double-click or run without arguments)
 radb
 ```
 
----
+### Tabs
 
-### P2P Manual Pairing (Cross-NAT Hole Punching)
+| Tab | Function | CLI Equivalent |
+|-----|----------|---------------|
+| **Easy Connect** | Cross-NAT manual SDP exchange (Client / Agent dual mode) | `radb p2p` |
+| **LAN Direct** | Start Agent server or scan LAN for auto-discovery | `radb direct` |
+| **Relay Server** | Connect via a central Relay Server | `radb relay` |
 
-For scenarios where you can't deploy a Server but need cross-network connectivity:
+### Features
 
-```bash
-# Client: generate offer (compact SDP token)
-radb p2p connect
-# → Copy the offer token to the Agent, then wait for the answer token
-# → Retry on invalid input (offer is one-time-use, won't be wasted by accidental Enter)
+- **Per-device Proxy Port**: Each remote device gets its own port (starting from 5555), so `scrcpy` / UIAutomator can target a specific device via `adb -s 127.0.0.1:<port>`
+- **Re-add Remote ADB Devices**: One-click `adb connect` button on the P2P client page -- no need to rebuild the P2P connection when tools like Scrcpy GUI accidentally disconnect ADB
+- **Quick Offer**: "Generate offer now" button for faster ICE gathering (may lack some candidates)
+- **Offer Pre-generation**: Automatically pre-generates offer in the background when entering client mode, ready instantly on click
+- **Connection Progress**: Multi-stage progress display (Preparing TURN → Creating components → Gathering candidates → Encoding)
+- **Bilingual UI**: Traditional Chinese / English, auto-detected from system locale, switchable instantly (no restart)
+- **Auto Update**: Checks for new versions on startup, shows notification banner
 
-# Agent: process offer and return answer
-radb p2p agent <offer-token>
-# → Copy the answer token back to the Client
+### Settings Panel
 
-# Client pastes answer → P2P connection established
-# → Each device gets its own port (starting from 5555), auto adb connect
+Click the gear icon (bottom-right) to manage:
 
-# Uses Cloudflare free TURN by default, switch with --turn-mode:
-radb p2p connect --turn-mode none      # STUN only, no TURN
-radb p2p connect --turn-mode custom    # Use custom TURN server
-```
+- ADB Port, Proxy Port, Direct Port
+- STUN Server
+- TURN mode (Cloudflare free / custom URL + credentials)
+- Language switch, manual update check
+
+TURN defaults to free Cloudflare credentials (auto-fetched, works out of the box). Settings are persisted in TOML at `%APPDATA%/radb/radb.toml` (Windows) or `~/.config/radb/radb.toml` (Linux/macOS).
 
 ---
 
@@ -259,7 +281,7 @@ remote-adb/
 │   ├── buildinfo/         # Build-time version info (Version/Commit/Date)
 │   ├── cli/               # bubbletea interactive bind menu
 │   ├── daemon/            # Background service, port allocation, binding table, IPC
-│   ├── bridge/            # Shared GUI/CLI logic (SDP codec, ADB transport, forward management, per-device proxy)
+│   ├── bridge/            # Shared GUI/CLI logic (SDP codec, ADB transport, forward management)
 │   ├── directsrv/         # TCP direct connection service + mDNS broadcast + client connection
 │   ├── gui/               # Gio GUI (Easy Connect/LAN Direct/Relay tabs + settings + i18n + Cloudflare TURN + TURN prefetch cache)
 │   ├── proxy/             # TCP proxy (16KB chunking, single-connection replacement)
