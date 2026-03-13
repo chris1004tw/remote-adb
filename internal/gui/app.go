@@ -28,6 +28,7 @@ import (
 	"log/slog"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -66,6 +67,43 @@ func Run() {
 		os.Exit(0)
 	}()
 	app.Main()
+}
+
+// loadCJKFaces 從候選路徑列表載入第一個可用的 CJK 字型，回傳解析出的字型面。
+//
+// 解析大型 TTC 字型（如 msjh.ttc ~21MB）會大量分配記憶體，觸發 GC stop-the-world。
+// Go 1.26 在 Windows 上的 preemptM 有已知問題，GC 搶占可能導致 runtime.throw crash。
+// 因此在 ParseCollection 期間暫時停用 GC，解析完成後恢復並手動觸發一次回收。
+func loadCJKFaces(fontPaths []string) []font.FontFace {
+	for _, p := range fontPaths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			slog.Debug("CJK font file not found", "path", p, "error", err)
+			continue
+		}
+
+		// 暫時停用 GC，避免大量記憶體分配期間觸發 GC 搶占 crash
+		prevGC := debug.SetGCPercent(-1)
+		faces, err := opentype.ParseCollection(data)
+		if err != nil {
+			// 嘗試單一字型格式（如 .otf）
+			face, err2 := opentype.Parse(data)
+			debug.SetGCPercent(prevGC)
+			runtime.GC()
+			if err2 != nil {
+				slog.Warn("CJK font parse failed", "path", p, "collection_err", err, "single_err", err2)
+				continue
+			}
+			slog.Info("CJK font loaded", "path", p, "faces", 1)
+			return []font.FontFace{{Face: face}}
+		}
+		debug.SetGCPercent(prevGC)
+		runtime.GC()
+		slog.Info("CJK font loaded", "path", p, "faces", len(faces))
+		return faces
+	}
+	slog.Warn("no CJK font loaded, Chinese text may display as boxes")
+	return nil
 }
 
 // newThemeWithCJK 建立帶 CJK（中日韓）字型的 Gio Theme。
@@ -108,25 +146,7 @@ func newThemeWithCJK() *material.Theme {
 		}
 	}
 
-	var cjkFaces []font.FontFace
-	for _, p := range fontPaths {
-		data, err := os.ReadFile(p)
-		if err != nil {
-			continue
-		}
-		faces, err := opentype.ParseCollection(data)
-		if err != nil {
-			// 嘗試單一字型格式
-			face, err2 := opentype.Parse(data)
-			if err2 != nil {
-				continue
-			}
-			cjkFaces = append(cjkFaces, font.FontFace{Face: face})
-		} else {
-			cjkFaces = append(cjkFaces, faces...)
-		}
-		break // 找到一個就夠了
-	}
+	cjkFaces := loadCJKFaces(fontPaths)
 
 	if len(cjkFaces) > 0 {
 		// CJK 字型放前面優先使用，Go 內建字型作為 fallback
