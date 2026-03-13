@@ -69,17 +69,13 @@ type settingsPanel struct {
 	doUpdateBtn      widget.Clickable
 
 	// STUN 下拉選單
-	stunDropExpanded bool               // 是否展開
-	stunSelected     int                // 0~len(presets)-1=preset, len(presets)=自訂
-	stunToggleBtn    widget.Clickable   // 下拉切換按鈕
-	stunOptBtns      []widget.Clickable // 選項按鈕（presets + 自訂）
-	stunEditor       widget.Editor      // 自訂 STUN 輸入框
+	stunDrop     dropdownState    // 下拉選單 UI 狀態
+	stunSelected int              // 0~len(presets)-1=preset, len(presets)=自訂
+	stunEditor   widget.Editor    // 自訂 STUN 輸入框
 
 	// TURN 模式下拉選單
-	turnDropExpanded bool
-	turnSelected     int                 // 0=Cloudflare, 1=自訂
-	turnToggleBtn    widget.Clickable    // 下拉切換按鈕
-	turnOptBtns      [2]widget.Clickable // 選項按鈕（Cloudflare / 自訂）
+	turnDrop     dropdownState    // 下拉選單 UI 狀態
+	turnSelected int              // 0=Cloudflare, 1=自訂
 
 	// TURN 自訂模式輸入框（自訂被選中時才顯示）
 	turnEditor     widget.Editor // TURN URL 輸入框
@@ -87,9 +83,7 @@ type settingsPanel struct {
 	turnPassEditor widget.Editor // TURN 密碼輸入框
 
 	// 語言下拉選單
-	langDropExpanded bool
-	langToggleBtn    widget.Clickable
-	langOptBtns      [3]widget.Clickable // Auto / zh-TW / en
+	langDrop dropdownState // 下拉選單 UI 狀態
 
 	// 設定與路徑
 	config     *AppConfig
@@ -139,7 +133,7 @@ func newSettingsPanel(w *app.Window) *settingsPanel {
 	p.directPortEditor.SingleLine = true
 
 	// 初始化 STUN 下拉選單
-	p.stunOptBtns = make([]widget.Clickable, len(defaultStunPresets)+1)
+	p.stunDrop.optBtns = make([]widget.Clickable, len(defaultStunPresets)+1)
 	p.stunEditor.SingleLine = true
 
 	// 初始化 TURN 編輯框
@@ -221,9 +215,9 @@ func (p *settingsPanel) openWindow() {
 	p.mu.Unlock()
 
 	p.syncEditorsFromConfig()
-	p.stunDropExpanded = false
-	p.turnDropExpanded = false
-	p.langDropExpanded = false
+	p.stunDrop.expanded = false
+	p.turnDrop.expanded = false
+	p.langDrop.expanded = false
 	p.visible = true
 
 	w := new(app.Window)
@@ -243,7 +237,8 @@ func (p *settingsPanel) openWindow() {
 func (p *settingsPanel) settingsEventLoop(w *app.Window) {
 	th := newThemeWithCJK()
 	var ops op.Ops
-	var lastH int // 上次設定的視窗高度（px），僅成長避免閃爍
+	var lastH int  // 上次設定的視窗高度（px），僅成長避免閃爍
+	var raised bool // 首幀後是否已設為 topmost
 
 	defer func() {
 		p.mu.Lock()
@@ -302,6 +297,17 @@ func (p *settingsPanel) settingsEventLoop(w *app.Window) {
 			}
 
 			e.Frame(&ops)
+
+			// 首幀渲染後將設定視窗設為 topmost，防止 Gio Windows 後端的
+			// pointerUpdate 在滑鼠經過主視窗時呼叫 SetFocus 搶回焦點，
+			// 導致使用者無法操作設定視窗。
+			if !raised {
+				raised = true
+				go func() {
+					defer func() { recover() }()
+					w.Perform(system.ActionRaise)
+				}()
+			}
 		}
 	}
 }
@@ -499,34 +505,58 @@ func (p *settingsPanel) layoutContent(gtx layout.Context, th *material.Theme) la
 	)
 }
 
-// layoutStunDropdown 繪製 STUN 伺服器下拉選單。
-// 包含預設公共 STUN 伺服器清單，最後一個選項「自訂」允許使用者輸入自訂位址。
-func (p *settingsPanel) layoutStunDropdown(gtx layout.Context, th *material.Theme) layout.Dimensions {
-	totalOpts := len(defaultStunPresets) + 1
+// dropdownState 封裝下拉選單的 UI 狀態（展開/收合、toggle 按鈕、選項按鈕）。
+// 三個下拉選單（STUN / TURN / Language）共用此結構，消除重複的渲染邏輯。
+type dropdownState struct {
+	expanded  bool               // 是否展開
+	toggleBtn widget.Clickable   // 下拉切換按鈕
+	optBtns   []widget.Clickable // 各選項按鈕（依需要自動擴展）
+}
+
+// dropdownOption 描述下拉選單中的單一選項。
+type dropdownOption struct {
+	Label    string // 顯示文字
+	Selected bool   // 是否為目前選取項
+}
+
+// layoutDropdown 繪製通用下拉選單 UI。
+//
+// 參數：
+//   - label: 左側標籤文字（如 "STUN Server"）
+//   - currentLabel: toggle 按鈕上顯示的目前選取文字
+//   - options: 選項清單（含 Label 和 Selected 狀態）
+//   - onSelect: 選項被點擊時的回呼，參數為選項索引
+//   - extra: 下拉選單收合時附加在底部的額外 FlexChild（如自訂輸入框），
+//     展開時不渲染額外元素，可傳 nil
+//
+// 回傳完整下拉選單（含展開選項清單或額外元素）的 Dimensions。
+func (ds *dropdownState) layoutDropdown(
+	gtx layout.Context, th *material.Theme,
+	label, currentLabel string,
+	options []dropdownOption,
+	onSelect func(int),
+	extra ...layout.FlexChild,
+) layout.Dimensions {
+	// 自動擴展 optBtns slice
+	if len(ds.optBtns) < len(options) {
+		ds.optBtns = append(ds.optBtns, make([]widget.Clickable, len(options)-len(ds.optBtns))...)
+	}
 
 	// 處理切換按鈕點擊
-	for p.stunToggleBtn.Clicked(gtx) {
-		p.stunDropExpanded = !p.stunDropExpanded
+	for ds.toggleBtn.Clicked(gtx) {
+		ds.expanded = !ds.expanded
 	}
 
 	// 處理選項點擊
-	for i := 0; i < totalOpts; i++ {
-		for p.stunOptBtns[i].Clicked(gtx) {
-			p.stunSelected = i
-			p.stunDropExpanded = false
+	for i := range options {
+		for ds.optBtns[i].Clicked(gtx) {
+			ds.expanded = false
+			onSelect(i)
 		}
 	}
 
-	// 目前選取的顯示文字
-	var currentLabel string
-	if p.stunSelected < len(defaultStunPresets) {
-		currentLabel = defaultStunPresets[p.stunSelected].label
-	} else {
-		currentLabel = msg().Settings.CustomStun
-	}
-
 	arrow := " ▼"
-	if p.stunDropExpanded {
+	if ds.expanded {
 		arrow = " ▲"
 	}
 
@@ -537,13 +567,13 @@ func (p *settingsPanel) layoutStunDropdown(gtx layout.Context, th *material.Them
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return layout.Inset{Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-						lbl := material.Body1(th, "STUN Server")
+						lbl := material.Body1(th, label)
 						lbl.TextSize = unit.Sp(14)
 						return lbl.Layout(gtx)
 					})
 				}),
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					return p.stunToggleBtn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return ds.toggleBtn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 						return layout.Background{}.Layout(gtx,
 							func(gtx layout.Context) layout.Dimensions {
 								sz := gtx.Constraints.Min
@@ -569,19 +599,14 @@ func (p *settingsPanel) layoutStunDropdown(gtx layout.Context, th *material.Them
 	}
 
 	// 展開時：選項清單
-	if p.stunDropExpanded {
-		for i := 0; i < totalOpts; i++ {
+	if ds.expanded {
+		for i, opt := range options {
 			idx := i
-			var optLabel string
-			if idx < len(defaultStunPresets) {
-				optLabel = defaultStunPresets[idx].label
-			} else {
-				optLabel = msg().Settings.CustomStunOption
-			}
-			isSelected := idx == p.stunSelected
+			optLabel := opt.Label
+			isSelected := opt.Selected
 
 			children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return p.stunOptBtns[idx].Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return ds.optBtns[idx].Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 					bg := color.NRGBA{R: 58, G: 58, B: 58, A: 255}
 					if isSelected {
 						bg = color.NRGBA{R: 33, G: 80, B: 120, A: 255}
@@ -610,145 +635,65 @@ func (p *settingsPanel) layoutStunDropdown(gtx layout.Context, th *material.Them
 				})
 			}))
 		}
-	}
-
-	// 自訂選項被選中且下拉收起時：顯示自訂輸入框
-	if p.stunSelected >= len(defaultStunPresets) && !p.stunDropExpanded {
-		children = append(children,
-			layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return layout.Background{}.Layout(gtx,
-					func(gtx layout.Context) layout.Dimensions {
-						sz := gtx.Constraints.Min
-						paint.FillShape(gtx.Ops, colorEditorBg, clip.Rect{Max: sz}.Op())
-						lineH := gtx.Dp(unit.Dp(2))
-						paint.FillShape(gtx.Ops, colorTabActive,
-							clip.Rect{Min: image.Pt(0, sz.Y-lineH), Max: sz}.Op())
-						return layout.Dimensions{Size: sz}
-					},
-					func(gtx layout.Context) layout.Dimensions {
-						return layout.UniformInset(unit.Dp(6)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							ed := material.Editor(th, &p.stunEditor, "stun:your.server.com:3478")
-							ed.TextSize = unit.Sp(14)
-							ed.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
-							ed.HintColor = color.NRGBA{R: 160, G: 160, B: 160, A: 255}
-							return ed.Layout(gtx)
-						})
-					},
-				)
-			}),
-		)
+	} else if len(extra) > 0 {
+		// 收合時才附加額外元素（如自訂輸入框）
+		children = append(children, extra...)
 	}
 
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+}
+
+// layoutStunDropdown 繪製 STUN 伺服器下拉選單。
+// 包含預設公共 STUN 伺服器清單，最後一個選項「自訂」允許使用者輸入自訂位址。
+func (p *settingsPanel) layoutStunDropdown(gtx layout.Context, th *material.Theme) layout.Dimensions {
+	totalOpts := len(defaultStunPresets) + 1
+
+	// 組裝選項清單
+	opts := make([]dropdownOption, totalOpts)
+	for i := range defaultStunPresets {
+		opts[i] = dropdownOption{Label: defaultStunPresets[i].label, Selected: i == p.stunSelected}
+	}
+	opts[totalOpts-1] = dropdownOption{Label: msg().Settings.CustomStunOption, Selected: p.stunSelected >= len(defaultStunPresets)}
+
+	// 目前選取的顯示文字
+	var currentLabel string
+	if p.stunSelected < len(defaultStunPresets) {
+		currentLabel = defaultStunPresets[p.stunSelected].label
+	} else {
+		currentLabel = msg().Settings.CustomStun
+	}
+
+	// 自訂選項被選中時：收合狀態下附加自訂輸入框
+	var extra []layout.FlexChild
+	if p.stunSelected >= len(defaultStunPresets) {
+		extra = []layout.FlexChild{
+			layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return labeledEditor(gtx, th, "", &p.stunEditor, "stun:your.server.com:3478")
+			}),
+		}
+	}
+
+	return p.stunDrop.layoutDropdown(gtx, th, "STUN Server", currentLabel, opts, func(idx int) {
+		p.stunSelected = idx
+	}, extra...)
 }
 
 // layoutTurnFields 繪製 TURN 伺服器下拉選單與自訂輸入框。
 // 下拉選單提供兩個選項：Cloudflare（免費）和自訂。
 // 選擇自訂時顯示 URL、帳號、密碼輸入框。
 func (p *settingsPanel) layoutTurnFields(gtx layout.Context, th *material.Theme) layout.Dimensions {
-	turnOptions := []string{
-		msg().Settings.TURNModeCloudflare,
-		msg().Settings.TURNModeCustom,
+	opts := []dropdownOption{
+		{Label: msg().Settings.TURNModeCloudflare, Selected: p.turnSelected == 0},
+		{Label: msg().Settings.TURNModeCustom, Selected: p.turnSelected == 1},
 	}
 
-	// 處理切換按鈕點擊
-	for p.turnToggleBtn.Clicked(gtx) {
-		p.turnDropExpanded = !p.turnDropExpanded
-	}
+	currentLabel := opts[p.turnSelected].Label
 
-	// 處理選項點擊
-	for i := range turnOptions {
-		for p.turnOptBtns[i].Clicked(gtx) {
-			p.turnSelected = i
-			p.turnDropExpanded = false
-		}
-	}
-
-	currentLabel := turnOptions[p.turnSelected]
-	arrow := " ▼"
-	if p.turnDropExpanded {
-		arrow = " ▲"
-	}
-
-	children := []layout.FlexChild{
-		// 第一列：標籤 + 下拉切換按鈕
-		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return layout.Inset{Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-						lbl := material.Body1(th, msg().Settings.TURNModeLabel)
-						lbl.TextSize = unit.Sp(14)
-						return lbl.Layout(gtx)
-					})
-				}),
-				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					return p.turnToggleBtn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-						return layout.Background{}.Layout(gtx,
-							func(gtx layout.Context) layout.Dimensions {
-								sz := gtx.Constraints.Min
-								paint.FillShape(gtx.Ops, colorEditorBg, clip.Rect{Max: sz}.Op())
-								lineH := gtx.Dp(unit.Dp(2))
-								paint.FillShape(gtx.Ops, colorTabActive,
-									clip.Rect{Min: image.Pt(0, sz.Y-lineH), Max: sz}.Op())
-								return layout.Dimensions{Size: sz}
-							},
-							func(gtx layout.Context) layout.Dimensions {
-								return layout.UniformInset(unit.Dp(6)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-									lbl := material.Body1(th, currentLabel+arrow)
-									lbl.TextSize = unit.Sp(14)
-									lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
-									return lbl.Layout(gtx)
-								})
-							},
-						)
-					})
-				}),
-			)
-		}),
-	}
-
-	// 展開時：選項清單
-	if p.turnDropExpanded {
-		for i, optLabel := range turnOptions {
-			idx := i
-			label := optLabel
-			isSelected := idx == p.turnSelected
-
-			children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return p.turnOptBtns[idx].Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					bg := color.NRGBA{R: 58, G: 58, B: 58, A: 255}
-					if isSelected {
-						bg = color.NRGBA{R: 33, G: 80, B: 120, A: 255}
-					}
-					return layout.Background{}.Layout(gtx,
-						func(gtx layout.Context) layout.Dimensions {
-							sz := gtx.Constraints.Min
-							paint.FillShape(gtx.Ops, bg, clip.Rect{Max: sz}.Op())
-							lineY := sz.Y - gtx.Dp(unit.Dp(1))
-							paint.FillShape(gtx.Ops, colorPanelDivider,
-								clip.Rect{Min: image.Pt(0, lineY), Max: sz}.Op())
-							return layout.Dimensions{Size: sz}
-						},
-						func(gtx layout.Context) layout.Dimensions {
-							return layout.Inset{
-								Top: unit.Dp(8), Bottom: unit.Dp(8),
-								Left: unit.Dp(12), Right: unit.Dp(12),
-							}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-								lbl := material.Body1(th, label)
-								lbl.TextSize = unit.Sp(13)
-								return lbl.Layout(gtx)
-							})
-						},
-					)
-				})
-			}))
-		}
-	}
-
-	// 自訂模式被選中且下拉收起時：顯示 URL/帳號/密碼輸入框
-	if p.turnSelected == 1 && !p.turnDropExpanded {
-		children = append(children,
+	// 自訂模式被選中時：收合狀態下附加 URL/帳號/密碼輸入框
+	var extra []layout.FlexChild
+	if p.turnSelected == 1 {
+		extra = []layout.FlexChild{
 			layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				return labeledEditor(gtx, th, msg().Settings.TURNLabel, &p.turnEditor, msg().Settings.TURNHint)
@@ -761,135 +706,48 @@ func (p *settingsPanel) layoutTurnFields(gtx layout.Context, th *material.Theme)
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				return labeledEditor(gtx, th, msg().Settings.TURNPassLabel, &p.turnPassEditor, "")
 			}),
-		)
+		}
 	}
 
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+	return p.turnDrop.layoutDropdown(gtx, th, msg().Settings.TURNModeLabel, currentLabel, opts, func(idx int) {
+		p.turnSelected = idx
+	}, extra...)
 }
 
 // layoutLangDropdown 繪製語言下拉選單。
 // 提供三個選項：自動偵測、繁體中文、English。
 // 切換語言後即時生效（更新全域 Messages 並刷新視窗標題）。
 func (p *settingsPanel) layoutLangDropdown(gtx layout.Context, th *material.Theme) layout.Dimensions {
-	langOptions := []struct {
-		code  string
-		label string
-	}{
-		{LangAuto, msg().Settings.LanguageAuto},
-		{LangZhTW, "繁體中文"},
-		{LangEN, "English"},
-	}
-
-	for p.langToggleBtn.Clicked(gtx) {
-		p.langDropExpanded = !p.langDropExpanded
-	}
-
-	for i := range langOptions {
-		for p.langOptBtns[i].Clicked(gtx) {
-			p.langDropExpanded = false
-			p.config.Language = langOptions[i].code
-			SetLanguage(p.config.Language)
-			// 刷新主視窗標題（非阻塞，避免在 FrameEvent 中呼叫 Option 死鎖）
-			go p.window.Option(app.Title(guiWindowTitle()))
-			// 刷新設定視窗標題
-			p.mu.Lock()
-			if p.settingsWin != nil {
-				go p.settingsWin.Option(app.Title(msg().Settings.Title))
-			}
-			p.mu.Unlock()
-			p.window.Invalidate()
-		}
-	}
+	langCodes := []string{LangAuto, LangZhTW, LangEN}
+	langLabels := []string{msg().Settings.LanguageAuto, "繁體中文", "English"}
 
 	// 找出目前選取的索引
 	currentIdx := 0
-	for i, opt := range langOptions {
-		if opt.code == p.config.Language {
+	for i, code := range langCodes {
+		if code == p.config.Language {
 			currentIdx = i
 			break
 		}
 	}
-	currentLabel := langOptions[currentIdx].label
 
-	arrow := " ▼"
-	if p.langDropExpanded {
-		arrow = " ▲"
+	opts := make([]dropdownOption, len(langLabels))
+	for i, label := range langLabels {
+		opts[i] = dropdownOption{Label: label, Selected: i == currentIdx}
 	}
 
-	children := []layout.FlexChild{
-		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return layout.Inset{Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-						lbl := material.Body1(th, msg().Settings.LanguageLabel)
-						lbl.TextSize = unit.Sp(14)
-						return lbl.Layout(gtx)
-					})
-				}),
-				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					return p.langToggleBtn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-						return layout.Background{}.Layout(gtx,
-							func(gtx layout.Context) layout.Dimensions {
-								sz := gtx.Constraints.Min
-								paint.FillShape(gtx.Ops, colorEditorBg, clip.Rect{Max: sz}.Op())
-								lineH := gtx.Dp(unit.Dp(2))
-								paint.FillShape(gtx.Ops, colorTabActive,
-									clip.Rect{Min: image.Pt(0, sz.Y-lineH), Max: sz}.Op())
-								return layout.Dimensions{Size: sz}
-							},
-							func(gtx layout.Context) layout.Dimensions {
-								return layout.UniformInset(unit.Dp(6)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-									lbl := material.Body1(th, currentLabel+arrow)
-									lbl.TextSize = unit.Sp(14)
-									lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
-									return lbl.Layout(gtx)
-								})
-							},
-						)
-					})
-				}),
-			)
-		}),
-	}
-
-	if p.langDropExpanded {
-		for i, opt := range langOptions {
-			idx := i
-			optLabel := opt.label
-			isSelected := idx == currentIdx
-
-			children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return p.langOptBtns[idx].Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					bg := color.NRGBA{R: 58, G: 58, B: 58, A: 255}
-					if isSelected {
-						bg = color.NRGBA{R: 33, G: 80, B: 120, A: 255}
-					}
-					return layout.Background{}.Layout(gtx,
-						func(gtx layout.Context) layout.Dimensions {
-							sz := gtx.Constraints.Min
-							paint.FillShape(gtx.Ops, bg, clip.Rect{Max: sz}.Op())
-							lineY := sz.Y - gtx.Dp(unit.Dp(1))
-							paint.FillShape(gtx.Ops, colorPanelDivider,
-								clip.Rect{Min: image.Pt(0, lineY), Max: sz}.Op())
-							return layout.Dimensions{Size: sz}
-						},
-						func(gtx layout.Context) layout.Dimensions {
-							return layout.Inset{
-								Top: unit.Dp(8), Bottom: unit.Dp(8),
-								Left: unit.Dp(12), Right: unit.Dp(12),
-							}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-								lbl := material.Body1(th, optLabel)
-								lbl.TextSize = unit.Sp(13)
-								return lbl.Layout(gtx)
-							})
-						},
-					)
-				})
-			}))
+	return p.langDrop.layoutDropdown(gtx, th, msg().Settings.LanguageLabel, langLabels[currentIdx], opts, func(idx int) {
+		p.config.Language = langCodes[idx]
+		SetLanguage(p.config.Language)
+		// 刷新主視窗標題（非阻塞，避免在 FrameEvent 中呼叫 Option 死鎖）
+		go p.window.Option(app.Title(guiWindowTitle()))
+		// 刷新設定視窗標題
+		p.mu.Lock()
+		if p.settingsWin != nil {
+			go p.settingsWin.Option(app.Title(msg().Settings.Title))
 		}
-	}
-
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+		p.mu.Unlock()
+		p.window.Invalidate()
+	})
 }
 
 // invalidateAll 通知主視窗和設定子視窗重繪。
