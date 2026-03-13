@@ -75,7 +75,7 @@ func (c *Conn) Send(msg protocol.Envelope) {
 	case c.sendCh <- msg:
 	case <-c.done:
 	default:
-		slog.Warn("發送佇列已滿，丟棄訊息",
+		slog.Warn("send queue full, message dropped",
 			"conn_id", c.id,
 			"msg_type", msg.Type,
 		)
@@ -103,11 +103,11 @@ func (c *Conn) WritePump(ctx context.Context) {
 		case msg := <-c.sendCh:
 			data, err := json.Marshal(msg)
 			if err != nil {
-				slog.Error("序列化訊息失敗", "error", err)
+				slog.Error("message marshal failed", "error", err)
 				continue // 序列化失敗不應中斷整個寫入迴圈
 			}
 			if err := c.ws.Write(ctx, websocket.MessageText, data); err != nil {
-				slog.Debug("寫入 WebSocket 失敗", "conn_id", c.id, "error", err)
+				slog.Debug("WebSocket write failed", "conn_id", c.id, "error", err)
 				return // 寫入失敗表示連線已斷，退出迴圈
 			}
 		case <-ctx.Done():

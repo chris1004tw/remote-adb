@@ -74,7 +74,7 @@ func DiscoverMDNS(timeout time.Duration) ([]DiscoveredAgent, error) {
 		if firstErr != nil {
 			return nil, firstErr
 		}
-		slog.Debug("mDNS 列舉網路介面失敗，略過 fallback", "error", err)
+		slog.Debug("mDNS network interface enumeration failed, skipping fallback", "error", err)
 		return nil, nil
 	}
 
@@ -96,7 +96,7 @@ func DiscoverMDNS(timeout time.Duration) ([]DiscoveredAgent, error) {
 			if firstErr == nil {
 				firstErr = err
 			}
-			slog.Debug("mDNS 介面查詢失敗", "iface", iface.Name, "error", err)
+			slog.Debug("mDNS interface query failed", "iface", iface.Name, "error", err)
 			continue
 		}
 		agents = append(agents, found...)
@@ -130,7 +130,7 @@ func StartMDNS(hostname string, port int, token string) (shutdown func(), err er
 	advertiseIPs, ipErr := collectAdvertiseIPs()
 	if ipErr != nil {
 		// 非致命：若無法列舉網卡，回退到 hashicorp/mdns 的自動偵測。
-		slog.Debug("mDNS 取得本機網卡 IP 失敗，改用自動偵測", "error", ipErr)
+		slog.Debug("mDNS local IP collection failed, using auto-detection", "error", ipErr)
 	}
 
 	// 建立 mDNS 服務描述（對應一筆 DNS-SD 服務紀錄）
@@ -153,7 +153,7 @@ func StartMDNS(hostname string, port int, token string) (shutdown func(), err er
 		return nil, fmt.Errorf("啟動 mDNS server 失敗: %w", err)
 	}
 
-	slog.Info("mDNS 廣播已啟動", "hostname", hostname, "port", port, "service", mdnsServiceType, "ip_count", len(advertiseIPs))
+	slog.Info("mDNS broadcast started", "hostname", hostname, "port", port, "service", mdnsServiceType, "ip_count", len(advertiseIPs))
 
 	// 使用 sync.Once 包裝 shutdown 函式，確保冪等性（idempotent）：
 	// 無論呼叫幾次 shutdown()，實際的 server.Shutdown() 只會執行一次。
@@ -163,7 +163,7 @@ func StartMDNS(hostname string, port int, token string) (shutdown func(), err er
 	return func() {
 		once.Do(func() {
 			server.Shutdown()
-			slog.Info("mDNS 廣播已停止")
+			slog.Info("mDNS broadcast stopped")
 		})
 	}, nil
 }

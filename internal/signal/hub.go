@@ -47,7 +47,7 @@ func (h *Hub) Register(conn *Conn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.conns[conn.ID()] = conn
-	slog.Info("連線已註冊", "conn_id", conn.ID(), "role", conn.Role())
+	slog.Info("connection registered", "conn_id", conn.ID(), "role", conn.Role())
 }
 
 // Unregister 將連線從 Hub 移除，同時清理該連線對應的 Agent 設備清冊。
@@ -62,7 +62,7 @@ func (h *Hub) Unregister(connID string) {
 	}
 	// 不論角色，統一清理 agents map（Client 角色本身就不在 agents 中，delete 為 no-op）
 	delete(h.agents, connID)
-	slog.Info("連線已移除", "conn_id", connID)
+	slog.Info("connection removed", "conn_id", connID)
 }
 
 // Route 將訊息路由到指定的目標連線（點對點轉發）。
@@ -78,7 +78,7 @@ func (h *Hub) Route(msg protocol.Envelope) bool {
 	h.mu.RUnlock()
 
 	if !ok {
-		slog.Debug("路由目標不存在", "target_id", msg.TargetID)
+		slog.Debug("route target not found", "target_id", msg.TargetID)
 		return false
 	}
 
@@ -93,7 +93,7 @@ func (h *Hub) RegisterAgent(connID string, info protocol.HostInfo) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.agents[connID] = info
-	slog.Info("Agent 已註冊", "conn_id", connID, "host_id", info.HostID, "hostname", info.Hostname)
+	slog.Info("agent registered", "conn_id", connID, "host_id", info.HostID, "hostname", info.Hostname)
 }
 
 // UpdateAgentDevices 更新指定 Agent 的設備列表。

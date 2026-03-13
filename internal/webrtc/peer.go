@@ -121,7 +121,7 @@ func NewPeerManager(config ICEConfig) (*PeerManager, error) {
 			// detach 取得底層 SCTP stream，轉為 io.ReadWriteCloser
 			raw, err := dc.Detach()
 			if err != nil {
-				slog.Error("DataChannel detach 失敗", "label", dc.Label(), "error", err)
+				slog.Error("DataChannel detach failed", "label", dc.Label(), "error", err)
 				return
 			}
 			fn(dc.Label(), raw)
@@ -333,7 +333,7 @@ func (pm *PeerManager) OpenChannel(label string) (io.ReadWriteCloser, error) {
 	dc.OnOpen(func() {
 		raw, detachErr := dc.Detach()
 		if detachErr != nil {
-			slog.Error("DataChannel detach 失敗", "label", label, "error", detachErr)
+			slog.Error("DataChannel detach failed", "label", label, "error", detachErr)
 			pch.setError(detachErr)
 			return
 		}

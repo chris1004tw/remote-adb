@@ -67,7 +67,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		InsecureSkipVerify: true, // 允許跨域連線
 	})
 	if err != nil {
-		slog.Error("WebSocket 升級失敗", "error", err)
+		slog.Error("WebSocket upgrade failed", "error", err)
 		return
 	}
 
@@ -81,7 +81,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	_, data, err := ws.Read(authCtx)
 	if err != nil {
-		slog.Debug("讀取認證訊息失敗", "error", err)
+		slog.Debug("auth message read failed", "error", err)
 		ws.Close(websocket.StatusPolicyViolation, "認證超時")
 		return
 	}
@@ -132,7 +132,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		protocol.AuthAckPayload{Success: true, AssignID: connID},
 	)
 	if err := writeJSON(ctx, ws, ack); err != nil {
-		slog.Debug("回傳 auth_ack 失敗", "error", err)
+		slog.Debug("auth_ack write failed", "error", err)
 		ws.CloseNow()
 		return
 	}
@@ -159,7 +159,7 @@ func (s *Server) readLoop(ctx context.Context, conn *Conn) {
 	for {
 		env, err := conn.ReadMessage(ctx)
 		if err != nil {
-			slog.Debug("讀取訊息失敗", "conn_id", conn.ID(), "error", err)
+			slog.Debug("message read failed", "conn_id", conn.ID(), "error", err)
 			return
 		}
 
@@ -190,7 +190,7 @@ func (s *Server) readLoop(ctx context.Context, conn *Conn) {
 		case protocol.MsgTypeLockResp, protocol.MsgTypeUnlockResp:
 			// Agent 回應鎖定/解鎖結果，轉發回發起請求的 Client
 			if !s.hub.Route(env) {
-				slog.Debug("轉發回應失敗，目標離線", "target_id", env.TargetID)
+				slog.Debug("response forwarding failed, target offline", "target_id", env.TargetID)
 			}
 
 		// --- WebRTC 信令類（點對點透傳）---
@@ -202,7 +202,7 @@ func (s *Server) readLoop(ctx context.Context, conn *Conn) {
 			}
 
 		default:
-			slog.Warn("未知的訊息類型", "type", env.Type, "conn_id", conn.ID())
+			slog.Warn("unknown message type", "type", env.Type, "conn_id", conn.ID())
 		}
 	}
 }
@@ -214,7 +214,7 @@ func (s *Server) readLoop(ctx context.Context, conn *Conn) {
 func (s *Server) handleRegister(conn *Conn, env protocol.Envelope) {
 	var payload protocol.RegisterPayload
 	if err := env.DecodePayload(&payload); err != nil {
-		slog.Error("解析 register payload 失敗", "error", err)
+		slog.Error("register payload decode failed", "error", err)
 		return
 	}
 
@@ -243,7 +243,7 @@ func (s *Server) handleRegister(conn *Conn, env protocol.Envelope) {
 func (s *Server) handleDeviceUpdate(conn *Conn, env protocol.Envelope) {
 	var payload protocol.DeviceUpdatePayload
 	if err := env.DecodePayload(&payload); err != nil {
-		slog.Error("解析 device_update payload 失敗", "error", err)
+		slog.Error("device_update payload decode failed", "error", err)
 		return
 	}
 

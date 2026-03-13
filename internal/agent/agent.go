@@ -98,7 +98,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	// 註冊到 Server
 	a.register(ctx, []protocol.DeviceInfo{})
 
-	slog.Info("Agent 就緒", "server", a.config.ServerURL, "conn_id", a.connID)
+	slog.Info("agent ready", "server", a.config.ServerURL, "conn_id", a.connID)
 
 	// 主迴圈：以 goroutine 持續讀取 Server 訊息推送至 channel，
 	// 與 ADB 設備事件透過 select 多路復用處理。
@@ -113,7 +113,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 		case events, ok := <-deviceCh:
 			if !ok {
-				slog.Warn("ADB 追蹤 channel 已關閉")
+				slog.Warn("ADB tracker channel closed")
 				deviceCh = nil
 				continue
 			}
@@ -137,7 +137,7 @@ func (a *Agent) RunDirectOnly(ctx context.Context) error {
 	tracker := adb.NewTracker(a.config.ADBAddr)
 	deviceCh := tracker.Track(ctx)
 
-	slog.Info("Agent 就緒（direct-only 模式）")
+	slog.Info("agent ready (direct-only mode)")
 
 	for {
 		select {
@@ -145,12 +145,12 @@ func (a *Agent) RunDirectOnly(ctx context.Context) error {
 			return nil
 		case events, ok := <-deviceCh:
 			if !ok {
-				slog.Warn("ADB 追蹤 channel 已關閉")
+				slog.Warn("ADB tracker channel closed")
 				deviceCh = nil
 				continue
 			}
 			a.deviceTable.Update(events)
-			slog.Info("設備列表更新", "count", len(a.deviceTable.List()))
+			slog.Info("device list updated", "count", len(a.deviceTable.List()))
 		}
 	}
 }
@@ -198,7 +198,7 @@ func (a *Agent) connectServer(ctx context.Context) error {
 	}
 
 	a.connID = ackPayload.AssignID
-	slog.Info("Server 認證成功", "conn_id", a.connID)
+	slog.Info("server auth succeeded", "conn_id", a.connID)
 	return nil
 }
 
@@ -221,7 +221,7 @@ func (a *Agent) handleDeviceEvents(ctx context.Context, events []adb.DeviceEvent
 	a.deviceTable.Update(events)
 	devices := a.deviceTable.List()
 
-	slog.Info("設備列表更新", "count", len(devices))
+	slog.Info("device list updated", "count", len(devices))
 
 	// 轉換為 protocol 格式並通知 Server
 	protoDevices := make([]protocol.DeviceInfo, len(devices))
@@ -256,7 +256,7 @@ func (a *Agent) handleServerMessage(ctx context.Context, msg protocol.Envelope) 
 	case protocol.MsgTypeOffer:
 		a.handleOffer(ctx, msg)
 	default:
-		slog.Debug("收到未處理的訊息類型", "type", msg.Type)
+		slog.Debug("unhandled message type", "type", msg.Type)
 	}
 }
 
@@ -286,7 +286,7 @@ func (a *Agent) handleLockReq(ctx context.Context, msg protocol.Envelope) {
 	a.sendEnvelope(ctx, resp)
 
 	if success {
-		slog.Info("設備已鎖定", "serial", payload.Serial, "client", msg.SourceID)
+		slog.Info("device locked", "serial", payload.Serial, "client", msg.SourceID)
 	}
 }
 
@@ -311,7 +311,7 @@ func (a *Agent) handleUnlockReq(ctx context.Context, msg protocol.Envelope) {
 	a.sendEnvelope(ctx, resp)
 
 	if success {
-		slog.Info("設備已解鎖", "serial", payload.Serial, "client", msg.SourceID)
+		slog.Info("device unlocked", "serial", payload.Serial, "client", msg.SourceID)
 	}
 }
 
@@ -336,11 +336,11 @@ func (a *Agent) handleOffer(ctx context.Context, msg protocol.Envelope) {
 	}
 
 	clientID := msg.SourceID
-	slog.Info("收到 WebRTC Offer", "from", clientID)
+	slog.Info("received WebRTC offer", "from", clientID)
 
 	pm, err := webrtc.NewPeerManager(a.config.ICEConfig)
 	if err != nil {
-		slog.Error("建立 PeerConnection 失敗", "error", err)
+		slog.Error("PeerConnection creation failed", "error", err)
 		return
 	}
 
@@ -353,14 +353,14 @@ func (a *Agent) handleOffer(ctx context.Context, msg protocol.Envelope) {
 	// 確保即使 Client 異常斷線（網路中斷、程式崩潰），設備也不會被永久鎖定。
 	// 最後關閉 PeerConnection 釋放底層資源。
 	pm.OnDisconnect(func() {
-		slog.Info("Client 斷線，釋放所有設備", "client", clientID)
+		slog.Info("client disconnected, releasing all devices", "client", clientID)
 		a.deviceTable.UnlockAll(clientID)
 		pm.Close()
 	})
 
 	answerSDP, err := pm.HandleOffer(sdpPayload.SDP)
 	if err != nil {
-		slog.Error("處理 Offer 失敗", "error", err)
+		slog.Error("handle offer failed", "error", err)
 		pm.Close()
 		return
 	}
@@ -388,16 +388,16 @@ func (a *Agent) handleDataChannel(ctx context.Context, clientID, label string, r
 
 	parts := strings.SplitN(label, "/", 3)
 	if len(parts) < 2 || parts[0] != "adb" {
-		slog.Warn("無效的 DataChannel label", "label", label)
+		slog.Warn("invalid DataChannel label", "label", label)
 		return
 	}
 	serial := parts[1]
 
-	slog.Info("開始 ADB 轉發", "serial", serial, "client", clientID, "label", label)
+	slog.Info("ADB forwarding started", "serial", serial, "client", clientID, "label", label)
 
 	adbConn, err := a.dialer.DialDevice(serial, 5555)
 	if err != nil {
-		slog.Error("連線 ADB 設備失敗", "serial", serial, "error", err)
+		slog.Error("ADB device connection failed", "serial", serial, "error", err)
 		return
 	}
 	defer adbConn.Close()
@@ -418,12 +418,12 @@ func (a *Agent) handleDataChannel(ctx context.Context, clientID, label string, r
 	select {
 	case err := <-errc:
 		if err != nil {
-			slog.Debug("ADB 轉發結束", "serial", serial, "error", err)
+			slog.Debug("ADB forwarding ended", "serial", serial, "error", err)
 		}
 	case <-ctx.Done():
 	}
 
-	slog.Info("ADB 轉發已停止", "serial", serial, "client", clientID)
+	slog.Info("ADB forwarding stopped", "serial", serial, "client", clientID)
 }
 
 // --- Server WebSocket 輔助方法 ---
@@ -438,7 +438,7 @@ func (a *Agent) readServerLoop(ctx context.Context, ch chan<- protocol.Envelope)
 			if ctx.Err() != nil {
 				return
 			}
-			slog.Error("讀取 Server 訊息失敗", "error", err)
+			slog.Error("server message read failed", "error", err)
 			return
 		}
 		select {

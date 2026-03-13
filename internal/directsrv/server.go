@@ -84,13 +84,13 @@ func (s *Server) Serve(ctx context.Context, addr string) error {
 	if err != nil {
 		return fmt.Errorf("監聽 %s 失敗: %w", addr, err)
 	}
-	slog.Info("Direct Server 啟動", "addr", ln.Addr())
+	slog.Info("direct server started", "addr", ln.Addr())
 
 	// 啟動 mDNS 廣播（失敗不影響 TCP 服務）
 	port := ln.Addr().(*net.TCPAddr).Port
 	shutdown, mdnsErr := StartMDNS(s.cfg.Hostname, port, s.cfg.Token)
 	if mdnsErr != nil {
-		slog.Warn("mDNS 廣播啟動失敗（非致命）", "error", mdnsErr)
+		slog.Warn("mDNS broadcast start failed (non-fatal)", "error", mdnsErr)
 	} else {
 		defer shutdown()
 	}
@@ -213,7 +213,7 @@ func (s *Server) handleConnect(ctx context.Context, conn net.Conn, req Request) 
 	// 步驟 4：回傳成功，此後同一條 TCP 連線將轉為 raw bytes 轉發
 	s.writeResponse(conn, Response{OK: true})
 
-	slog.Info("Direct 轉發開始", "serial", req.Serial, "client", clientID)
+	slog.Info("direct forwarding started", "serial", req.Serial, "client", clientID)
 
 	// 步驟 5：雙向轉發 — 兩個 goroutine 分別處理上行與下行方向
 	// 使用 buffered channel（容量 2）確保兩個 goroutine 都能寫入而不阻塞
@@ -231,12 +231,12 @@ func (s *Server) handleConnect(ctx context.Context, conn net.Conn, req Request) 
 	select {
 	case err := <-errc:
 		if err != nil {
-			slog.Debug("Direct 轉發結束", "serial", req.Serial, "error", err)
+			slog.Debug("direct forwarding ended", "serial", req.Serial, "error", err)
 		}
 	case <-ctx.Done():
 	}
 
-	slog.Info("Direct 轉發已停止", "serial", req.Serial, "client", clientID)
+	slog.Info("direct forwarding stopped", "serial", req.Serial, "client", clientID)
 	// 函式返回時，defer 會依序：解鎖設備 → 關閉 ADB 連線 → 關閉 Client 連線
 }
 
@@ -258,7 +258,7 @@ func (s *Server) handleConnectServer(ctx context.Context, conn net.Conn) {
 
 	s.writeResponse(conn, Response{OK: true})
 
-	slog.Debug("connect-server 轉發開始", "adbAddr", adbAddr, "client", conn.RemoteAddr())
+	slog.Debug("connect-server forwarding started", "adbAddr", adbAddr, "client", conn.RemoteAddr())
 
 	errc := make(chan error, 2)
 	go func() { _, err := io.Copy(adbConn, conn); errc <- err }()
@@ -298,7 +298,7 @@ func (s *Server) handleConnectService(ctx context.Context, conn net.Conn, req Re
 
 	s.writeResponse(conn, Response{OK: true})
 
-	slog.Debug("connect-service 轉發開始", "serial", req.Serial, "service", req.Service, "client", conn.RemoteAddr())
+	slog.Debug("connect-service forwarding started", "serial", req.Serial, "service", req.Service, "client", conn.RemoteAddr())
 
 	errc := make(chan error, 2)
 	go func() { _, err := io.Copy(adbConn, conn); errc <- err }()
