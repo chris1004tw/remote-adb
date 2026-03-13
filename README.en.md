@@ -245,7 +245,7 @@ Click the gear icon (bottom-right) to manage:
 
 - ADB Port, Proxy Port, Direct Port
 - STUN Server
-- TURN mode (Cloudflare free / custom URL + credentials)
+- TURN mode (Cloudflare free / disabled / custom URL + credentials)
 - Language switch, manual update check
 
 TURN defaults to free Cloudflare credentials (auto-fetched, works out of the box). Settings are persisted in TOML at `%APPDATA%/radb/radb.toml` (Windows) or `~/.config/radb/radb.toml` (Linux/macOS).
@@ -284,6 +284,7 @@ remote-adb/
 │   ├── bridge/            # Shared GUI/CLI logic (SDP codec, ADB transport, forward management)
 │   ├── directsrv/         # TCP direct connection service + mDNS broadcast + client connection
 │   ├── gui/               # Gio GUI (Easy Connect/LAN Direct/Relay tabs + settings + i18n + Cloudflare TURN + TURN prefetch cache)
+│   ├── ioutil/            # Shared I/O utilities (ChunkedCopy: chunked copy with short write protection)
 │   ├── proxy/             # TCP proxy (16KB chunking, single-connection replacement)
 │   ├── signal/            # WebSocket signaling hub, PSK auth
 │   ├── updater/           # Auto-update (GitHub Releases download + cross-platform binary replacement)

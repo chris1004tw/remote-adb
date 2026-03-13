@@ -245,7 +245,7 @@ radb
 
 - ADB Port、Proxy Port、Direct Port
 - STUN Server
-- TURN 模式（Cloudflare 免費 / 自訂 URL + 帳號密碼）
+- TURN 模式（Cloudflare 免費 / 停用 / 自訂 URL + 帳號密碼）
 - 語言切換、手動檢查更新
 
 TURN 預設使用 Cloudflare 免費憑證（自動取得，開箱即用）。設定以 TOML 格式持久化於 `%APPDATA%/radb/radb.toml`（Windows）或 `~/.config/radb/radb.toml`（Linux/macOS）。
@@ -284,6 +284,7 @@ remote-adb/
 │   ├── bridge/            # GUI/CLI 共用邏輯（SDP 編解碼、ADB transport、forward 管理）
 │   ├── directsrv/         # TCP 直連服務 + mDNS 廣播 + 客戶端連線
 │   ├── gui/               # Gio GUI 介面（設定面板 + i18n 多語系 + Cloudflare TURN + TURN 預取快取）
+│   ├── ioutil/            # 共用 I/O 工具（ChunkedCopy：分塊複製 + short write 保護）
 │   ├── proxy/             # TCP 代理（16KB chunking、單連線替換設計）
 │   ├── signal/            # WebSocket 信令 hub、PSK 認證
 │   ├── updater/           # 自動更新（GitHub Releases 下載 + 跨平台 binary 替換）
