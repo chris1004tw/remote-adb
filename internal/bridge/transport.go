@@ -65,7 +65,8 @@ const (
 	aCLSE = 0x45534c43 // "CLSE" — 關閉串流
 
 	aVersion           = 0x01000001       // A_VERSION_SKIP_CHECKSUM：version >= 此值時不驗證 checksum
-	aMaxPayload        = 256 * 1024       // 256KB：單次 WRTE 最大 payload
+	aMaxPayload        = 256 * 1024       // 256KB：單次 WRTE 最大 payload（CNXN 握手通告值）
+	readBufSize        = 64 * 1024        // 64KB：readFromRemote 讀取 buffer（DC 實際單次讀取遠小於 256KB）
 	adbMsgHdrSize      = 24               // 固定 24 byte header
 	adbMaxDataLen      = 1024 * 1024      // 安全上限 1MB，防止惡意或損壞的資料長度
 	BiCopyChunk        = 16 * 1024        // 16KB：DataChannel 分塊寫入大小
@@ -741,7 +742,7 @@ func (b *deviceBridge) readFromRemote(ctx context.Context, stream *dStream) {
 
 	slog.Debug("readFromRemote: started", "deviceID", stream.deviceID, "serverID", stream.serverID)
 
-	buf := make([]byte, aMaxPayload)
+	buf := make([]byte, readBufSize)
 	firstRead := true
 	// 在迴圈外建立一次 Timer，迴圈內重用，避免每次迭代建立新 Timer 造成記憶體洩漏。
 	// 高吞吐時每秒可能有數百次迭代，若使用 time.After 會累積大量未釋放的 30s Timer。
