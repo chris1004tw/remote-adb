@@ -671,97 +671,109 @@ func (t *signalTab) layoutClient(gtx layout.Context, th *material.Theme) []layou
 	// 主機列表
 	if len(hosts) > 0 {
 		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				items := []layout.FlexChild{
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return material.Body2(th, fmt.Sprintf(msg().Signal.HostsFmt, len(hosts))).Layout(gtx)
-					}),
-				}
-
-				devBtnIdx := 0
-				for hi, h := range hosts {
-					hostIdx := hi
-					hostText := fmt.Sprintf("  %s ("+msg().Signal.HostDevFmt+")", h.Hostname, len(h.Devices))
-					if hostIdx == selectedHost {
-						hostText = "▼ " + hostText
-					} else {
-						hostText = "▶ " + hostText
-					}
-
-					items = append(items, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return layout.Inset{Left: unit.Dp(4), Top: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							btn := material.Button(th, &t.clientHostBtns[hostIdx], hostText)
-							if hostIdx == selectedHost {
-								btn.Background = colorTabActive
-							} else {
-								btn.Background = color.NRGBA{R: 96, G: 96, B: 96, A: 255}
-							}
-							return btn.Layout(gtx)
-						})
-					}))
-
-					// 展開設備列表
-					if hostIdx == selectedHost {
-						for di, d := range h.Devices {
-							dIdx := devBtnIdx + di
-							devText := fmt.Sprintf("    %s [%s]", d.Serial, d.State)
-							lockInfo := ""
-							if d.Lock == "locked" {
-								lockInfo = " " + msg().Signal.Locked
-							}
-							items = append(items, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return layout.Inset{Left: unit.Dp(16), Top: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-									label := devText + lockInfo
-									if d.Lock != "locked" && d.State == "device" {
-										label = devText + " " + msg().Signal.BindLabel
-									}
-									if dIdx < len(t.clientDevBtns) {
-										btn := material.Button(th, &t.clientDevBtns[dIdx], label)
-										btn.Background = color.NRGBA{R: 70, G: 70, B: 70, A: 255}
-										return btn.Layout(gtx)
-									}
-									return material.Body2(th, label).Layout(gtx)
-								})
-							}))
-						}
-					}
-					devBtnIdx += len(h.Devices)
-				}
-
-				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, items...)
-			})
+			return t.layoutHostList(gtx, th, hosts, selectedHost)
 		}))
 	}
 
 	// 已綁定列表
 	if len(bindings) > 0 {
 		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				items := []layout.FlexChild{
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return material.Body2(th, fmt.Sprintf(msg().Signal.BindingsFmt, len(bindings))).Layout(gtx)
-					}),
-				}
-				for i, b := range bindings {
-					idx := i
-					bindText := fmt.Sprintf("  127.0.0.1:%d → %s [%s] %s", b.LocalPort, b.Serial, b.Status, msg().Signal.UnbindLabel)
-					items = append(items, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return layout.Inset{Left: unit.Dp(4), Top: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							if idx < len(t.clientUnbindBtns) {
-								btn := material.Button(th, &t.clientUnbindBtns[idx], bindText)
-								btn.Background = color.NRGBA{R: 96, G: 96, B: 96, A: 255}
-								return btn.Layout(gtx)
-							}
-							return material.Body2(th, bindText).Layout(gtx)
-						})
-					}))
-				}
-				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, items...)
-			})
+			return t.layoutBindingList(gtx, th, bindings)
 		}))
 	}
 
 	return children
+}
+
+// layoutHostList 繪製主機及設備列表。
+// 每台主機顯示為可展開按鈕，點擊後展開該主機的設備列表（含 Bind/鎖定狀態）。
+func (t *signalTab) layoutHostList(gtx layout.Context, th *material.Theme, hosts []protocol.HostInfo, selectedHost int) layout.Dimensions {
+	return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		items := []layout.FlexChild{
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return material.Body2(th, fmt.Sprintf(msg().Signal.HostsFmt, len(hosts))).Layout(gtx)
+			}),
+		}
+
+		devBtnIdx := 0
+		for hi, h := range hosts {
+			hostIdx := hi
+			hostText := fmt.Sprintf("  %s ("+msg().Signal.HostDevFmt+")", h.Hostname, len(h.Devices))
+			if hostIdx == selectedHost {
+				hostText = "▼ " + hostText
+			} else {
+				hostText = "▶ " + hostText
+			}
+
+			items = append(items, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Left: unit.Dp(4), Top: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					btn := material.Button(th, &t.clientHostBtns[hostIdx], hostText)
+					if hostIdx == selectedHost {
+						btn.Background = colorTabActive
+					} else {
+						btn.Background = color.NRGBA{R: 96, G: 96, B: 96, A: 255}
+					}
+					return btn.Layout(gtx)
+				})
+			}))
+
+			// 展開設備列表
+			if hostIdx == selectedHost {
+				for di, d := range h.Devices {
+					dIdx := devBtnIdx + di
+					devText := fmt.Sprintf("    %s [%s]", d.Serial, d.State)
+					lockInfo := ""
+					if d.Lock == "locked" {
+						lockInfo = " " + msg().Signal.Locked
+					}
+					items = append(items, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return layout.Inset{Left: unit.Dp(16), Top: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							label := devText + lockInfo
+							if d.Lock != "locked" && d.State == "device" {
+								label = devText + " " + msg().Signal.BindLabel
+							}
+							if dIdx < len(t.clientDevBtns) {
+								btn := material.Button(th, &t.clientDevBtns[dIdx], label)
+								btn.Background = color.NRGBA{R: 70, G: 70, B: 70, A: 255}
+								return btn.Layout(gtx)
+							}
+							return material.Body2(th, label).Layout(gtx)
+						})
+					}))
+				}
+			}
+			devBtnIdx += len(h.Devices)
+		}
+
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, items...)
+	})
+}
+
+// layoutBindingList 繪製已綁定設備列表。
+// 每筆 binding 顯示本機 port → 遠端 serial + 狀態 + Unbind 按鈕。
+func (t *signalTab) layoutBindingList(gtx layout.Context, th *material.Theme, bindings []daemon.Binding) layout.Dimensions {
+	return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		items := []layout.FlexChild{
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return material.Body2(th, fmt.Sprintf(msg().Signal.BindingsFmt, len(bindings))).Layout(gtx)
+			}),
+		}
+		for i, b := range bindings {
+			idx := i
+			bindText := fmt.Sprintf("  127.0.0.1:%d → %s [%s] %s", b.LocalPort, b.Serial, b.Status, msg().Signal.UnbindLabel)
+			items = append(items, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Left: unit.Dp(4), Top: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					if idx < len(t.clientUnbindBtns) {
+						btn := material.Button(th, &t.clientUnbindBtns[idx], bindText)
+						btn.Background = color.NRGBA{R: 96, G: 96, B: 96, A: 255}
+						return btn.Layout(gtx)
+					}
+					return material.Body2(th, bindText).Layout(gtx)
+				})
+			}))
+		}
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, items...)
+	})
 }
 
 // startClient 啟動主控端 Daemon。
