@@ -19,5 +19,9 @@ Thumbs.db
 vendor/
 *.syso
 
+# Logs
+*.log
+
 # Claude Code
 .claude/
+OPTIMIZATION_PLAN.md
