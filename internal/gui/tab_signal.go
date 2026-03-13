@@ -827,6 +827,8 @@ func (t *signalTab) startClient() {
 		d := daemon.NewDaemon(cfg)
 
 		if err := d.Start(ctx, ipcLn); err != nil && ctx.Err() == nil {
+			ipcLn.Close() // d.Start 失敗時 ServeIPC 未接管 listener，須手動關閉
+			cancel()      // 停止 pollClientState goroutine
 			t.clientMu.Lock()
 			t.clientStatus = fmt.Sprintf(msg().Signal.ErrDaemonFmt, err)
 			t.clientRunning = false

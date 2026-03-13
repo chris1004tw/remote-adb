@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/chris1004tw/remote-adb/pkg/protocol"
@@ -302,10 +303,11 @@ func generateID(role protocol.Role) string {
 }
 
 // hostname 取得本機主機名稱，用於填入訊息的 Hostname 欄位。
-func hostname() string {
+// 使用 sync.OnceValue 快取結果，避免每次呼叫都執行系統呼叫。
+var hostname = sync.OnceValue(func() string {
 	h, _ := os.Hostname()
 	return h
-}
+})
 
 // parseJSON 將原始位元組解析為指定的結構體。
 func parseJSON(data []byte, v any) error {
