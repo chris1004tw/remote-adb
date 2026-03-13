@@ -1063,19 +1063,28 @@ func (t *pairTab) serverProcessOffer() {
 			t.processingOffer = false
 			t.mu.Unlock()
 		}()
+
+		// 建立可取消 context，存入 t.cancel，cleanup() 可取消
+		ctx, cancel := context.WithCancel(context.Background())
+		t.mu.Lock()
+		t.cancel = cancel
+		t.mu.Unlock()
+
 		startedAt := time.Now()
 		adbAddr := fmt.Sprintf("127.0.0.1:%d", adbPort)
 
-		// 確保 ADB 可用
+		// 確保 ADB 可用（改用可取消 ctx）
 		stepStarted := time.Now()
-		if err := adb.EnsureADB(context.Background(), adbAddr, func(status string) {
+		if err := adb.EnsureADB(ctx, adbAddr, func(status string) {
 			t.mu.Lock()
 			t.status = status
 			t.mu.Unlock()
 			t.window.Invalidate()
 		}); err != nil {
 			slog.Warn("pair answer failed", "step", "ensure_adb", "elapsed_ms", time.Since(startedAt).Milliseconds(), "error", err)
+			cancel()
 			t.mu.Lock()
+			t.cancel = nil
 			t.status = fmt.Sprintf(msg().Common.ADBErrorFmt, err)
 			t.mu.Unlock()
 			t.window.Invalidate()
@@ -1094,7 +1103,9 @@ func (t *pairTab) serverProcessOffer() {
 		slog.Debug("pair answer step", "step", "decode_offer", "elapsed_ms", time.Since(stepStarted).Milliseconds())
 		if err != nil {
 			slog.Warn("pair answer failed", "step", "decode_offer", "elapsed_ms", time.Since(startedAt).Milliseconds(), "error", err)
+			cancel()
 			t.mu.Lock()
+			t.cancel = nil
 			t.status = fmt.Sprintf(msg().Pair.ErrInvalidOfferFmt, err)
 			t.mu.Unlock()
 			t.window.Invalidate()
@@ -1109,7 +1120,7 @@ func (t *pairTab) serverProcessOffer() {
 			t.window.Invalidate()
 
 			stepStarted = time.Now()
-			servers, warning := t.tc.getServers(0)
+			servers, warning := t.tc.getServers(10 * time.Second)
 			slog.Debug("pair answer step", "step", "turn_cache", "elapsed_ms", time.Since(stepStarted).Milliseconds(), "servers", len(servers), "warning", warning != "")
 			if warning != "" {
 				slog.Warn("Cloudflare TURN unavailable for answer generation", "warning", warning)
@@ -1132,14 +1143,14 @@ func (t *pairTab) serverProcessOffer() {
 		slog.Debug("pair answer step", "step", "new_peer_manager", "elapsed_ms", time.Since(stepStarted).Milliseconds())
 		if err != nil {
 			slog.Warn("pair answer failed", "step", "new_peer_manager", "elapsed_ms", time.Since(startedAt).Milliseconds(), "error", err)
+			cancel()
 			t.mu.Lock()
+			t.cancel = nil
 			t.status = fmt.Sprintf(msg().Pair.ErrCreatePCFmt, err)
 			t.mu.Unlock()
 			t.window.Invalidate()
 			return
 		}
-
-		ctx, cancel := context.WithCancel(context.Background())
 
 		// 監聽客戶端建立的 DataChannel
 		srvHandler := &bridge.ServerHandler{ADBAddr: adbAddr}
@@ -1210,6 +1221,7 @@ func (t *pairTab) serverProcessOffer() {
 			pm.Close()
 			cancel()
 			t.mu.Lock()
+			t.cancel = nil
 			t.status = fmt.Sprintf(msg().Pair.ErrHandleOfferFmt, err)
 			t.mu.Unlock()
 			t.window.Invalidate()
@@ -1229,6 +1241,7 @@ func (t *pairTab) serverProcessOffer() {
 			pm.Close()
 			cancel()
 			t.mu.Lock()
+			t.cancel = nil
 			t.status = fmt.Sprintf(msg().Pair.ErrEncodeAnswerFmt, err)
 			t.mu.Unlock()
 			t.window.Invalidate()
@@ -1357,6 +1370,8 @@ func (t *pairTab) cleanup() {
 	t.connected = false
 	t.relayed = false
 	t.srvDevices = nil
+	t.processingOffer = false
+	t.generatingOffer = false
 	t.mu.Unlock()
 
 	// 在 goroutine 中關閉資源，避免 pm.Close()（pion PeerConnection 關閉 ICE/DTLS）
