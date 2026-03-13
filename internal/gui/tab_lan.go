@@ -570,13 +570,7 @@ func (t *lanTab) connect() {
 		})
 
 		// 初始設備
-		bridgeDevices := make([]bridge.DeviceInfo, 0, len(devices))
-		for _, d := range devices {
-			bridgeDevices = append(bridgeDevices, bridge.DeviceInfo{
-				Serial: d.Serial, State: d.State,
-			})
-		}
-		dpm.UpdateDevices(bridgeDevices)
+		dpm.UpdateDevices(directsrv.ToBridgeDevices(devices))
 
 		t.cliMu.Lock()
 		t.connected = true
@@ -589,7 +583,25 @@ func (t *lanTab) connect() {
 		slog.Info("LAN per-device proxy started", "remote", addr, "devices", len(devices))
 
 		// 3. 定期輪詢設備清單
-		go t.pollRemoteDevices(ctx, addr, token)
+		go directsrv.PollDeviceLoop(ctx, 3*time.Second,
+			func() []directsrv.DeviceInfo {
+				devs, err := t.queryDevices(addr, token)
+				if err != nil {
+					slog.Debug("LAN device polling failed", "error", err)
+					return nil
+				}
+				return devs
+			},
+			func(devs []bridge.DeviceInfo) {
+				t.cliMu.Lock()
+				dpm := t.dpm
+				t.cliMu.Unlock()
+				if dpm != nil {
+					dpm.UpdateDevices(devs)
+				}
+				t.window.Invalidate()
+			},
+		)
 	}()
 }
 
@@ -640,37 +652,6 @@ func makeLANOpenChannel(addr, token string) bridge.OpenChannelFunc {
 
 		default:
 			return nil, fmt.Errorf("unknown channel: %s", label)
-		}
-	}
-}
-
-// pollRemoteDevices 定期查詢遠端設備清單並透過 DeviceProxyManager 更新 per-device proxy。
-func (t *lanTab) pollRemoteDevices(ctx context.Context, addr, token string) {
-	ticker := time.NewTicker(3 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			devices, err := t.queryDevices(addr, token)
-			if err != nil {
-				slog.Debug("LAN device polling failed", "error", err)
-				continue
-			}
-			bridgeDevices := make([]bridge.DeviceInfo, 0, len(devices))
-			for _, d := range devices {
-				bridgeDevices = append(bridgeDevices, bridge.DeviceInfo{
-					Serial: d.Serial, State: d.State,
-				})
-			}
-			t.cliMu.Lock()
-			dpm := t.dpm
-			t.cliMu.Unlock()
-			if dpm != nil {
-				dpm.UpdateDevices(bridgeDevices)
-			}
-			t.window.Invalidate()
 		}
 	}
 }

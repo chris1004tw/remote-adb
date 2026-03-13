@@ -1,11 +1,14 @@
 package directsrv
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"time"
+
+	"github.com/chris1004tw/remote-adb/internal/bridge"
 )
 
 // DialService 連線到 Direct Server 並發送指定 action。
@@ -86,4 +89,38 @@ func QueryDevices(addr, token string) (*Response, error) {
 	}
 
 	return &resp, nil
+}
+
+// ToBridgeDevices 將 directsrv 設備清單轉換為 bridge.DeviceInfo 切片。
+// 僅複製 Serial 與 State；bridge.DeviceInfo.Features 由 control channel 另行填充。
+func ToBridgeDevices(devices []DeviceInfo) []bridge.DeviceInfo {
+	result := make([]bridge.DeviceInfo, len(devices))
+	for i, d := range devices {
+		result[i] = bridge.DeviceInfo{Serial: d.Serial, State: d.State}
+	}
+	return result
+}
+
+// PollDeviceLoop 定期查詢設備並回呼 onUpdate。
+// queryFn 回傳 nil 表示本輪查詢失敗（跳過更新）。
+// onUpdate 在查詢成功時被呼叫，傳入轉換後的 bridge.DeviceInfo 切片。
+// ctx 取消時退出迴圈。
+func PollDeviceLoop(ctx context.Context, interval time.Duration,
+	queryFn func() []DeviceInfo,
+	onUpdate func([]bridge.DeviceInfo),
+) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			devices := queryFn()
+			if devices == nil {
+				continue
+			}
+			onUpdate(ToBridgeDevices(devices))
+		}
+	}
 }
