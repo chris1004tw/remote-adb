@@ -33,6 +33,12 @@ import (
 	ws "github.com/coder/websocket"
 )
 
+// IPC 與 Bind 相關逾時常數。
+const (
+	ipcDeadline       = 50 * time.Second // IPC 連線整體 deadline（須涵蓋 lock + gathering + answer）
+	bindGatherTimeout = 15 * time.Second // cmdBind ICE gathering 上限，避免佔用過多 IPC 時間預算
+)
+
 // Config 是 Daemon 的啟動設定。
 type Config struct {
 	ServerURL string           // Signal Server 的 WebSocket URL（如 ws://example.com:8080）
@@ -124,7 +130,7 @@ func (d *Daemon) Start(ctx context.Context, ipcListener net.Listener) error {
 	go d.serverReadLoop(ctx)
 	d.requestHostList(ctx)
 
-	slog.Info("Daemon 就緒", "conn_id", d.connID, "ipc", ipcListener.Addr())
+	slog.Info("daemon ready", "conn_id", d.connID, "ipc", ipcListener.Addr())
 
 	// ServeIPC 會阻塞直到 ctx 取消
 	d.ServeIPC(ctx, ipcListener)
@@ -146,7 +152,7 @@ func (d *Daemon) ServeIPC(ctx context.Context, ln net.Listener) {
 			if ctx.Err() != nil {
 				return
 			}
-			slog.Debug("IPC Accept 失敗", "error", err)
+			slog.Debug("IPC accept failed", "error", err)
 			return
 		}
 		go d.handleIPCConn(ctx, conn)
@@ -154,10 +160,11 @@ func (d *Daemon) ServeIPC(ctx context.Context, ln net.Listener) {
 }
 
 // handleIPCConn 處理單一 IPC 連線：讀取一個 JSON 指令、執行、回傳結果後關閉。
-// 每個 IPC 連線有 30 秒的整體 deadline，避免慢速或斷線的 CLI 佔住資源。
+// 每個 IPC 連線有 ipcDeadline（50s）的整體 deadline，須涵蓋 cmdBind 的
+// lock（10s）+ ICE gathering（bindGatherTimeout 15s）+ answer（15s）。
 func (d *Daemon) handleIPCConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	conn.SetDeadline(time.Now().Add(ipcDeadline))
 
 	var cmd IPCCommand
 	if err := json.NewDecoder(conn).Decode(&cmd); err != nil {
@@ -165,7 +172,7 @@ func (d *Daemon) handleIPCConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	slog.Debug("收到 IPC 指令", "action", cmd.Action)
+	slog.Debug("received IPC command", "action", cmd.Action)
 
 	resp := d.handleCommand(ctx, cmd)
 	json.NewEncoder(conn).Encode(resp)
@@ -289,7 +296,8 @@ func (d *Daemon) cmdBind(ctx context.Context, payload json.RawMessage) IPCRespon
 	}
 
 	// 步驟 5: 建立 SDP Offer 並透過 Server 發送給 Agent
-	offerSDP, err := pm.CreateOffer()
+	// 使用 bindGatherTimeout 限制 ICE gathering 時間，避免佔用整個 IPC deadline。
+	offerSDP, err := pm.CreateOfferWithGatherTimeout(bindGatherTimeout)
 	if err != nil {
 		pm.Close()
 		d.ports.Release(port)
@@ -380,7 +388,7 @@ func (d *Daemon) cmdBind(ctx context.Context, payload json.RawMessage) IPCRespon
 		}()
 	})
 
-	slog.Info("綁定成功", "port", port, "serial", req.Serial, "host", req.HostID)
+	slog.Info("bind succeeded", "port", port, "serial", req.Serial, "host", req.HostID)
 	return SuccessResponse(BindResult{LocalPort: port, Serial: req.Serial})
 }
 
@@ -426,7 +434,7 @@ func (d *Daemon) cmdUnbind(ctx context.Context, payload json.RawMessage) IPCResp
 	d.bindings.Remove(req.LocalPort)
 	d.ports.Release(req.LocalPort)
 
-	slog.Info("解綁成功", "port", req.LocalPort, "serial", binding.Serial)
+	slog.Info("unbind succeeded", "port", req.LocalPort, "serial", binding.Serial)
 	return SuccessResponse(nil)
 }
 
@@ -471,7 +479,7 @@ func (d *Daemon) connectServer(ctx context.Context) error {
 	}
 
 	d.connID = ackPayload.AssignID
-	slog.Info("Server 認證成功", "conn_id", d.connID)
+	slog.Info("server auth succeeded", "conn_id", d.connID)
 	return nil
 }
 
@@ -484,7 +492,7 @@ func (d *Daemon) serverReadLoop(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			slog.Error("Server 讀取失敗", "error", err)
+			slog.Error("server read failed", "error", err)
 			return
 		}
 
@@ -534,7 +542,7 @@ func (d *Daemon) handleSignalMessage(env protocol.Envelope) {
 		d.deliverResponse("answer:"+env.SourceID, env)
 
 	default:
-		slog.Debug("收到未處理的訊息", "type", env.Type)
+		slog.Debug("unhandled message", "type", env.Type)
 	}
 }
 

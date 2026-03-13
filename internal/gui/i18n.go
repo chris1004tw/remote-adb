@@ -206,6 +206,7 @@ type settingsMsg struct {
 	CustomStunOption   string // "自訂..."
 	TURNModeLabel      string // "TURN 伺服器"
 	TURNModeCloudflare string // "Cloudflare（免費）"
+	TURNModeNone       string // "停用"
 	TURNModeCustom     string // "自訂"
 	TURNLabel          string // "TURN 位址"
 	TURNHint           string // "turn:your.server.com:3478"
@@ -417,6 +418,7 @@ var messagesZhTW = Messages{
 		CustomStunOption:   "自訂...",
 		TURNModeLabel:      "TURN 伺服器",
 		TURNModeCloudflare: "Cloudflare（免費）",
+		TURNModeNone:       "停用",
 		TURNModeCustom:     "自訂...",
 		TURNLabel:          "TURN 位址",
 		TURNHint:           "turn:your.server.com:3478",
@@ -590,6 +592,7 @@ var messagesEN = Messages{
 		CustomStunOption:   "Custom...",
 		TURNModeLabel:      "TURN Server",
 		TURNModeCloudflare: "Cloudflare (Free)",
+		TURNModeNone:       "Disabled",
 		TURNModeCustom:     "Custom...",
 		TURNLabel:          "TURN Address",
 		TURNHint:           "turn:your.server.com:3478",

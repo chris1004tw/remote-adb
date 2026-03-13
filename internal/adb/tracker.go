@@ -74,7 +74,7 @@ func (t *Tracker) trackLoop(ctx context.Context, ch chan<- []DeviceEvent) {
 			return
 		}
 
-		slog.Warn("ADB 追蹤連線中斷，準備重連",
+		slog.Warn("ADB tracker connection lost, reconnecting",
 			"error", err,
 			"retry_delay", retryDelay,
 		)
@@ -101,20 +101,16 @@ func (t *Tracker) connectAndTrack(ctx context.Context, ch chan<- []DeviceEvent) 
 	defer conn.Close()
 
 	// 發送 host:track-devices 指令
-	if err := sendADBCommand(conn, "host:track-devices"); err != nil {
+	if err := SendCommand(conn, "host:track-devices"); err != nil {
 		return fmt.Errorf("發送 track-devices 失敗: %w", err)
 	}
 
 	// 讀取 OKAY 回應
-	status := make([]byte, 4)
-	if _, err := io.ReadFull(conn, status); err != nil {
-		return fmt.Errorf("讀取回應狀態失敗: %w", err)
-	}
-	if string(status) != "OKAY" {
-		return fmt.Errorf("ADB server 回傳非 OKAY: %s", string(status))
+	if err := ReadStatus(conn); err != nil {
+		return fmt.Errorf("track-devices 失敗: %w", err)
 	}
 
-	slog.Info("已連接 ADB server，開始追蹤設備", "addr", t.addr)
+	slog.Info("connected to ADB server, tracking devices", "addr", t.addr)
 
 	// host:track-devices 是長連線：ADB server 在每次設備列表變動時
 	// 會主動推送完整的設備清單（而非差異）。連線保持直到任一端關閉。
@@ -137,15 +133,6 @@ func (t *Tracker) connectAndTrack(ctx context.Context, ch chan<- []DeviceEvent) 
 	}
 }
 
-// sendADBCommand 發送 ADB protocol 格式的指令。
-// ADB wire format：4 位 hex 長度前綴 + ASCII 指令字串。
-// 例如 "host:version"（長度 12）→ "000chost:version"。
-// 這是 ADB server 原生採用的編碼方式（非 radb 自訂），所有 ADB client 都使用此格式。
-func sendADBCommand(conn net.Conn, command string) error {
-	msg := fmt.Sprintf("%04x%s", len(command), command)
-	_, err := conn.Write([]byte(msg))
-	return err
-}
 
 // readDeviceList 讀取一筆 ADB server 的設備列表回應。
 // 格式：4 位 hex 長度 + payload（每行 serial\tstate\n）。

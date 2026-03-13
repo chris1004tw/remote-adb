@@ -205,7 +205,7 @@ func cmdServer(args []string) {
 		os.Exit(1)
 	}
 
-	slog.Info("啟動 radb server", "version", buildinfo.Version, "host", *host, "port", *port)
+	slog.Info("starting radb server", "version", buildinfo.Version, "host", *host, "port", *port)
 
 	hub := signalpkg.NewHub()
 	auth := signalpkg.NewPSKAuth(*token)
@@ -220,23 +220,23 @@ func cmdServer(args []string) {
 	defer cancel()
 
 	go func() {
-		slog.Info("Server 開始監聽", "addr", httpServer.Addr)
+		slog.Info("server listening", "addr", httpServer.Addr)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("HTTP server 錯誤", "error", err)
+			slog.Error("HTTP server error", "error", err)
 			os.Exit(1)
 		}
 	}()
 
 	<-ctx.Done()
-	slog.Info("收到關閉信號，準備優雅關閉...")
+	slog.Info("received shutdown signal, gracefully shutting down...")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		slog.Error("HTTP server 關閉失敗", "error", err)
+		slog.Error("HTTP server shutdown failed", "error", err)
 	}
-	slog.Info("Server 已關閉")
+	slog.Info("server stopped")
 }
 
 // cmdRelayAgent 啟動 Relay 模式的遠端被控端。
@@ -248,11 +248,7 @@ func cmdRelayAgent(args []string) {
 	token := fs.String("token", envStr("RADB_TOKEN", ""), "PSK Token")
 	hostID := fs.String("host-id", envStr("RADB_HOST_ID", localHostname()), "主機識別名稱")
 	adbPort := fs.Int("adb-port", envInt("RADB_ADB_PORT", 5037), "本機 ADB server 埠")
-	stunURLs := fs.String("stun", envStr("RADB_STUN_URLS", "stun:stun.l.google.com:19302"), "STUN Server URL")
-	turnMode := fs.String("turn-mode", envStr("RADB_TURN_MODE", "cloudflare"), "TURN 模式 (cloudflare/custom/none)")
-	turnURL := fs.String("turn", envStr("RADB_TURN_URL", ""), "TURN Server URL（turn-mode=custom 時使用）")
-	turnUser := fs.String("turn-user", envStr("RADB_TURN_USER", ""), "TURN 使用者名稱")
-	turnPass := fs.String("turn-pass", envStr("RADB_TURN_PASS", ""), "TURN 密碼")
+	ice := addICEFlags(fs)
 	fs.Parse(args)
 
 	if *token == "" {
@@ -260,9 +256,9 @@ func cmdRelayAgent(args []string) {
 		os.Exit(1)
 	}
 
-	iceConfig := buildICEConfig(*stunURLs, *turnMode, *turnURL, *turnUser, *turnPass)
+	iceConfig := ice.build()
 
-	slog.Info("啟動 radb relay agent", "version", buildinfo.Version, "host_id", *hostID)
+	slog.Info("starting radb relay agent", "version", buildinfo.Version, "host_id", *hostID)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -276,10 +272,10 @@ func cmdRelayAgent(args []string) {
 	})
 
 	if err := a.Run(ctx); err != nil && ctx.Err() == nil {
-		slog.Error("Agent 執行失敗", "error", err)
+		slog.Error("agent run failed", "error", err)
 		os.Exit(1)
 	}
-	slog.Info("Agent 已關閉")
+	slog.Info("agent stopped")
 }
 
 // cmdDirectAgent 啟動 Direct 模式的區網被控端。
@@ -292,7 +288,7 @@ func cmdDirectAgent(args []string) {
 	adbPort := fs.Int("adb-port", envInt("RADB_ADB_PORT", 5037), "本機 ADB server 埠")
 	fs.Parse(args)
 
-	slog.Info("啟動 radb direct agent", "version", buildinfo.Version, "host_id", *hostID, "port", *port)
+	slog.Info("starting radb direct agent", "version", buildinfo.Version, "host_id", *hostID, "port", *port)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -315,7 +311,7 @@ func cmdDirectAgent(args []string) {
 	// 啟動設備追蹤（背景更新 DeviceTable）
 	go func() {
 		if err := a.RunDirectOnly(ctx); err != nil && ctx.Err() == nil {
-			slog.Error("設備追蹤失敗", "error", err)
+			slog.Error("device tracking failed", "error", err)
 		}
 	}()
 
@@ -324,10 +320,10 @@ func cmdDirectAgent(args []string) {
 	fmt.Println("按 Ctrl+C 結束")
 
 	if err := dsrv.Serve(ctx, addr); err != nil && ctx.Err() == nil {
-		slog.Error("Direct Server 錯誤", "error", err)
+		slog.Error("direct server error", "error", err)
 		os.Exit(1)
 	}
-	slog.Info("Direct Agent 已關閉")
+	slog.Info("direct agent stopped")
 }
 
 func localHostname() string {
@@ -388,11 +384,7 @@ func cmdDaemon(args []string) {
 	token := fs.String("token", envStr("RADB_TOKEN", ""), "PSK Token")
 	portStart := fs.Int("port-start", envInt("RADB_PORT_START", 15555), "Port 起始值")
 	portEnd := fs.Int("port-end", envInt("RADB_PORT_END", 15655), "Port 結束值")
-	stunURLs := fs.String("stun", envStr("RADB_STUN_URLS", "stun:stun.l.google.com:19302"), "STUN URLs")
-	turnMode := fs.String("turn-mode", envStr("RADB_TURN_MODE", "cloudflare"), "TURN 模式 (cloudflare/custom/none)")
-	turnURL := fs.String("turn", envStr("RADB_TURN_URL", ""), "TURN URL（turn-mode=custom 時使用）")
-	turnUser := fs.String("turn-user", envStr("RADB_TURN_USER", ""), "TURN 使用者")
-	turnPass := fs.String("turn-pass", envStr("RADB_TURN_PASS", ""), "TURN 密碼")
+	ice := addICEFlags(fs)
 	fs.Parse(args)
 
 	if *token == "" {
@@ -400,7 +392,7 @@ func cmdDaemon(args []string) {
 		os.Exit(1)
 	}
 
-	iceConfig := buildICEConfig(*stunURLs, *turnMode, *turnURL, *turnUser, *turnPass)
+	iceConfig := ice.build()
 
 	cfg := daemon.Config{
 		ServerURL: *serverURL,
@@ -616,28 +608,9 @@ func cmdConnect(args []string) {
 // cmdConnectList 查詢遠端 Agent 的設備列表並印出。
 // 透過 directsrv 的 JSON 協定查詢遠端設備清單。
 func cmdConnectList(addr, token string) {
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	resp, err := directsrv.QueryDevices(addr, token)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "連線 Agent 失敗: %v\n", err)
-		os.Exit(1)
-	}
-	defer conn.Close()
-
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
-
-	if err := json.NewEncoder(conn).Encode(directsrv.Request{Action: "list", Token: token}); err != nil {
-		fmt.Fprintf(os.Stderr, "發送請求失敗: %v\n", err)
-		os.Exit(1)
-	}
-
-	var resp directsrv.Response
-	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
-		fmt.Fprintf(os.Stderr, "讀取回應失敗: %v\n", err)
-		os.Exit(1)
-	}
-
-	if !resp.OK {
-		fmt.Fprintf(os.Stderr, "查詢失敗: %s\n", resp.Error)
+		fmt.Fprintf(os.Stderr, "查詢設備失敗: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -752,27 +725,9 @@ func makeDirectOpenChannel(addr, token string) bridge.OpenChannelFunc {
 // 回傳全部設備（含 offline），供 cmdConnectDirect 初始化使用。
 // 失敗時直接 os.Exit。
 func queryDirectDevices(addr, token string) []directsrv.DeviceInfo {
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	resp, err := directsrv.QueryDevices(addr, token)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "連線 Agent 失敗: %v\n", err)
-		os.Exit(1)
-	}
-	defer conn.Close()
-
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	if err := json.NewEncoder(conn).Encode(directsrv.Request{Action: "list", Token: token}); err != nil {
-		fmt.Fprintf(os.Stderr, "發送請求失敗: %v\n", err)
-		os.Exit(1)
-	}
-
-	var resp directsrv.Response
-	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
-		fmt.Fprintf(os.Stderr, "讀取回應失敗: %v\n", err)
-		os.Exit(1)
-	}
-
-	if !resp.OK {
-		fmt.Fprintf(os.Stderr, "查詢失敗: %s\n", resp.Error)
+		fmt.Fprintf(os.Stderr, "查詢設備失敗: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -799,22 +754,8 @@ func cliDeviceProxyCallbacks(adbAddr string) (onReady func(string, int), onRemov
 // queryDirectDevicesQuiet 靜默查詢遠端設備清單（不印輸出、不 exit）。
 // 供 pollDirectDevicesDPM 輪詢使用，失敗時回傳 nil。
 func queryDirectDevicesQuiet(addr, token string) []directsrv.DeviceInfo {
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	resp, err := directsrv.QueryDevices(addr, token)
 	if err != nil {
-		return nil
-	}
-	defer conn.Close()
-
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	if err := json.NewEncoder(conn).Encode(directsrv.Request{Action: "list", Token: token}); err != nil {
-		return nil
-	}
-
-	var resp directsrv.Response
-	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
-		return nil
-	}
-	if !resp.OK {
 		return nil
 	}
 	return resp.Devices
@@ -852,17 +793,13 @@ func pollDirectDevicesDPM(ctx context.Context, addr, token string, dpm *bridge.D
 //  6. 建立 DeviceProxyManager（每台設備獨立 proxy port）
 func cmdConnectPair(args []string) {
 	fs := flag.NewFlagSet("p2p connect", flag.ExitOnError)
-	stunURLs := fs.String("stun", envStr("RADB_STUN_URLS", "stun:stun.l.google.com:19302"), "STUN Server URL")
-	turnMode := fs.String("turn-mode", envStr("RADB_TURN_MODE", "cloudflare"), "TURN 模式 (cloudflare/custom/none)")
-	turnURL := fs.String("turn", envStr("RADB_TURN_URL", ""), "TURN Server URL（turn-mode=custom 時使用）")
-	turnUser := fs.String("turn-user", envStr("RADB_TURN_USER", ""), "TURN 使用者名稱")
-	turnPass := fs.String("turn-pass", envStr("RADB_TURN_PASS", ""), "TURN 密碼")
+	ice := addICEFlags(fs)
 	portStart := fs.Int("port", envInt("RADB_PROXY_PORT", 5555), "本機 ADB proxy port 起始值")
 	adbPort := fs.Int("adb-port", envInt("RADB_ADB_PORT", 5037), "本機 ADB server port")
 	fs.Parse(args)
 
 	// 建立 ICE config（支援 Cloudflare 免費 TURN）
-	iceConfig := buildICEConfig(*stunURLs, *turnMode, *turnURL, *turnUser, *turnPass)
+	iceConfig := ice.build()
 
 	// 建立 PeerConnection
 	pm, err := webrtc.NewPeerManager(iceConfig)
@@ -991,11 +928,7 @@ func cmdConnectPair(args []string) {
 func cmdAgentPair(args []string) {
 	fs := flag.NewFlagSet("p2p agent", flag.ExitOnError)
 	adbPort := fs.Int("adb-port", envInt("RADB_ADB_PORT", 5037), "本機 ADB server 埠")
-	stunURLs := fs.String("stun", envStr("RADB_STUN_URLS", "stun:stun.l.google.com:19302"), "STUN Server URL")
-	turnMode := fs.String("turn-mode", envStr("RADB_TURN_MODE", "cloudflare"), "TURN 模式 (cloudflare/custom/none)")
-	turnURL := fs.String("turn", envStr("RADB_TURN_URL", ""), "TURN Server URL（turn-mode=custom 時使用）")
-	turnUser := fs.String("turn-user", envStr("RADB_TURN_USER", ""), "TURN 使用者名稱")
-	turnPass := fs.String("turn-pass", envStr("RADB_TURN_PASS", ""), "TURN 密碼")
+	ice := addICEFlags(fs)
 	fs.Parse(args)
 
 	// 支援兩種用法：直接帶邀請碼（radb p2p agent <token>）或互動輸入
@@ -1028,7 +961,7 @@ func cmdAgentPair(args []string) {
 	offerSDP := bridge.CompactToSDP(offerCompact)
 
 	// 建立 ICE config（支援 Cloudflare 免費 TURN）
-	iceConfig := buildICEConfig(*stunURLs, *turnMode, *turnURL, *turnUser, *turnPass)
+	iceConfig := ice.build()
 
 	// 建立 PeerConnection
 	pm, err := webrtc.NewPeerManager(iceConfig)
@@ -1127,6 +1060,34 @@ func cmdDiscover() {
 //
 // turnMode 對應：
 //   - "cloudflare"（預設）：從 Cloudflare 公開端點取得免費 TURN 憑證
+// iceFlags 封裝所有 ICE 相關的 CLI flag，避免 4 個子命令各自重複定義。
+type iceFlags struct {
+	stunURLs *string
+	turnMode *string
+	turnURL  *string
+	turnUser *string
+	turnPass *string
+}
+
+// addICEFlags 向 FlagSet 註冊 STUN/TURN 相關 flag 並回傳 iceFlags。
+// 所有 flag 的預設值可透過環境變數覆蓋（RADB_STUN_URLS、RADB_TURN_MODE 等）。
+func addICEFlags(fs *flag.FlagSet) *iceFlags {
+	return &iceFlags{
+		stunURLs: fs.String("stun", envStr("RADB_STUN_URLS", "stun:stun.l.google.com:19302"), "STUN Server URL"),
+		turnMode: fs.String("turn-mode", envStr("RADB_TURN_MODE", "cloudflare"), "TURN 模式 (cloudflare/custom/none)"),
+		turnURL:  fs.String("turn", envStr("RADB_TURN_URL", ""), "TURN Server URL（turn-mode=custom 時使用）"),
+		turnUser: fs.String("turn-user", envStr("RADB_TURN_USER", ""), "TURN 使用者名稱"),
+		turnPass: fs.String("turn-pass", envStr("RADB_TURN_PASS", ""), "TURN 密碼"),
+	}
+}
+
+// build 根據 flag 值建構 ICE 設定（呼叫 buildICEConfig）。
+func (f *iceFlags) build() webrtc.ICEConfig {
+	return buildICEConfig(*f.stunURLs, *f.turnMode, *f.turnURL, *f.turnUser, *f.turnPass)
+}
+
+// buildICEConfig 根據 STUN/TURN 參數建構 ICE 設定。turnMode 可為：
+//   - "cloudflare"：自動取得 Cloudflare 免費 TURN 憑證（預設）
 //   - "custom"：使用 --turn/--turn-user/--turn-pass 指定的自訂 TURN
 //   - "none" 或 ""：不使用 TURN，僅 STUN
 func buildICEConfig(stunURLs, turnMode, turnURL, turnUser, turnPass string) webrtc.ICEConfig {
@@ -1141,10 +1102,10 @@ func buildICEConfig(stunURLs, turnMode, turnURL, turnUser, turnPass string) webr
 		defer cancel()
 		servers, err := webrtc.FetchCloudflareTURN(ctx, nil)
 		if err != nil {
-			slog.Warn("Cloudflare TURN 取得失敗，僅使用 STUN", "error", err)
+			slog.Warn("Cloudflare TURN fetch failed, using STUN only", "error", err)
 		} else {
 			iceConfig.TURNServers = servers
-			slog.Info("已取得 Cloudflare TURN 憑證", "servers", len(servers))
+			slog.Info("Cloudflare TURN credentials fetched", "servers", len(servers))
 		}
 	case "custom":
 		if turnURL != "" {
@@ -1198,7 +1159,7 @@ func setupGUILog() *os.File {
 
 	// Go runtime panic 輸出寫入 log 檔
 	if err := debug.SetCrashOutput(f, debug.CrashOptions{}); err != nil {
-		slog.Warn("SetCrashOutput 失敗", "error", err)
+		slog.Warn("SetCrashOutput failed", "error", err)
 	}
 
 	// 啟動標記：協助確認主控端是否真的在寫此檔案。

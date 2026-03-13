@@ -75,7 +75,7 @@ type settingsPanel struct {
 
 	// TURN 模式下拉選單
 	turnDrop     dropdownState    // 下拉選單 UI 狀態
-	turnSelected int              // 0=Cloudflare, 1=自訂
+	turnSelected int              // 0=Cloudflare, 1=停用, 2=自訂
 
 	// TURN 自訂模式輸入框（自訂被選中時才顯示）
 	turnEditor     widget.Editor // TURN URL 輸入框
@@ -168,12 +168,14 @@ func (p *settingsPanel) syncEditorsFromConfig() {
 		p.stunEditor.SetText(p.config.STUNServer)
 	}
 
-	// TURN 模式下拉選單
+	// TURN 模式下拉選單（0=Cloudflare, 1=停用, 2=自訂）
 	switch p.config.TURNMode {
-	case TURNModeCustom:
-		p.turnSelected = 1
-	default: // cloudflare 或空（預設 Cloudflare）
+	case TURNModeCloudflare:
 		p.turnSelected = 0
+	case TURNModeCustom:
+		p.turnSelected = 2
+	default: // "none" 或空字串 → 停用
+		p.turnSelected = 1
 	}
 
 	// TURN 自訂模式輸入框
@@ -326,11 +328,14 @@ func (p *settingsPanel) save() bool {
 		p.config.STUNServer = p.stunEditor.Text()
 	}
 
-	// TURN 模式與自訂設定
-	if p.turnSelected == 0 {
+	// TURN 模式與自訂設定（0=Cloudflare, 1=停用, 2=自訂）
+	switch p.turnSelected {
+	case 0:
 		p.config.TURNMode = TURNModeCloudflare
-	} else {
+	case 2:
 		p.config.TURNMode = TURNModeCustom
+	default:
+		p.config.TURNMode = TURNModeNone
 	}
 	p.config.TURNServer = p.turnEditor.Text()
 	p.config.TURNUser = p.turnUserEditor.Text()
@@ -680,19 +685,20 @@ func (p *settingsPanel) layoutStunDropdown(gtx layout.Context, th *material.Them
 }
 
 // layoutTurnFields 繪製 TURN 伺服器下拉選單與自訂輸入框。
-// 下拉選單提供兩個選項：Cloudflare（免費）和自訂。
+// 下拉選單提供三個選項：Cloudflare（免費）、停用、自訂。
 // 選擇自訂時顯示 URL、帳號、密碼輸入框。
 func (p *settingsPanel) layoutTurnFields(gtx layout.Context, th *material.Theme) layout.Dimensions {
 	opts := []dropdownOption{
 		{Label: msg().Settings.TURNModeCloudflare, Selected: p.turnSelected == 0},
-		{Label: msg().Settings.TURNModeCustom, Selected: p.turnSelected == 1},
+		{Label: msg().Settings.TURNModeNone, Selected: p.turnSelected == 1},
+		{Label: msg().Settings.TURNModeCustom, Selected: p.turnSelected == 2},
 	}
 
 	currentLabel := opts[p.turnSelected].Label
 
-	// 自訂模式被選中時：收合狀態下附加 URL/帳號/密碼輸入框
+	// 自訂模式被選中時（索引 2）：收合狀態下附加 URL/帳號/密碼輸入框
 	var extra []layout.FlexChild
-	if p.turnSelected == 1 {
+	if p.turnSelected == 2 {
 		extra = []layout.FlexChild{
 			layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {

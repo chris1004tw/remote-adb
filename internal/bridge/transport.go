@@ -50,6 +50,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/chris1004tw/remote-adb/internal/ioutil"
 )
 
 // ADB device transport 協定常數（little-endian wire representation）。
@@ -214,8 +216,8 @@ func (p *PrefixedRWC) Close() error                  { return p.Ch.Close() }
 // 避免舊模式（只關閉一方）導致的死鎖。
 func BiCopy(ctx context.Context, a, b io.ReadWriteCloser) {
 	errc := make(chan error, 2)
-	go func() { _, err := ChunkedCopy(a, b, BiCopyChunk); errc <- err }()
-	go func() { _, err := ChunkedCopy(b, a, BiCopyChunk); errc <- err }()
+	go func() { _, err := ioutil.ChunkedCopy(a, b, BiCopyChunk); errc <- err }()
+	go func() { _, err := ioutil.ChunkedCopy(b, a, BiCopyChunk); errc <- err }()
 	select {
 	case <-errc:
 	case <-ctx.Done():
@@ -223,36 +225,6 @@ func BiCopy(ctx context.Context, a, b io.ReadWriteCloser) {
 	a.Close()
 	b.Close()
 	<-errc
-}
-
-// ChunkedCopy 以固定大小（chunkSize）分塊從 src 讀取並寫入 dst。
-// 配合 BiCopyChunk = 16KB 使用，確保每次 Write 不超過 DataChannel 的最大訊息大小。
-func ChunkedCopy(dst io.Writer, src io.Reader, chunkSize int) (int64, error) {
-	buf := make([]byte, chunkSize)
-	var total int64
-	for {
-		n, err := src.Read(buf)
-		if n > 0 {
-			written := 0
-			for written < n {
-				wn, werr := dst.Write(buf[written:n])
-				total += int64(wn)
-				if werr != nil {
-					return total, werr
-				}
-				if wn == 0 {
-					return total, io.ErrShortWrite
-				}
-				written += wn
-			}
-		}
-		if err != nil {
-			if err == io.EOF {
-				return total, nil
-			}
-			return total, err
-		}
-	}
 }
 
 // --- deviceBridge：ADB device transport 多工橋接 ---

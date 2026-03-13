@@ -17,6 +17,7 @@ import (
 // TURN 模式常數，對應 AppConfig.TURNMode 的有效值。
 const (
 	TURNModeCloudflare = "cloudflare" // 使用 Cloudflare 免費 TURN 憑證（自動取得）
+	TURNModeNone       = "none"       // 不使用 TURN（僅 STUN，對稱型 NAT 可能無法穿透）
 	TURNModeCustom     = "custom"     // 使用者自訂 TURN 伺服器（URL/帳號/密碼）
 )
 
@@ -28,7 +29,7 @@ const (
 //   - ProxyPort：主控端 ADB proxy 的起始 port（預設 5555）
 //   - DirectPort：區網直連被控端的 TCP 服務 port（預設 15555）
 //   - STUNServer：WebRTC ICE 使用的 STUN 伺服器地址（預設 Google STUN）
-//   - TURNMode：TURN 伺服器模式（"cloudflare"=Cloudflare 免費, "custom"=自訂, ""=不使用）
+//   - TURNMode：TURN 伺服器模式（"cloudflare"=Cloudflare 免費, "none"=停用, "custom"=自訂, ""=視同 none）
 //   - TURNServer：自訂模式的 TURN 伺服器 URI（如 "turn:host:3478"）
 //   - TURNUser：自訂模式的 TURN 認證使用者名稱
 //   - TURNPass：自訂模式的 TURN 認證密碼

@@ -55,3 +55,35 @@ func DialService(addr, token, action, serial, service string) (io.ReadWriteClose
 
 	return conn, nil
 }
+
+// QueryDevices 查詢遠端 Agent 的設備清單。
+// 封裝 TCP 連線 + JSON 編解碼 + OK 檢查，回傳完整 Response（含 Hostname、Devices）。
+// 呼叫端依需求決定錯誤處理策略（os.Exit / return error / return nil）。
+//
+// 回傳值：
+//   - *Response：查詢成功時回傳完整 Response
+//   - error：連線、請求發送、回應讀取或伺服器端錯誤時回傳
+func QueryDevices(addr, token string) (*Response, error) {
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("dial: %w", err)
+	}
+	defer conn.Close()
+
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	if err := json.NewEncoder(conn).Encode(Request{Action: "list", Token: token}); err != nil {
+		return nil, fmt.Errorf("send: %w", err)
+	}
+
+	var resp Response
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		return nil, fmt.Errorf("read: %w", err)
+	}
+
+	if !resp.OK {
+		return nil, fmt.Errorf("server: %s", resp.Error)
+	}
+
+	return &resp, nil
+}

@@ -37,6 +37,59 @@ func TestSettingsEventLoopDefer_OnlyClearsOwnWindow(t *testing.T) {
 	}
 }
 
+// TestSyncEditorsFromConfig_TURNModeNone 驗證 syncEditorsFromConfig 將
+// TURNModeNone（"none"）和空字串（""）正確映射到「停用」選項（索引 1）。
+func TestSyncEditorsFromConfig_TURNModeNone(t *testing.T) {
+	tests := []struct {
+		name     string
+		turnMode string
+		wantIdx  int
+	}{
+		{"none 字串", TURNModeNone, 1},
+		{"空字串", "", 1},
+		{"cloudflare", TURNModeCloudflare, 0},
+		{"custom", TURNModeCustom, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &settingsPanel{
+				config: &AppConfig{TURNMode: tt.turnMode},
+			}
+			p.syncEditorsFromConfig()
+			if p.turnSelected != tt.wantIdx {
+				t.Errorf("turnSelected = %d, want %d (TURNMode=%q)", p.turnSelected, tt.wantIdx, tt.turnMode)
+			}
+		})
+	}
+}
+
+// TestSave_TURNModeNone 驗證 save() 在「停用」選項（索引 1）時將 TURNMode 設為 TURNModeNone。
+func TestSave_TURNModeNone(t *testing.T) {
+	tests := []struct {
+		name     string
+		selected int
+		wantMode string
+	}{
+		{"Cloudflare", 0, TURNModeCloudflare},
+		{"停用", 1, TURNModeNone},
+		{"自訂", 2, TURNModeCustom},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			p := &settingsPanel{
+				config:     &AppConfig{ADBPort: 5037, ProxyPort: 5555, DirectPort: 15555},
+				configPath: dir + "/radb.toml",
+			}
+			p.turnSelected = tt.selected
+			p.save()
+			if p.config.TURNMode != tt.wantMode {
+				t.Errorf("TURNMode = %q, want %q", p.config.TURNMode, tt.wantMode)
+			}
+		})
+	}
+}
+
 // TestSettingsEventLoopDefer_ClearsOwnWindow 驗證 settingsEventLoop 的 defer
 // 在 settingsWin 仍為自身時正確清除。
 func TestSettingsEventLoopDefer_ClearsOwnWindow(t *testing.T) {

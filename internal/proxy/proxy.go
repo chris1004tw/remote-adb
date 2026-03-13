@@ -22,6 +22,8 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+
+	"github.com/chris1004tw/remote-adb/internal/ioutil"
 )
 
 // defaultChunkSize 定義每次寫入 DataChannel 的最大資料塊大小。
@@ -106,11 +108,11 @@ func (p *Proxy) Start(ctx context.Context) {
 				if ctx.Err() != nil {
 					return
 				}
-				slog.Debug("Accept 失敗", "error", err)
+				slog.Debug("accept failed", "error", err)
 				return
 			}
 
-			slog.Debug("ADB 連線", "port", p.port, "remote", conn.RemoteAddr())
+			slog.Debug("ADB connection", "port", p.port, "remote", conn.RemoteAddr())
 
 			// === 連線替換步驟 1-3：清理舊連線 ===
 			// 先將 active 設為 nil，防止 channelToConn 將資料寫入即將關閉的舊 conn
@@ -158,14 +160,14 @@ func (p *Proxy) channelToConn(ctx context.Context) {
 			p.mu.Unlock()
 			if conn != nil {
 				if _, writeErr := conn.Write(buf[:n]); writeErr != nil {
-					slog.Debug("寫入 TCP 失敗", "port", p.port, "error", writeErr)
+					slog.Debug("TCP write failed", "port", p.port, "error", writeErr)
 				}
 			}
 			// conn == nil 時資料被丟棄，避免寫入已關閉的舊連線
 		}
 		if err != nil {
 			if ctx.Err() == nil {
-				slog.Debug("channel 讀取結束", "port", p.port, "error", err)
+				slog.Debug("channel read ended", "port", p.port, "error", err)
 			}
 			return
 		}
@@ -192,35 +194,7 @@ func (p *Proxy) connToChannel(conn net.Conn) {
 		}
 		p.mu.Unlock()
 	}()
-	ChunkedCopy(p.channel, conn, p.chunkSize)
-}
-
-// ChunkedCopy 從 src 讀取資料，以固定大小的 buffer 分塊寫入 dst。
-//
-// 為何需要分塊？
-// WebRTC DataChannel 底層的 SCTP 協定有訊息大小限制。雖然 pion 會自動處理
-// 超大訊息的分片與重組，但每次寫入的資料量若超過 SCTP MTU（約 16KB），
-// 會增加分片開銷與記憶體緩衝壓力。使用 chunkSize 大小的 buffer 進行 Read，
-// 確保每次 Write 的資料量不超過限制，兼顧效能與穩定性。
-//
-// 注意：src.Read 本身可能回傳小於 chunkSize 的資料，這是正常行為。
-// chunkSize 只是 buffer 上限，實際寫入量以 Read 回傳的 n 為準。
-func ChunkedCopy(dst io.Writer, src io.Reader, chunkSize int) error {
-	buf := make([]byte, chunkSize)
-	for {
-		n, err := src.Read(buf)
-		if n > 0 {
-			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
-				return writeErr
-			}
-		}
-		if err != nil {
-			if err == io.EOF {
-				return nil // 正常結束：來源端關閉
-			}
-			return err
-		}
-	}
+	ioutil.ChunkedCopy(p.channel, conn, p.chunkSize)
 }
 
 // Stop 停止代理，釋放所有資源。

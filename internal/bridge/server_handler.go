@@ -16,6 +16,8 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+
+	"github.com/chris1004tw/remote-adb/internal/adb"
 )
 
 // ServerHandler 處理被控端收到的 DataChannel 連線。
@@ -105,12 +107,12 @@ func (h *ServerHandler) HandleADBStreamConn(ctx context.Context, rwc io.ReadWrit
 	defer conn.Close()
 
 	// 切換到目標設備
-	if err := SendADBCmd(conn, fmt.Sprintf("host:transport:%s", serial)); err != nil {
+	if err := adb.SendCommand(conn, fmt.Sprintf("host:transport:%s", serial)); err != nil {
 		slog.Debug("stream: transport command failed", "error", err)
 		rwc.Write([]byte{0})
 		return
 	}
-	if err := ReadADBStatus(conn); err != nil {
+	if err := adb.ReadStatus(conn); err != nil {
 		slog.Debug("stream: transport failed", "serial", serial, "error", err)
 		rwc.Write([]byte{0})
 		return
@@ -119,12 +121,12 @@ func (h *ServerHandler) HandleADBStreamConn(ctx context.Context, rwc io.ReadWrit
 	slog.Debug("stream: transport succeeded", "serial", serial)
 
 	// 發送服務命令
-	if err := SendADBCmd(conn, service); err != nil {
+	if err := adb.SendCommand(conn, service); err != nil {
 		slog.Debug("stream: service command failed", "service", service, "error", err)
 		rwc.Write([]byte{0})
 		return
 	}
-	if err := ReadADBStatus(conn); err != nil {
+	if err := adb.ReadStatus(conn); err != nil {
 		slog.Debug("stream: service failed", "service", service, "error", err)
 		rwc.Write([]byte{0})
 		return

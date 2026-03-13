@@ -39,6 +39,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/chris1004tw/remote-adb/internal/adb"
 )
 
 // FwdListener 追蹤一個 adb forward 的本機 TCP listener。
@@ -82,13 +84,7 @@ func NewForwardManager() *ForwardManager {
 // ADB server 使用文字協定：每個命令/回應以 4 字元 hex 長度前綴 + 內容。
 // 例如發送 "host:version" → "000chost:version"。
 // 回應以 "OKAY" 或 "FAIL" + 4 字元 hex 長度 + 錯誤訊息。
-
-// SendADBCmd 發送 ADB 協定命令（4 hex chars 長度 + 命令字串）。
-func SendADBCmd(w io.Writer, cmd string) error {
-	msg := fmt.Sprintf("%04x%s", len(cmd), cmd)
-	_, err := io.WriteString(w, msg)
-	return err
-}
+// 命令發送與狀態讀取統一使用 adb.SendCommand / adb.ReadStatus。
 
 // WriteADBOkay 寫入 ADB OKAY 回應。
 func WriteADBOkay(w io.Writer) error {
@@ -101,18 +97,6 @@ func WriteADBFail(w io.Writer, msg string) error {
 	resp := fmt.Sprintf("FAIL%04x%s", len(msg), msg)
 	_, err := w.Write([]byte(resp))
 	return err
-}
-
-// ReadADBStatus 讀取 ADB 4-byte 狀態回應。
-func ReadADBStatus(r io.Reader) error {
-	status := make([]byte, 4)
-	if _, err := io.ReadFull(r, status); err != nil {
-		return err
-	}
-	if string(status) != "OKAY" {
-		return fmt.Errorf("expected OKAY, got %s", string(status))
-	}
-	return nil
 }
 
 // QueryDeviceFeatures 透過 ADB server 協定查詢指定設備的 feature 清單。
@@ -128,10 +112,10 @@ func QueryDeviceFeatures(adbAddr, serial string) (string, error) {
 	conn.SetDeadline(time.Now().Add(5 * time.Second))
 
 	cmd := fmt.Sprintf("host-serial:%s:features", serial)
-	if err := SendADBCmd(conn, cmd); err != nil {
+	if err := adb.SendCommand(conn, cmd); err != nil {
 		return "", err
 	}
-	if err := ReadADBStatus(conn); err != nil {
+	if err := adb.ReadStatus(conn); err != nil {
 		return "", err
 	}
 
@@ -751,21 +735,21 @@ func (fm *ForwardManager) HandleADBForwardConn(ctx context.Context, rwc io.ReadW
 	defer conn.Close()
 
 	// 切換到目標設備
-	if err := SendADBCmd(conn, fmt.Sprintf("host:transport:%s", serial)); err != nil {
+	if err := adb.SendCommand(conn, fmt.Sprintf("host:transport:%s", serial)); err != nil {
 		slog.Debug("forward: failed to send transport", "error", err)
 		return
 	}
-	if err := ReadADBStatus(conn); err != nil {
+	if err := adb.ReadStatus(conn); err != nil {
 		slog.Debug("forward: transport failed", "serial", serial, "error", err)
 		return
 	}
 
 	// 連線到 remote spec
-	if err := SendADBCmd(conn, remoteSpec); err != nil {
+	if err := adb.SendCommand(conn, remoteSpec); err != nil {
 		slog.Debug("forward: failed to send remote spec", "error", err)
 		return
 	}
-	if err := ReadADBStatus(conn); err != nil {
+	if err := adb.ReadStatus(conn); err != nil {
 		slog.Debug("forward: remote spec failed", "remoteSpec", remoteSpec, "error", err)
 		return
 	}

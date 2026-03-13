@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chris1004tw/remote-adb/internal/adb"
 )
 
 func TestResolveSerial(t *testing.T) {
@@ -369,11 +371,11 @@ func TestOnlineDevices(t *testing.T) {
 // 1. ADB 協定輔助函式（純 I/O 格式測試）
 // =============================================================================
 
-// TestSendADBCmd 驗證 SendADBCmd 輸出格式為 "%04x" + cmd。
+// TestSendADBCmd 驗證 adb.SendCommand 輸出格式為 "%04x" + cmd。
 func TestSendADBCmd(t *testing.T) {
 	var buf bytes.Buffer
-	if err := SendADBCmd(&buf, "host:version"); err != nil {
-		t.Fatalf("SendADBCmd error: %v", err)
+	if err := adb.SendCommand(&buf, "host:version"); err != nil {
+		t.Fatalf("adb.SendCommand error: %v", err)
 	}
 	got := buf.String()
 	want := "000chost:version"
@@ -410,27 +412,27 @@ func TestWriteADBFail(t *testing.T) {
 // TestReadADBStatus_Okay 驗證讀取 "OKAY" 回傳 nil。
 func TestReadADBStatus_Okay(t *testing.T) {
 	r := bytes.NewReader([]byte("OKAY"))
-	if err := ReadADBStatus(r); err != nil {
+	if err := adb.ReadStatus(r); err != nil {
 		t.Errorf("expected nil error, got %v", err)
 	}
 }
 
-// TestReadADBStatus_Fail 驗證讀取 "FAIL" 回傳含 "FAIL" 的 error。
+// TestReadADBStatus_Fail 驗證讀取 "FAIL" + hex length + message 回傳含錯誤訊息的 error。
 func TestReadADBStatus_Fail(t *testing.T) {
-	r := bytes.NewReader([]byte("FAIL"))
-	err := ReadADBStatus(r)
+	r := bytes.NewReader([]byte("FAIL0010device not found"))
+	err := adb.ReadStatus(r)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "FAIL") {
-		t.Errorf("error should contain 'FAIL', got %q", err.Error())
+	if !strings.Contains(err.Error(), "device not found") {
+		t.Errorf("error should contain 'device not found', got %q", err.Error())
 	}
 }
 
 // TestReadADBStatus_ShortRead 驗證不足 4 bytes 回傳 error。
 func TestReadADBStatus_ShortRead(t *testing.T) {
 	r := bytes.NewReader([]byte("OK"))
-	err := ReadADBStatus(r)
+	err := adb.ReadStatus(r)
 	if err == nil {
 		t.Fatal("expected error for short read, got nil")
 	}

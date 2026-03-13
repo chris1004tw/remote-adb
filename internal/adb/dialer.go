@@ -2,7 +2,6 @@ package adb
 
 import (
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"time"
@@ -41,22 +40,22 @@ func (d *Dialer) DialDevice(serial string, port int) (net.Conn, error) {
 
 	// 切換到目標設備
 	transportCmd := fmt.Sprintf("host:transport:%s", serial)
-	if err := sendADBCommand(conn, transportCmd); err != nil {
+	if err := SendCommand(conn, transportCmd); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("發送 transport 指令失敗: %w", err)
 	}
-	if err := readOKAY(conn); err != nil {
+	if err := ReadStatus(conn); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("transport 失敗: %w", err)
 	}
 
 	// 建立 TCP tunnel
 	tcpCmd := fmt.Sprintf("tcp:%d", port)
-	if err := sendADBCommand(conn, tcpCmd); err != nil {
+	if err := SendCommand(conn, tcpCmd); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("發送 tcp 指令失敗: %w", err)
 	}
-	if err := readOKAY(conn); err != nil {
+	if err := ReadStatus(conn); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("tcp tunnel 建立失敗: %w", err)
 	}
@@ -74,21 +73,21 @@ func (d *Dialer) DialService(serial string, service string) (net.Conn, error) {
 
 	// 切換到目標設備
 	transportCmd := fmt.Sprintf("host:transport:%s", serial)
-	if err := sendADBCommand(conn, transportCmd); err != nil {
+	if err := SendCommand(conn, transportCmd); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("發送 transport 指令失敗: %w", err)
 	}
-	if err := readOKAY(conn); err != nil {
+	if err := ReadStatus(conn); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("transport 失敗: %w", err)
 	}
 
 	// 發送服務命令
-	if err := sendADBCommand(conn, service); err != nil {
+	if err := SendCommand(conn, service); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("發送 service 指令失敗: %w", err)
 	}
-	if err := readOKAY(conn); err != nil {
+	if err := ReadStatus(conn); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("service 失敗: %w", err)
 	}
@@ -111,10 +110,10 @@ func (d *Dialer) Connect(target string) error {
 	defer conn.Close()
 
 	cmd := fmt.Sprintf("host:connect:%s", target)
-	if err := sendADBCommand(conn, cmd); err != nil {
+	if err := SendCommand(conn, cmd); err != nil {
 		return fmt.Errorf("發送 connect 指令失敗: %w", err)
 	}
-	return readOKAY(conn)
+	return ReadStatus(conn)
 }
 
 // Disconnect 告訴本機 ADB server 中斷與指定 TCP 位址的連線。
@@ -127,10 +126,10 @@ func (d *Dialer) Disconnect(target string) error {
 	defer conn.Close()
 
 	cmd := fmt.Sprintf("host:disconnect:%s", target)
-	if err := sendADBCommand(conn, cmd); err != nil {
+	if err := SendCommand(conn, cmd); err != nil {
 		return fmt.Errorf("發送 disconnect 指令失敗: %w", err)
 	}
-	return readOKAY(conn)
+	return ReadStatus(conn)
 }
 
 // AutoConnect 等待指定延遲後嘗試 adb connect。
@@ -162,33 +161,3 @@ func AutoDisconnect(adbAddr, target string) {
 	dialer.Disconnect(target)
 }
 
-// readOKAY 讀取 ADB server 的 4-byte 回應，預期為 "OKAY"。
-// 如果收到 "FAIL"，會繼續讀取錯誤訊息。
-func readOKAY(conn net.Conn) error {
-	status := make([]byte, 4)
-	if _, err := io.ReadFull(conn, status); err != nil {
-		return fmt.Errorf("讀取回應狀態失敗: %w", err)
-	}
-
-	switch string(status) {
-	case "OKAY":
-		return nil
-	case "FAIL":
-		// 讀取錯誤訊息長度 + 內容
-		lenHex := make([]byte, 4)
-		if _, err := io.ReadFull(conn, lenHex); err != nil {
-			return fmt.Errorf("ADB FAIL（無法讀取錯誤訊息）")
-		}
-		length, err := parseHexLength(lenHex)
-		if err != nil {
-			return fmt.Errorf("ADB FAIL（無法解析錯誤長度）")
-		}
-		msg := make([]byte, length)
-		if _, err := io.ReadFull(conn, msg); err != nil {
-			return fmt.Errorf("ADB FAIL（無法讀取錯誤內容）")
-		}
-		return fmt.Errorf("ADB FAIL: %s", string(msg))
-	default:
-		return fmt.Errorf("未預期的 ADB 回應: %s", string(status))
-	}
-}

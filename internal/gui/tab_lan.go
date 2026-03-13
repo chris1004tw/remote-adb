@@ -14,7 +14,6 @@ package gui
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"image/color"
 	"io"
@@ -594,26 +593,11 @@ func (t *lanTab) connect() {
 	}()
 }
 
-// queryDevices 向 Agent 查詢設備清單。
+// queryDevices 向 Agent 查詢設備清單，僅回傳在線設備（State=="device"）。
 func (t *lanTab) queryDevices(addr, token string) ([]directsrv.DeviceInfo, error) {
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	resp, err := directsrv.QueryDevices(addr, token)
 	if err != nil {
-		return nil, fmt.Errorf(msg().LAN.ErrConnectFmt, err)
-	}
-	defer conn.Close()
-
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	if err := json.NewEncoder(conn).Encode(directsrv.Request{Action: "list", Token: token}); err != nil {
-		return nil, fmt.Errorf(msg().LAN.ErrSendFmt, err)
-	}
-
-	var resp directsrv.Response
-	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
-		return nil, fmt.Errorf(msg().LAN.ErrReadFmt, err)
-	}
-
-	if !resp.OK {
-		return nil, fmt.Errorf(msg().LAN.ErrQueryFmt, resp.Error)
+		return nil, fmt.Errorf(msg().LAN.ErrQueryFmt, err)
 	}
 
 	// 篩選 device 狀態
@@ -692,20 +676,25 @@ func (t *lanTab) pollRemoteDevices(ctx context.Context, addr, token string) {
 }
 
 // disconnect 中斷連線，關閉 DeviceProxyManager（內部觸發 OnRemoved 自動 adb disconnect）。
+// dpm.Close() 在 goroutine 中非同步執行，避免多台設備時阻塞 UI 執行緒。
 func (t *lanTab) disconnect() {
 	t.cliMu.Lock()
-	if t.cliCancel != nil {
-		t.cliCancel()
-	}
+	cancel := t.cliCancel
 	dpm := t.dpm
+	t.cliCancel = nil
 	t.dpm = nil
 	t.connected = false
 	t.cliStatus = msg().LAN.StatusDisconnected
 	t.cliMu.Unlock()
 
-	if dpm != nil {
-		dpm.Close()
-	}
+	go func() {
+		if cancel != nil {
+			cancel()
+		}
+		if dpm != nil {
+			dpm.Close()
+		}
+	}()
 
 	t.window.Invalidate()
 }
