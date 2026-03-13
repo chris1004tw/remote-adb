@@ -54,8 +54,7 @@ func (h *ServerHandler) HandleChannel(ctx context.Context, label string, rwc io.
 			rwc.Close()
 			return true
 		}
-		fm := &ForwardManager{} // 臨時 ForwardManager，被控端的 forward 不需要設備追蹤
-		go fm.HandleADBForwardConn(ctx, rwc, h.ADBAddr, parts[2], parts[3])
+		go HandleADBForwardConn(ctx, rwc, h.ADBAddr, parts[2], parts[3])
 		return true
 	}
 	return false
