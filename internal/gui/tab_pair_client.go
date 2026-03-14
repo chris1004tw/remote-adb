@@ -101,19 +101,9 @@ func (t *pairTab) layoutClientWidgets(gtx layout.Context, th *material.Theme) []
 		if len(entries) > 0 {
 			widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
 				return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					return material.Body2(th, fmt.Sprintf(msg().Pair.RemoteDevFmt, len(entries))).Layout(gtx)
+					return layoutDeviceEntries(gtx, th, entries)
 				})
 			})
-			for _, e := range entries {
-				text := fmt.Sprintf("    %s [device] → 127.0.0.1:%d", e.Serial, e.Port)
-				widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
-					return layout.Inset{Left: unit.Dp(16), Top: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-						lbl := material.Body2(th, text)
-						lbl.Color = color.NRGBA{R: 76, G: 175, B: 80, A: 255}
-						return lbl.Layout(gtx)
-					})
-				})
-			}
 		}
 
 		// 重新添加遠端 ADB 設備到本機按鈕（藍色，設備列表非空時顯示）
