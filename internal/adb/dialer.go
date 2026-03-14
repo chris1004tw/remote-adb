@@ -26,41 +26,10 @@ func NewDialer(addr string) *Dialer {
 }
 
 // DialDevice 連線到指定設備的指定 TCP port。
-// 內部流程：
-//  1. 連線到 ADB server
-//  2. 發送 host:transport:<serial> 切換到目標設備
-//  3. 發送 tcp:<port> 建立 TCP tunnel
-//
+// 內部委派給 DialService，service 為 "tcp:<port>"。
 // 回傳的 net.Conn 可直接用於雙向資料傳輸。
 func (d *Dialer) DialDevice(serial string, port int) (net.Conn, error) {
-	conn, err := net.Dial("tcp", d.addr)
-	if err != nil {
-		return nil, fmt.Errorf("connect to ADB server: %w", err)
-	}
-
-	// 切換到目標設備
-	transportCmd := fmt.Sprintf("host:transport:%s", serial)
-	if err := SendCommand(conn, transportCmd); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("send transport command: %w", err)
-	}
-	if err := ReadStatus(conn); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("transport failed: %w", err)
-	}
-
-	// 建立 TCP tunnel
-	tcpCmd := fmt.Sprintf("tcp:%d", port)
-	if err := SendCommand(conn, tcpCmd); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("send tcp command: %w", err)
-	}
-	if err := ReadStatus(conn); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("create tcp tunnel: %w", err)
-	}
-
-	return conn, nil
+	return d.DialService(serial, fmt.Sprintf("tcp:%d", port))
 }
 
 // DialService 連線到指定設備的指定服務。

@@ -11,7 +11,6 @@ package bridge
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -97,39 +96,13 @@ func (h *ServerHandler) HandleADBStreamConn(ctx context.Context, rwc io.ReadWrit
 
 	slog.Debug("stream: start handling", "serial", serial, "service", service)
 
-	conn, err := net.Dial("tcp", h.ADBAddr)
+	conn, err := adb.NewDialer(h.ADBAddr).DialService(serial, service)
 	if err != nil {
-		slog.Debug("stream: failed to connect ADB server", "error", err)
+		slog.Debug("stream: DialService failed", "serial", serial, "service", service, "error", err)
 		rwc.Write([]byte{0})
 		return
 	}
 	defer conn.Close()
-
-	// 切換到目標設備
-	if err := adb.SendCommand(conn, fmt.Sprintf("host:transport:%s", serial)); err != nil {
-		slog.Debug("stream: transport command failed", "error", err)
-		rwc.Write([]byte{0})
-		return
-	}
-	if err := adb.ReadStatus(conn); err != nil {
-		slog.Debug("stream: transport failed", "serial", serial, "error", err)
-		rwc.Write([]byte{0})
-		return
-	}
-
-	slog.Debug("stream: transport succeeded", "serial", serial)
-
-	// 發送服務命令
-	if err := adb.SendCommand(conn, service); err != nil {
-		slog.Debug("stream: service command failed", "service", service, "error", err)
-		rwc.Write([]byte{0})
-		return
-	}
-	if err := adb.ReadStatus(conn); err != nil {
-		slog.Debug("stream: service failed", "service", service, "error", err)
-		rwc.Write([]byte{0})
-		return
-	}
 
 	// 通知客戶端就緒
 	if n, err := rwc.Write([]byte{1}); err != nil {

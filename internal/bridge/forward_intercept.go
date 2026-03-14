@@ -289,32 +289,12 @@ func (fm *ForwardManager) ListReverseForwards() string {
 func HandleADBForwardConn(ctx context.Context, rwc io.ReadWriteCloser, adbAddr, serial, remoteSpec string) {
 	defer rwc.Close()
 
-	conn, err := net.Dial("tcp", adbAddr)
+	conn, err := adb.NewDialer(adbAddr).DialService(serial, remoteSpec)
 	if err != nil {
-		slog.Debug("forward: failed to connect ADB server", "error", err)
+		slog.Debug("forward: DialService failed", "serial", serial, "remoteSpec", remoteSpec, "error", err)
 		return
 	}
 	defer conn.Close()
-
-	// 切換到目標設備
-	if err := adb.SendCommand(conn, fmt.Sprintf("host:transport:%s", serial)); err != nil {
-		slog.Debug("forward: failed to send transport", "error", err)
-		return
-	}
-	if err := adb.ReadStatus(conn); err != nil {
-		slog.Debug("forward: transport failed", "serial", serial, "error", err)
-		return
-	}
-
-	// 連線到 remote spec
-	if err := adb.SendCommand(conn, remoteSpec); err != nil {
-		slog.Debug("forward: failed to send remote spec", "error", err)
-		return
-	}
-	if err := adb.ReadStatus(conn); err != nil {
-		slog.Debug("forward: remote spec failed", "remoteSpec", remoteSpec, "error", err)
-		return
-	}
 
 	// 雙向轉發（BiCopy 結束時關閉雙方，避免死鎖）
 	BiCopy(ctx, rwc, conn)
