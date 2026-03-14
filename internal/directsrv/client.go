@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/chris1004tw/remote-adb/internal/bridge"
@@ -89,6 +90,48 @@ func QueryDevices(addr, token string) (*Response, error) {
 	}
 
 	return &resp, nil
+}
+
+// NewOpenChannelFunc 建立 LAN 直連用的 bridge.OpenChannelFunc。
+// 根據 label 前綴路由到不同的 directsrv action，CLI 和 GUI 共用。
+//
+// label 格式與路由：
+//   - "adb-server/{id}" → connect-server（ADB server 協定命令轉發）
+//   - "adb-stream/{id}/{serial}/{service}" → connect-service + PrefixedRWC（設備服務串流）
+//   - "adb-fwd/{id}/{serial}/{remoteSpec}" → connect-service（forward 連線到設備服務）
+//
+// adb-stream 的特殊處理：setupStream 期待讀取 1 byte ready signal，
+// 但 directsrv 的 connect-service 回傳連線時已完成 ADB transport + service，
+// 因此使用 PrefixedRWC 注入虛擬的 ready byte（0x01），讓 setupStream 正確通過。
+func NewOpenChannelFunc(addr, token string) bridge.OpenChannelFunc {
+	return func(label string) (io.ReadWriteCloser, error) {
+		switch {
+		case strings.HasPrefix(label, "adb-server/"):
+			return DialService(addr, token, "connect-server", "", "")
+
+		case strings.HasPrefix(label, "adb-stream/"):
+			parts := strings.SplitN(label, "/", 4)
+			if len(parts) < 4 {
+				return nil, fmt.Errorf("invalid stream label: %s", label)
+			}
+			conn, err := DialService(addr, token, "connect-service", parts[2], parts[3])
+			if err != nil {
+				return nil, err
+			}
+			// setupStream 期待 ready signal（1 byte），connect-service 成功後連線已就緒
+			return &bridge.PrefixedRWC{Ch: conn, Prefix: []byte{1}}, nil
+
+		case strings.HasPrefix(label, "adb-fwd/"):
+			parts := strings.SplitN(label, "/", 4)
+			if len(parts) < 4 {
+				return nil, fmt.Errorf("invalid fwd label: %s", label)
+			}
+			return DialService(addr, token, "connect-service", parts[2], parts[3])
+
+		default:
+			return nil, fmt.Errorf("unknown channel: %s", label)
+		}
+	}
 }
 
 // ToBridgeDevices 將 directsrv 設備清單轉換為 bridge.DeviceInfo 切片。

@@ -5,7 +5,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -27,7 +26,7 @@ func cmdDirectAgent(args []string) {
 	port := fs.Int("port", envInt("RADB_DIRECT_PORT", 9000), "TCP 監聽埠")
 	token := fs.String("token", envStr("RADB_DIRECT_TOKEN", ""), "認證 Token")
 	hostID := fs.String("host-id", envStr("RADB_HOST_ID", localHostname()), "主機識別名稱")
-	adbPort := fs.Int("adb-port", envInt("RADB_ADB_PORT", 5037), "本機 ADB server 埠")
+	adbPort := addADBPortFlag(fs)
 	fs.Parse(args)
 
 	slog.Info("starting radb direct agent", "version", buildinfo.Version, "host_id", *hostID, "port", *port)
@@ -75,7 +74,7 @@ func cmdConnect(args []string) {
 	listOnly := fs.Bool("list", false, "只列出遠端設備")
 	token := fs.String("token", envStr("RADB_DIRECT_TOKEN", ""), "認證 Token")
 	portStart := fs.Int("port", envInt("RADB_PROXY_PORT", 5555), "本機 ADB proxy port 起始值")
-	adbPort := fs.Int("adb-port", envInt("RADB_ADB_PORT", 5037), "本機 ADB server port")
+	adbPort := addADBPortFlag(fs)
 	fs.Parse(args)
 
 	if fs.NArg() < 1 {
@@ -133,7 +132,7 @@ func cmdConnectDirect(addr, token string, portStart, adbPort int) {
 	}
 
 	// 2. 建立 OpenChannelFunc（透過 directsrv）
-	openCh := makeDirectOpenChannel(addr, token)
+	openCh := directsrv.NewOpenChannelFunc(addr, token)
 
 	// 3. 建立 per-device proxy 管理器
 	adbAddr := fmt.Sprintf("127.0.0.1:%d", adbPort)
@@ -160,48 +159,6 @@ func cmdConnectDirect(addr, token string, portStart, adbPort int) {
 
 	<-ctx.Done()
 	fmt.Println("\n轉發已停止")
-}
-
-// makeDirectOpenChannel 建立 LAN 直連用的 bridge.OpenChannelFunc。
-// 根據 label 前綴路由到不同的 directsrv action，與 GUI tab_lan.go 的 makeOpenChannel 邏輯一致。
-//
-// label 格式與路由：
-//   - "adb-server/{id}" → connect-server（ADB server 協定命令轉發）
-//   - "adb-stream/{id}/{serial}/{service}" → connect-service + PrefixedRWC（設備服務串流）
-//   - "adb-fwd/{id}/{serial}/{remoteSpec}" → connect-service（forward 連線到設備服務）
-//
-// adb-stream 的特殊處理：setupStream 期待讀取 1 byte ready signal，
-// 但 directsrv 的 connect-service 回傳連線時已完成 ADB transport + service，
-// 因此使用 PrefixedRWC 注入虛擬的 ready byte（0x01），讓 setupStream 正確通過。
-func makeDirectOpenChannel(addr, token string) bridge.OpenChannelFunc {
-	return func(label string) (io.ReadWriteCloser, error) {
-		switch {
-		case strings.HasPrefix(label, "adb-server/"):
-			return directsrv.DialService(addr, token, "connect-server", "", "")
-
-		case strings.HasPrefix(label, "adb-stream/"):
-			parts := strings.SplitN(label, "/", 4)
-			if len(parts) < 4 {
-				return nil, fmt.Errorf("invalid stream label: %s", label)
-			}
-			conn, err := directsrv.DialService(addr, token, "connect-service", parts[2], parts[3])
-			if err != nil {
-				return nil, err
-			}
-			// setupStream 期待 ready signal（1 byte），connect-service 成功後連線已就緒
-			return &bridge.PrefixedRWC{Ch: conn, Prefix: []byte{1}}, nil
-
-		case strings.HasPrefix(label, "adb-fwd/"):
-			parts := strings.SplitN(label, "/", 4)
-			if len(parts) < 4 {
-				return nil, fmt.Errorf("invalid fwd label: %s", label)
-			}
-			return directsrv.DialService(addr, token, "connect-service", parts[2], parts[3])
-
-		default:
-			return nil, fmt.Errorf("unknown channel: %s", label)
-		}
-	}
 }
 
 // queryDirectDevices 查詢遠端 Agent 的設備清單。
