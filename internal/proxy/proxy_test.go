@@ -250,6 +250,66 @@ func TestProxy_StopCleansUp(t *testing.T) {
 	}
 }
 
+// TestProxy_NewWithListener 驗證使用已建立的 listener 建構 Proxy，
+// 可正常接受連線並進行雙向轉發。
+func TestProxy_NewWithListener(t *testing.T) {
+	local, remote := newTestChannelPair()
+	defer local.Close()
+	defer remote.Close()
+
+	// 預先建立 listener（模擬 PortAllocator.AllocateListener 的回傳）
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("建立 listener 失敗: %v", err)
+	}
+	expectedPort := ln.Addr().(*net.TCPAddr).Port
+
+	p := proxy.NewWithListener(ln, local)
+	if p.Port() != expectedPort {
+		t.Errorf("Port() = %d, 預期 %d", p.Port(), expectedPort)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p.Start(ctx)
+	defer p.Stop()
+
+	// 驗證可正常連線與雙向傳輸
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", p.Port()))
+	if err != nil {
+		t.Fatalf("Dial 失敗: %v", err)
+	}
+	defer conn.Close()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// conn → channel
+	sent := []byte("via NewWithListener")
+	conn.Write(sent)
+
+	buf := make([]byte, 256)
+	n, err := remote.Read(buf)
+	if err != nil {
+		t.Fatalf("remote 讀取失敗: %v", err)
+	}
+	if !bytes.Equal(buf[:n], sent) {
+		t.Errorf("remote 收到 %q, 預期 %q", buf[:n], sent)
+	}
+
+	// channel → conn
+	reply := []byte("reply via NewWithListener")
+	remote.Write(reply)
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, err = conn.Read(buf)
+	if err != nil {
+		t.Fatalf("conn 讀取失敗: %v", err)
+	}
+	if !bytes.Equal(buf[:n], reply) {
+		t.Errorf("conn 收到 %q, 預期 %q", buf[:n], reply)
+	}
+}
+
 // TestProxy_ConcurrentConnections 驗證多條並行連線不會 panic 或 deadlock。
 func TestProxy_ConcurrentConnections(t *testing.T) {
 	local, remote := newTestChannelPair()

@@ -26,9 +26,12 @@ func NewPortAllocator(start, end int) *PortAllocator {
 	}
 }
 
-// Allocate 分配一個空閒的 Port。
-// 從 start 開始遞增搜尋，確認 port 未被佔用且可監聽。
-func (pa *PortAllocator) Allocate() (int, error) {
+// AllocateListener 分配一個空閒的 Port，並回傳已建立的 net.Listener。
+// 與 Allocate 不同，此方法不會在分配後關閉 listener，呼叫者可直接使用
+// 回傳的 listener 接受連線，避免 TOCTOU（Time-of-check to time-of-use）競爭：
+// Allocate 在「確認可用」與「實際使用」之間有時間差，其他程式可能搶佔該 port。
+// AllocateListener 則在確認可用的同時持有 listener，消除此風險。
+func (pa *PortAllocator) AllocateListener() (net.Listener, int, error) {
 	pa.mu.Lock()
 	defer pa.mu.Unlock()
 
@@ -36,13 +39,28 @@ func (pa *PortAllocator) Allocate() (int, error) {
 		if pa.used[port] {
 			continue
 		}
-		// 嘗試監聽確認 port 可用
-		if isPortAvailable(port) {
-			pa.used[port] = true
-			return port, nil
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			continue // port 被其他程式占用，嘗試下一個
 		}
+		pa.used[port] = true
+		return ln, port, nil
 	}
-	return 0, fmt.Errorf("無可用的 port（範圍 %d-%d 已滿）", pa.start, pa.end)
+	return nil, 0, fmt.Errorf("無可用的 port（範圍 %d-%d 已滿）", pa.start, pa.end)
+}
+
+// Allocate 分配一個空閒的 Port。
+// 從 start 開始遞增搜尋，確認 port 未被佔用且可監聽。
+// 內部委派給 AllocateListener，取得 listener 後立即關閉再回傳 port。
+// 注意：此方法存在 TOCTOU 風險（關閉 listener 後到實際使用之間 port 可能被搶佔），
+// 建議優先使用 AllocateListener 直接取得 listener。
+func (pa *PortAllocator) Allocate() (int, error) {
+	ln, port, err := pa.AllocateListener()
+	if err != nil {
+		return 0, err
+	}
+	ln.Close()
+	return port, nil
 }
 
 // Release 釋放已分配的 Port。
@@ -59,18 +77,3 @@ func (pa *PortAllocator) UsedCount() int {
 	return len(pa.used)
 }
 
-// isPortAvailable 透過「實際監聽測試」檢查 port 是否可用。
-//
-// 為什麼不用查表（如讀取 /proc/net/tcp 或呼叫 netstat）？
-//  1. 查表方式依賴平台特定的 API，不具跨平台可移植性（Windows/Linux/macOS 各不相同）
-//  2. 查表存在 TOCTOU（Time-of-check to time-of-use）競爭：查完到實際監聽之間 port 可能被佔走
-//  3. 實際 Listen + Close 是最可靠的方式，由作業系統直接回答 port 是否可用
-//  4. 監聽範圍固定在 127.0.0.1，僅測試 loopback 介面，不影響外部連線
-func isPortAvailable(port int) bool {
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-	if err != nil {
-		return false
-	}
-	ln.Close()
-	return true
-}

@@ -56,13 +56,22 @@ type Proxy struct {
 // New 建立一個新的 Proxy。
 // listenPort 為 0 時由作業系統自動分配可用 port（Daemon 動態分配場景）。
 // 僅綁定 127.0.0.1，避免暴露 ADB 連線給區網其他主機。
+//
+// 注意：此方法內部建立新的 listener，若呼叫者已持有 listener（如透過
+// PortAllocator.AllocateListener 取得），應改用 NewWithListener 避免 TOCTOU 風險。
 func New(listenPort int, channel io.ReadWriteCloser) (*Proxy, error) {
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", listenPort))
 	if err != nil {
 		return nil, fmt.Errorf("監聽 port %d 失敗: %w", listenPort, err)
 	}
+	return NewWithListener(listener, channel), nil
+}
 
-	// 取得實際分配的 port（listenPort 為 0 時需要查詢真實 port）
+// NewWithListener 使用已建立的 listener 建立 Proxy。
+// 適用於呼叫者已透過 PortAllocator.AllocateListener 取得 listener 的場景，
+// 直接傳入可避免 TOCTOU 競爭（port 在分配與使用之間不會被其他程式搶佔）。
+// listener 的擁有權轉移給 Proxy，Stop 時會關閉。
+func NewWithListener(listener net.Listener, channel io.ReadWriteCloser) *Proxy {
 	actualPort := listener.Addr().(*net.TCPAddr).Port
 
 	return &Proxy{
@@ -71,7 +80,7 @@ func New(listenPort int, channel io.ReadWriteCloser) (*Proxy, error) {
 		port:      actualPort,
 		chunkSize: defaultChunkSize,
 		done:      make(chan struct{}),
-	}, nil
+	}
 }
 
 // Start 開始接受 TCP 連線並轉發。
