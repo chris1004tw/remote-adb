@@ -64,7 +64,7 @@ func main() {
 	case "p2p":
 		cmdP2P(os.Args[2:])
 	case "direct":
-		cmdDirectModule(os.Args[2:])
+		cmdDirect(os.Args[2:])
 	case "relay":
 		cmdRelay(os.Args[2:])
 	case "update":
@@ -121,9 +121,9 @@ func cmdP2P(args []string) {
 	}
 }
 
-// cmdDirectModule 分派 Direct 模式子命令：connect（TCP 直連）、discover（mDNS 掃描）、agent（被控端）。
+// cmdDirect 分派 Direct 模式子命令：connect（TCP 直連）、discover（mDNS 掃描）、agent（被控端）。
 // Direct 模式在同一區網內透過 TCP 直連，不需要任何伺服器。
-func cmdDirectModule(args []string) {
+func cmdDirect(args []string) {
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "用法: radb direct <connect|discover|agent> [選項]")
 		os.Exit(1)
