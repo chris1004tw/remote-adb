@@ -284,7 +284,7 @@ remote-adb/
 │   ├── bridge/            # GUI/CLI 共用邏輯（SDP 編解碼、ADB transport、forward 管理）
 │   ├── directsrv/         # TCP 直連服務 + mDNS 廣播 + 客戶端連線
 │   ├── gui/               # Gio GUI 介面（設定面板 + i18n 多語系 + Cloudflare TURN + TURN 預取快取）
-│   ├── ioutil/            # 共用 I/O 工具（ChunkedCopy：分塊複製 + short write 保護）
+│   ├── ioutil/            # 共用 I/O 工具（ChunkedCopy：分塊複製 + short write 保護 + sync.Pool buffer reuse、BiCopy：雙向複製 + 雙向 Close + ctx 取消）
 │   ├── proxy/             # TCP 代理（16KB chunking、單連線替換設計）
 │   ├── signal/            # WebSocket 信令 hub、PSK 認證
 │   ├── updater/           # 自動更新（GitHub Releases 下載 + 跨平台 binary 替換）

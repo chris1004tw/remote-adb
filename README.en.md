@@ -284,7 +284,7 @@ remote-adb/
 │   ├── bridge/            # Shared GUI/CLI logic (SDP codec, ADB transport, forward management)
 │   ├── directsrv/         # TCP direct connection service + mDNS broadcast + client connection
 │   ├── gui/               # Gio GUI (Easy Connect/LAN Direct/Relay tabs + settings + i18n + Cloudflare TURN + TURN prefetch cache)
-│   ├── ioutil/            # Shared I/O utilities (ChunkedCopy: chunked copy with short write protection)
+│   ├── ioutil/            # Shared I/O utilities (ChunkedCopy: chunked copy + short write protection + sync.Pool buffer reuse, BiCopy: bidirectional copy + dual Close + ctx cancel)
 │   ├── proxy/             # TCP proxy (16KB chunking, single-connection replacement)
 │   ├── signal/            # WebSocket signaling hub, PSK auth
 │   ├── updater/           # Auto-update (GitHub Releases download + cross-platform binary replacement)
