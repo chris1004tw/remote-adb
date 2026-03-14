@@ -96,18 +96,18 @@ func (t *Tracker) connectAndTrack(ctx context.Context, ch chan<- []DeviceEvent) 
 	dialer := net.Dialer{}
 	conn, err := dialer.DialContext(ctx, "tcp", t.addr)
 	if err != nil {
-		return fmt.Errorf("連線 ADB server 失敗: %w", err)
+		return fmt.Errorf("connect to ADB server: %w", err)
 	}
 	defer conn.Close()
 
 	// 發送 host:track-devices 指令
 	if err := SendCommand(conn, "host:track-devices"); err != nil {
-		return fmt.Errorf("發送 track-devices 失敗: %w", err)
+		return fmt.Errorf("send track-devices command: %w", err)
 	}
 
 	// 讀取 OKAY 回應
 	if err := ReadStatus(conn); err != nil {
-		return fmt.Errorf("track-devices 失敗: %w", err)
+		return fmt.Errorf("track-devices failed: %w", err)
 	}
 
 	slog.Info("connected to ADB server, tracking devices", "addr", t.addr)
@@ -122,7 +122,7 @@ func (t *Tracker) connectAndTrack(ctx context.Context, ch chan<- []DeviceEvent) 
 
 		devices, err := readDeviceList(reader)
 		if err != nil {
-			return fmt.Errorf("讀取設備列表失敗: %w", err)
+			return fmt.Errorf("read device list: %w", err)
 		}
 
 		select {
@@ -140,7 +140,7 @@ func readDeviceList(reader *bufio.Reader) ([]DeviceEvent, error) {
 	// 讀取 4 位 hex 長度
 	lenHex := make([]byte, 4)
 	if _, err := io.ReadFull(reader, lenHex); err != nil {
-		return nil, fmt.Errorf("讀取長度前綴失敗: %w", err)
+		return nil, fmt.Errorf("read length prefix: %w", err)
 	}
 
 	length, err := parseHexLength(lenHex)
@@ -155,7 +155,7 @@ func readDeviceList(reader *bufio.Reader) ([]DeviceEvent, error) {
 	// 讀取 payload
 	payload := make([]byte, length)
 	if _, err := io.ReadFull(reader, payload); err != nil {
-		return nil, fmt.Errorf("讀取 payload 失敗: %w", err)
+		return nil, fmt.Errorf("read payload: %w", err)
 	}
 
 	return ParseDeviceList(string(payload)), nil
@@ -165,11 +165,11 @@ func readDeviceList(reader *bufio.Reader) ([]DeviceEvent, error) {
 func parseHexLength(h []byte) (int, error) {
 	decoded, err := hex.DecodeString(string(h))
 	if err != nil {
-		return 0, fmt.Errorf("無效的 hex 長度: %s", string(h))
+		return 0, fmt.Errorf("invalid hex length: %s", string(h))
 	}
 	// 2 bytes -> uint16
 	if len(decoded) != 2 {
-		return 0, fmt.Errorf("hex 長度解碼後應為 2 bytes: got %d", len(decoded))
+		return 0, fmt.Errorf("hex length should decode to 2 bytes, got %d", len(decoded))
 	}
 	return int(decoded[0])<<8 | int(decoded[1]), nil
 }

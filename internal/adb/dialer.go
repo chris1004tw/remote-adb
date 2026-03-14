@@ -35,29 +35,29 @@ func NewDialer(addr string) *Dialer {
 func (d *Dialer) DialDevice(serial string, port int) (net.Conn, error) {
 	conn, err := net.Dial("tcp", d.addr)
 	if err != nil {
-		return nil, fmt.Errorf("連線 ADB server 失敗: %w", err)
+		return nil, fmt.Errorf("connect to ADB server: %w", err)
 	}
 
 	// 切換到目標設備
 	transportCmd := fmt.Sprintf("host:transport:%s", serial)
 	if err := SendCommand(conn, transportCmd); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("發送 transport 指令失敗: %w", err)
+		return nil, fmt.Errorf("send transport command: %w", err)
 	}
 	if err := ReadStatus(conn); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("transport 失敗: %w", err)
+		return nil, fmt.Errorf("transport failed: %w", err)
 	}
 
 	// 建立 TCP tunnel
 	tcpCmd := fmt.Sprintf("tcp:%d", port)
 	if err := SendCommand(conn, tcpCmd); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("發送 tcp 指令失敗: %w", err)
+		return nil, fmt.Errorf("send tcp command: %w", err)
 	}
 	if err := ReadStatus(conn); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("tcp tunnel 建立失敗: %w", err)
+		return nil, fmt.Errorf("create tcp tunnel: %w", err)
 	}
 
 	return conn, nil
@@ -68,28 +68,28 @@ func (d *Dialer) DialDevice(serial string, port int) (net.Conn, error) {
 func (d *Dialer) DialService(serial string, service string) (net.Conn, error) {
 	conn, err := net.Dial("tcp", d.addr)
 	if err != nil {
-		return nil, fmt.Errorf("連線 ADB server 失敗: %w", err)
+		return nil, fmt.Errorf("connect to ADB server: %w", err)
 	}
 
 	// 切換到目標設備
 	transportCmd := fmt.Sprintf("host:transport:%s", serial)
 	if err := SendCommand(conn, transportCmd); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("發送 transport 指令失敗: %w", err)
+		return nil, fmt.Errorf("send transport command: %w", err)
 	}
 	if err := ReadStatus(conn); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("transport 失敗: %w", err)
+		return nil, fmt.Errorf("transport failed: %w", err)
 	}
 
 	// 發送服務命令
 	if err := SendCommand(conn, service); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("發送 service 指令失敗: %w", err)
+		return nil, fmt.Errorf("send service command: %w", err)
 	}
 	if err := ReadStatus(conn); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("service 失敗: %w", err)
+		return nil, fmt.Errorf("service failed: %w", err)
 	}
 
 	return conn, nil
@@ -105,13 +105,13 @@ func (d *Dialer) Addr() string {
 func (d *Dialer) Connect(target string) error {
 	conn, err := net.Dial("tcp", d.addr)
 	if err != nil {
-		return fmt.Errorf("連線 ADB server 失敗: %w", err)
+		return fmt.Errorf("connect to ADB server: %w", err)
 	}
 	defer conn.Close()
 
 	cmd := fmt.Sprintf("host:connect:%s", target)
 	if err := SendCommand(conn, cmd); err != nil {
-		return fmt.Errorf("發送 connect 指令失敗: %w", err)
+		return fmt.Errorf("send connect command: %w", err)
 	}
 	return ReadStatus(conn)
 }
@@ -121,13 +121,13 @@ func (d *Dialer) Connect(target string) error {
 func (d *Dialer) Disconnect(target string) error {
 	conn, err := net.Dial("tcp", d.addr)
 	if err != nil {
-		return fmt.Errorf("連線 ADB server 失敗: %w", err)
+		return fmt.Errorf("connect to ADB server: %w", err)
 	}
 	defer conn.Close()
 
 	cmd := fmt.Sprintf("host:disconnect:%s", target)
 	if err := SendCommand(conn, cmd); err != nil {
-		return fmt.Errorf("發送 disconnect 指令失敗: %w", err)
+		return fmt.Errorf("send disconnect command: %w", err)
 	}
 	return ReadStatus(conn)
 }

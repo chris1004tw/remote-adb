@@ -41,7 +41,7 @@ func platformToolsURL() string {
 func adbDataDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("取得 home 目錄失敗: %w", err)
+		return "", fmt.Errorf("get home directory: %w", err)
 	}
 	return filepath.Join(home, ".radb", "platform-tools"), nil
 }
@@ -85,7 +85,7 @@ func StartADBServer(adbPath string) error {
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("啟動 ADB server 失敗: %w", err)
+		return fmt.Errorf("start ADB server: %w", err)
 	}
 	return nil
 }
@@ -134,7 +134,7 @@ func EnsureADB(ctx context.Context, addr string, progressFn func(string)) error 
 	// 確認啟動成功
 	time.Sleep(500 * time.Millisecond)
 	if !IsADBServerRunning(addr) {
-		return fmt.Errorf("ADB server 啟動後無法連線")
+		return fmt.Errorf("ADB server started but not reachable")
 	}
 
 	return nil
@@ -147,35 +147,35 @@ func downloadPlatformTools(ctx context.Context, destDir string, report func(stri
 
 	// 建立暫存檔
 	if err := os.MkdirAll(filepath.Dir(destDir), 0755); err != nil {
-		return fmt.Errorf("建立目錄失敗: %w", err)
+		return fmt.Errorf("create directory: %w", err)
 	}
 	zipPath := destDir + ".zip"
 
 	// 下載
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return fmt.Errorf("建立下載請求失敗: %w", err)
+		return fmt.Errorf("create download request: %w", err)
 	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("下載失敗: %w", err)
+		return fmt.Errorf("download failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("下載失敗: HTTP %d", resp.StatusCode)
+		return fmt.Errorf("download failed: HTTP %d", resp.StatusCode)
 	}
 
 	f, err := os.Create(zipPath)
 	if err != nil {
-		return fmt.Errorf("建立暫存檔失敗: %w", err)
+		return fmt.Errorf("create temp file: %w", err)
 	}
 
 	if _, err := io.Copy(f, resp.Body); err != nil {
 		f.Close()
 		os.Remove(zipPath)
-		return fmt.Errorf("下載寫入失敗: %w", err)
+		return fmt.Errorf("download write failed: %w", err)
 	}
 	f.Close()
 
@@ -196,12 +196,12 @@ func downloadPlatformTools(ctx context.Context, destDir string, report func(stri
 func extractADBFromZip(zipPath, destDir string) error {
 	r, err := zip.OpenReader(zipPath)
 	if err != nil {
-		return fmt.Errorf("開啟 zip 失敗: %w", err)
+		return fmt.Errorf("open zip: %w", err)
 	}
 	defer r.Close()
 
 	if err := os.MkdirAll(destDir, 0755); err != nil {
-		return fmt.Errorf("建立目錄失敗: %w", err)
+		return fmt.Errorf("create directory: %w", err)
 	}
 
 	// 只解壓 adb 執行所需的檔案（白名單），忽略其他如 fastboot 等工具。
@@ -238,18 +238,18 @@ func extractADBFromZip(zipPath, destDir string) error {
 func extractZipFile(f *zip.File, destPath string) error {
 	rc, err := f.Open()
 	if err != nil {
-		return fmt.Errorf("開啟 zip 條目失敗: %w", err)
+		return fmt.Errorf("open zip entry: %w", err)
 	}
 	defer rc.Close()
 
 	out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
 	if err != nil {
-		return fmt.Errorf("建立檔案失敗: %w", err)
+		return fmt.Errorf("create file: %w", err)
 	}
 	defer out.Close()
 
 	if _, err := io.Copy(out, rc); err != nil {
-		return fmt.Errorf("解壓寫入失敗: %w", err)
+		return fmt.Errorf("extract write failed: %w", err)
 	}
 
 	return nil

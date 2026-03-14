@@ -44,7 +44,7 @@ func SendCommand(w io.Writer, cmd string) error {
 func ReadStatus(r io.Reader) error {
 	status := make([]byte, 4)
 	if _, err := io.ReadFull(r, status); err != nil {
-		return fmt.Errorf("讀取回應狀態失敗: %w", err)
+		return fmt.Errorf("read ADB response status: %w", err)
 	}
 
 	switch string(status) {
@@ -54,18 +54,18 @@ func ReadStatus(r io.Reader) error {
 		// 讀取錯誤訊息長度 + 內容
 		lenHex := make([]byte, 4)
 		if _, err := io.ReadFull(r, lenHex); err != nil {
-			return fmt.Errorf("ADB FAIL（無法讀取錯誤訊息）")
+			return fmt.Errorf("ADB FAIL (cannot read error message)")
 		}
 		length, err := parseHexLength(lenHex)
 		if err != nil {
-			return fmt.Errorf("ADB FAIL（無法解析錯誤長度）")
+			return fmt.Errorf("ADB FAIL (cannot parse error length)")
 		}
 		msg := make([]byte, length)
 		if _, err := io.ReadFull(r, msg); err != nil {
-			return fmt.Errorf("ADB FAIL（無法讀取錯誤內容）")
+			return fmt.Errorf("ADB FAIL (cannot read error content)")
 		}
 		return fmt.Errorf("ADB FAIL: %s", string(msg))
 	default:
-		return fmt.Errorf("未預期的 ADB 回應: %s", string(status))
+		return fmt.Errorf("unexpected ADB response: %s", string(status))
 	}
 }
