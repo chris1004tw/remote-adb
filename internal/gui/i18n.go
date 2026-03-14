@@ -176,10 +176,11 @@ type signalMsg struct {
 	StatusRunning        string // "運行中"
 	StatusConnected      string // "已連線"
 	StatusDisconnected   string // "已斷線"
-	StatusBindOKFmt      string // "綁定成功 127.0.0.1:%d → %s"
-	StatusBindFailFmt    string // "綁定失敗: %s"
-	StatusUnbindOKFmt    string // "已解綁 port %d"
-	StatusUnbindFailFmt  string // "解綁失敗: %s"
+	StatusBindOKFmt         string // "綁定成功 127.0.0.1:%d → %s"
+	StatusBindFailFmt       string // "綁定失敗: %s"
+	StatusBindDecodeFailFmt string // "解碼綁定結果失敗: %v"
+	StatusUnbindOKFmt       string // "已解綁 port %d"
+	StatusUnbindFailFmt     string // "解綁失敗: %s"
 
 	// 錯誤
 	ErrIPCFmt      string // "建立 IPC 失敗: %v"
@@ -391,10 +392,11 @@ var messagesZhTW = Messages{
 		StatusRunning:        "運行中",
 		StatusConnected:      "已連線",
 		StatusDisconnected:   "已斷線",
-		StatusBindOKFmt:      "綁定成功 127.0.0.1:%d → %s",
-		StatusBindFailFmt:    "綁定失敗: %s",
-		StatusUnbindOKFmt:    "已解綁 port %d",
-		StatusUnbindFailFmt:  "解綁失敗: %s",
+		StatusBindOKFmt:         "綁定成功 127.0.0.1:%d → %s",
+		StatusBindFailFmt:       "綁定失敗: %s",
+		StatusBindDecodeFailFmt: "解碼綁定結果失敗: %v",
+		StatusUnbindOKFmt:       "已解綁 port %d",
+		StatusUnbindFailFmt:     "解綁失敗: %s",
 
 		ErrIPCFmt:      "建立 IPC 失敗: %v",
 		ErrDaemonFmt:   "Daemon 錯誤: %v",
@@ -565,10 +567,11 @@ var messagesEN = Messages{
 		StatusRunning:        "Running",
 		StatusConnected:      "Connected",
 		StatusDisconnected:   "Disconnected",
-		StatusBindOKFmt:      "Bound 127.0.0.1:%d → %s",
-		StatusBindFailFmt:    "Bind failed: %s",
-		StatusUnbindOKFmt:    "Unbound port %d",
-		StatusUnbindFailFmt:  "Unbind failed: %s",
+		StatusBindOKFmt:         "Bound 127.0.0.1:%d → %s",
+		StatusBindFailFmt:       "Bind failed: %s",
+		StatusBindDecodeFailFmt: "Failed to decode bind result: %v",
+		StatusUnbindOKFmt:       "Unbound port %d",
+		StatusUnbindFailFmt:     "Unbind failed: %s",
 
 		ErrIPCFmt:      "Failed to create IPC: %v",
 		ErrDaemonFmt:   "Daemon error: %v",

@@ -938,7 +938,7 @@ func (t *signalTab) bindDevice(hostID, serial string) {
 		if resp.Success {
 			var result daemon.BindResult
 			if err := json.Unmarshal(resp.Data, &result); err != nil {
-				t.clientStatus = fmt.Sprintf("解碼綁定結果失敗: %v", err)
+				t.clientStatus = fmt.Sprintf(msg().Signal.StatusBindDecodeFailFmt, err)
 			} else {
 				t.clientStatus = fmt.Sprintf(msg().Signal.StatusBindOKFmt, result.LocalPort, result.Serial)
 			}
