@@ -30,7 +30,7 @@ func cmdConnectPair(args []string) {
 	fs := flag.NewFlagSet("p2p connect", flag.ExitOnError)
 	ice := addICEFlags(fs)
 	portStart := fs.Int("port", envInt("RADB_PROXY_PORT", 5555), "本機 ADB proxy port 起始值")
-	adbPort := fs.Int("adb-port", envInt("RADB_ADB_PORT", 5037), "本機 ADB server port")
+	adbPort := addADBPortFlag(fs)
 	fs.Parse(args)
 
 	// 建立 ICE config（支援 Cloudflare 免費 TURN）
@@ -162,7 +162,7 @@ func cmdConnectPair(args []string) {
 // 處理所有 DataChannel（adb-server/adb-stream/adb-fwd）。
 func cmdAgentPair(args []string) {
 	fs := flag.NewFlagSet("p2p agent", flag.ExitOnError)
-	adbPort := fs.Int("adb-port", envInt("RADB_ADB_PORT", 5037), "本機 ADB server 埠")
+	adbPort := addADBPortFlag(fs)
 	ice := addICEFlags(fs)
 	fs.Parse(args)
 

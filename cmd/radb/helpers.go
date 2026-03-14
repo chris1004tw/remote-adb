@@ -97,6 +97,14 @@ func localHostname() string {
 	return h
 }
 
+// --- ADB port flag 輔助函式 ---
+
+// addADBPortFlag 向 FlagSet 註冊 --adb-port flag 並回傳指標。
+// 統一 5 個子命令的 flag 定義與 help 文字，避免不一致。
+func addADBPortFlag(fs *flag.FlagSet) *int {
+	return fs.Int("adb-port", envInt("RADB_ADB_PORT", 5037), "本機 ADB server 埠")
+}
+
 // --- 環境變數讀取輔助函式 ---
 // 所有 flag 的預設值皆可透過環境變數覆蓋（如 RADB_TOKEN、RADB_SERVER_URL 等）。
 

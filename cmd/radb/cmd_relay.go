@@ -81,7 +81,7 @@ func cmdRelayAgent(args []string) {
 	serverURL := fs.String("server", envStrFallback("RADB_SERVER_URL", "RADB_SIGNAL_URL", "ws://localhost:8080"), "Relay Server WebSocket 位址")
 	token := fs.String("token", envStr("RADB_TOKEN", ""), "PSK Token")
 	hostID := fs.String("host-id", envStr("RADB_HOST_ID", localHostname()), "主機識別名稱")
-	adbPort := fs.Int("adb-port", envInt("RADB_ADB_PORT", 5037), "本機 ADB server 埠")
+	adbPort := addADBPortFlag(fs)
 	ice := addICEFlags(fs)
 	fs.Parse(args)
 
