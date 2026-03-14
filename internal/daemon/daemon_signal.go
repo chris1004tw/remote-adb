@@ -174,7 +174,7 @@ func (d *Daemon) waitResponse(key string, timeout time.Duration) (protocol.Envel
 	case env := <-ch:
 		return env, nil
 	case <-time.After(timeout):
-		return protocol.Envelope{}, fmt.Errorf("等待 %s 逾時", key)
+		return protocol.Envelope{}, fmt.Errorf("waiting for %s timed out", key)
 	}
 }
 

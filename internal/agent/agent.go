@@ -277,7 +277,7 @@ func (a *Agent) handleLockReq(ctx context.Context, msg protocol.Envelope) {
 	success := a.deviceTable.Lock(payload.Serial, msg.SourceID)
 	reason := ""
 	if !success {
-		reason = "設備不可用或已被鎖定"
+		reason = "device unavailable or already locked"
 	}
 
 	resp, _ := protocol.NewEnvelope(
@@ -302,7 +302,7 @@ func (a *Agent) handleUnlockReq(ctx context.Context, msg protocol.Envelope) {
 	success := a.deviceTable.Unlock(payload.Serial, msg.SourceID)
 	reason := ""
 	if !success {
-		reason = "設備未被鎖定或非持鎖者"
+		reason = "device not locked or not lock holder"
 	}
 
 	resp, _ := protocol.NewEnvelope(

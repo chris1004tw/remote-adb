@@ -318,7 +318,7 @@ func TestEnvelope_DecodePayload_ErrorPayload(t *testing.T) {
 		"signal",
 		"signal",
 		"client-1",
-		protocol.ErrorPayload{Code: protocol.ErrCodeDeviceLocked, Message: "設備已被鎖定"},
+		protocol.ErrorPayload{Code: protocol.ErrCodeDeviceLocked, Message: "device already locked"},
 	)
 	if err != nil {
 		t.Fatalf("NewEnvelope 失敗: %v", err)
@@ -331,8 +331,8 @@ func TestEnvelope_DecodePayload_ErrorPayload(t *testing.T) {
 	if payload.Code != protocol.ErrCodeDeviceLocked {
 		t.Errorf("Code = %d, 預期 %d", payload.Code, protocol.ErrCodeDeviceLocked)
 	}
-	if payload.Message != "設備已被鎖定" {
-		t.Errorf("Message = %q, 預期 %q", payload.Message, "設備已被鎖定")
+	if payload.Message != "device already locked" {
+		t.Errorf("Message = %q, 預期 %q", payload.Message, "device already locked")
 	}
 }
 
@@ -388,7 +388,7 @@ func TestEnvelope_DecodePayload_UnlockReqResp(t *testing.T) {
 		"lab-pc",
 		"agent-1",
 		"client-1",
-		protocol.UnlockRespPayload{Success: false, Serial: "DEV001", Reason: "設備未被鎖定"},
+		protocol.UnlockRespPayload{Success: false, Serial: "DEV001", Reason: "device not locked"},
 	)
 	if err != nil {
 		t.Fatalf("NewEnvelope 失敗: %v", err)
@@ -401,8 +401,8 @@ func TestEnvelope_DecodePayload_UnlockReqResp(t *testing.T) {
 	if respPayload.Success {
 		t.Error("Success = true, 預期 false")
 	}
-	if respPayload.Reason != "設備未被鎖定" {
-		t.Errorf("Reason = %q, 預期 %q", respPayload.Reason, "設備未被鎖定")
+	if respPayload.Reason != "device not locked" {
+		t.Errorf("Reason = %q, 預期 %q", respPayload.Reason, "device not locked")
 	}
 }
 

@@ -82,7 +82,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	_, data, err := ws.Read(authCtx)
 	if err != nil {
 		slog.Debug("auth message read failed", "error", err)
-		ws.Close(websocket.StatusPolicyViolation, "認證超時")
+		ws.Close(websocket.StatusPolicyViolation, "auth timeout")
 		return
 	}
 
@@ -90,18 +90,18 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// 連線後的第一筆訊息必須是 auth 類型，否則視為協定違規
 	var env protocol.Envelope
 	if err := parseJSON(data, &env); err != nil {
-		ws.Close(websocket.StatusPolicyViolation, "無效的 JSON 格式")
+		ws.Close(websocket.StatusPolicyViolation, "invalid JSON format")
 		return
 	}
 
 	if env.Type != protocol.MsgTypeAuth {
-		ws.Close(websocket.StatusPolicyViolation, "第一筆訊息必須是 auth")
+		ws.Close(websocket.StatusPolicyViolation, "first message must be auth")
 		return
 	}
 
 	var authPayload protocol.AuthPayload
 	if err := env.DecodePayload(&authPayload); err != nil {
-		ws.Close(websocket.StatusPolicyViolation, "無效的 auth payload")
+		ws.Close(websocket.StatusPolicyViolation, "invalid auth payload")
 		return
 	}
 
@@ -112,10 +112,10 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			hostname(),
 			"signal",
 			env.SourceID,
-			protocol.AuthAckPayload{Success: false, Reason: "認證失敗"},
+			protocol.AuthAckPayload{Success: false, Reason: "authentication failed"},
 		)
 		writeJSON(ctx, ws, ack)
-		ws.Close(websocket.StatusPolicyViolation, "認證失敗")
+		ws.Close(websocket.StatusPolicyViolation, "authentication failed")
 		return
 	}
 
@@ -184,7 +184,7 @@ func (s *Server) readLoop(ctx context.Context, conn *Conn) {
 		case protocol.MsgTypeLockReq, protocol.MsgTypeUnlockReq:
 			// Client 發起設備鎖定/解鎖請求，轉發給指定 Agent
 			if !s.hub.Route(env) {
-				s.sendError(conn, protocol.ErrCodeTargetOffline, "目標主機離線")
+				s.sendError(conn, protocol.ErrCodeTargetOffline, "target host offline")
 			}
 
 		case protocol.MsgTypeLockResp, protocol.MsgTypeUnlockResp:
@@ -198,7 +198,7 @@ func (s *Server) readLoop(ctx context.Context, conn *Conn) {
 			// SDP offer/answer 與 ICE candidate 直接轉發，不做任何解析
 			// 伺服器僅作為信令中繼，不介入 WebRTC 連線建立過程
 			if !s.hub.Route(env) {
-				s.sendError(conn, protocol.ErrCodeTargetOffline, "信令轉發失敗：目標離線")
+				s.sendError(conn, protocol.ErrCodeTargetOffline, "signaling relay failed: target offline")
 			}
 
 		default:

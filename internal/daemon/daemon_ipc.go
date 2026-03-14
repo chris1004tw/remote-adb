@@ -43,7 +43,7 @@ func (d *Daemon) handleIPCConn(ctx context.Context, conn net.Conn) {
 
 	var cmd IPCCommand
 	if err := json.NewDecoder(conn).Decode(&cmd); err != nil {
-		json.NewEncoder(conn).Encode(ErrorResponse("解析指令失敗"))
+		json.NewEncoder(conn).Encode(ErrorResponse("failed to parse command"))
 		return
 	}
 
@@ -67,7 +67,7 @@ func (d *Daemon) handleCommand(ctx context.Context, cmd IPCCommand) IPCResponse 
 	case "unbind":
 		return d.cmdUnbind(ctx, cmd.Payload)
 	default:
-		return ErrorResponse(fmt.Sprintf("未知指令: %s", cmd.Action))
+		return ErrorResponse(fmt.Sprintf("unknown command: %s", cmd.Action))
 	}
 }
 
@@ -108,17 +108,17 @@ func (d *Daemon) cmdHosts() IPCResponse {
 // 任何步驟失敗時，會回收已分配的資源（port、PeerConnection 等）並回傳錯誤。
 func (d *Daemon) cmdBind(ctx context.Context, payload json.RawMessage) IPCResponse {
 	if d.wsConn == nil {
-		return ErrorResponse("未連線到 Server")
+		return ErrorResponse("not connected to server")
 	}
 
 	var req BindRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
-		return ErrorResponse("解析 bind 參數失敗")
+		return ErrorResponse("failed to parse bind parameters")
 	}
 
 	// 前置檢查：同一設備不允許重複綁定
 	if _, found := d.bindings.FindBySerial(req.Serial); found {
-		return ErrorResponse(fmt.Sprintf("設備 %s 已被綁定", req.Serial))
+		return ErrorResponse(fmt.Sprintf("device %s already bound", req.Serial))
 	}
 
 	// 步驟 1: 分配本機 port（使用 AllocateListener 避免 TOCTOU 風險）
@@ -135,21 +135,21 @@ func (d *Daemon) cmdBind(ctx context.Context, payload json.RawMessage) IPCRespon
 	if err := d.sendEnvelope(ctx, lockEnv); err != nil {
 		proxyLn.Close()
 		d.ports.Release(port)
-		return ErrorResponse(fmt.Sprintf("發送鎖定請求失敗: %v", err))
+		return ErrorResponse(fmt.Sprintf("failed to send lock request: %v", err))
 	}
 
 	lockResp, err := d.waitResponse("lock_resp:"+req.Serial, 10*time.Second)
 	if err != nil {
 		proxyLn.Close()
 		d.ports.Release(port)
-		return ErrorResponse(fmt.Sprintf("等待鎖定回應失敗: %v", err))
+		return ErrorResponse(fmt.Sprintf("lock response wait failed: %v", err))
 	}
 
 	var lockPayload protocol.LockRespPayload
 	if err := lockResp.DecodePayload(&lockPayload); err != nil || !lockPayload.Success {
 		proxyLn.Close()
 		d.ports.Release(port)
-		reason := "鎖定失敗"
+		reason := "lock failed"
 		if lockPayload.Reason != "" {
 			reason = lockPayload.Reason
 		}
@@ -161,7 +161,7 @@ func (d *Daemon) cmdBind(ctx context.Context, payload json.RawMessage) IPCRespon
 	if err != nil {
 		proxyLn.Close()
 		d.ports.Release(port)
-		return ErrorResponse(fmt.Sprintf("建立 PeerConnection 失敗: %v", err))
+		return ErrorResponse(fmt.Sprintf("failed to create PeerConnection: %v", err))
 	}
 
 	// 步驟 4: 開啟 DataChannel，label 格式 "adb/<serial>/<sessionID>"
@@ -172,7 +172,7 @@ func (d *Daemon) cmdBind(ctx context.Context, payload json.RawMessage) IPCRespon
 		pm.Close()
 		proxyLn.Close()
 		d.ports.Release(port)
-		return ErrorResponse(fmt.Sprintf("建立 DataChannel 失敗: %v", err))
+		return ErrorResponse(fmt.Sprintf("failed to create DataChannel: %v", err))
 	}
 
 	// 步驟 5: 建立 SDP Offer 並透過 Server 發送給 Agent
@@ -182,7 +182,7 @@ func (d *Daemon) cmdBind(ctx context.Context, payload json.RawMessage) IPCRespon
 		pm.Close()
 		proxyLn.Close()
 		d.ports.Release(port)
-		return ErrorResponse(fmt.Sprintf("建立 Offer 失敗: %v", err))
+		return ErrorResponse(fmt.Sprintf("failed to create offer: %v", err))
 	}
 
 	offerEnv, _ := protocol.NewEnvelope(
@@ -193,7 +193,7 @@ func (d *Daemon) cmdBind(ctx context.Context, payload json.RawMessage) IPCRespon
 		pm.Close()
 		proxyLn.Close()
 		d.ports.Release(port)
-		return ErrorResponse(fmt.Sprintf("發送 Offer 失敗: %v", err))
+		return ErrorResponse(fmt.Sprintf("failed to send offer: %v", err))
 	}
 
 	// 步驟 6: 等待 Agent 回傳的 SDP Answer（15 秒逾時）
@@ -202,7 +202,7 @@ func (d *Daemon) cmdBind(ctx context.Context, payload json.RawMessage) IPCRespon
 		pm.Close()
 		proxyLn.Close()
 		d.ports.Release(port)
-		return ErrorResponse(fmt.Sprintf("等待 Answer 失敗: %v", err))
+		return ErrorResponse(fmt.Sprintf("answer wait failed: %v", err))
 	}
 
 	var answerPayload protocol.SDPPayload
@@ -210,14 +210,14 @@ func (d *Daemon) cmdBind(ctx context.Context, payload json.RawMessage) IPCRespon
 		pm.Close()
 		proxyLn.Close()
 		d.ports.Release(port)
-		return ErrorResponse(fmt.Sprintf("解析 Answer 失敗: %v", err))
+		return ErrorResponse(fmt.Sprintf("failed to parse answer: %v", err))
 	}
 
 	if err := pm.HandleAnswer(answerPayload.SDP); err != nil {
 		pm.Close()
 		proxyLn.Close()
 		d.ports.Release(port)
-		return ErrorResponse(fmt.Sprintf("處理 Answer 失敗: %v", err))
+		return ErrorResponse(fmt.Sprintf("failed to handle answer: %v", err))
 	}
 
 	// 步驟 7: 使用已分配的 listener 建立 TCP Proxy，橋接至 DataChannel。
@@ -278,12 +278,12 @@ func (d *Daemon) cmdBind(ctx context.Context, payload json.RawMessage) IPCRespon
 func (d *Daemon) cmdUnbind(ctx context.Context, payload json.RawMessage) IPCResponse {
 	var req UnbindRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
-		return ErrorResponse("解析 unbind 參數失敗")
+		return ErrorResponse("failed to parse unbind parameters")
 	}
 
 	binding, ok := d.bindings.Get(req.LocalPort)
 	if !ok {
-		return ErrorResponse(fmt.Sprintf("Port %d 未綁定", req.LocalPort))
+		return ErrorResponse(fmt.Sprintf("port %d not bound", req.LocalPort))
 	}
 
 	// 鎖內擷取引用並從 map 移除，鎖外關閉——
