@@ -526,6 +526,9 @@ func (b *deviceBridge) writeToRemote(stream *dStream) {
 // setWriteDeadline 只在底層連線支援 deadline 時設定。
 // detach 模式的 DataChannel 在支援時可避免 write 永久卡住。
 func setWriteDeadline(w io.Writer, t time.Time) {
+	if !writeDeadlinesEnabled() {
+		return
+	}
 	if d, ok := w.(interface{ SetWriteDeadline(time.Time) error }); ok {
 		if err := d.SetWriteDeadline(t); err != nil {
 			slog.Debug("set write deadline failed", "error", err)
@@ -639,9 +642,10 @@ func (b *deviceBridge) handleOKAY(msg *adbMsg) {
 }
 
 // handleWRTE 處理 transport 收到的 WRTE 命令（host -> device 方向）。
-// 將資料放入 per-stream 的 writeCh 佇列（非阻塞 select），
+// 將資料放入 per-stream 的 writeCh 佇列（真正非阻塞），
 // 由 writeToRemote goroutine 消費寫入 DataChannel 後才回 OKAY。
-// 這樣主迴圈永遠不會阻塞在 DC 寫入上，即使某條串流的 DC 暫時不可寫入。
+// 若佇列已滿，代表該 stream 已失去背壓能力；此時直接關閉該 stream，
+// 避免主迴圈卡在單一高吞吐串流（如 scrcpy/camera）而拖住其他 stream。
 func (b *deviceBridge) handleWRTE(msg *adbMsg) {
 	serverID := msg.arg0
 	deviceID := msg.arg1
@@ -656,10 +660,14 @@ func (b *deviceBridge) handleWRTE(msg *adbMsg) {
 		return
 	}
 
-	// 非阻塞放入佇列；若 stream 正在關閉，doneCh 會被觸發
+	// 真正非阻塞放入佇列；若佇列已滿，直接關閉失速的 stream，
+	// 避免 transport 主迴圈被單一壅塞 stream 拖住。
 	select {
 	case stream.writeCh <- msg.data:
 	case <-stream.doneCh:
+	default:
+		slog.Debug("transport <- WRTE: write queue full, closing stream", "deviceID", deviceID, "serverID", serverID, "queued", len(stream.writeCh), "capacity", cap(stream.writeCh))
+		b.cleanupStream(stream)
 	}
 }
 

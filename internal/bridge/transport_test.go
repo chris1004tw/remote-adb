@@ -785,6 +785,59 @@ func TestWriteToRemoteChunked(t *testing.T) {
 	}
 }
 
+func TestHandleWRTEQueueFullDoesNotBlockMainLoop(t *testing.T) {
+	conn := &mockConn{}
+
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	defer pw.Close()
+
+	stream := &dStream{
+		serverID: 10,
+		deviceID: 20,
+		ch:       &testRWC{r: pr, w: pw},
+		ready:    make(chan struct{}, 1),
+		writeCh:  make(chan []byte, 1),
+		doneCh:   make(chan struct{}),
+	}
+	stream.writeCh <- []byte("already-full")
+
+	bridge := &deviceBridge{
+		conn:    conn,
+		streams: map[uint32]*dStream{20: stream},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		bridge.handleWRTE(&adbMsg{
+			command: aWRTE,
+			arg0:    10,
+			arg1:    20,
+			data:    []byte("next-payload"),
+		})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("handleWRTE 在 write queue 已滿時不應阻塞主迴圈")
+	}
+
+	select {
+	case <-stream.doneCh:
+	default:
+		t.Fatal("queue 滿時應關閉失速 stream")
+	}
+
+	bridge.streamsMu.Lock()
+	_, exists := bridge.streams[20]
+	bridge.streamsMu.Unlock()
+	if exists {
+		t.Fatal("queue 滿後 stream 應從 map 移除")
+	}
+}
+
 // --- BiCopy 測試 ---
 
 // rwcFunc 用函式包裝 io.ReadWriteCloser，方便測試時自訂行為。
