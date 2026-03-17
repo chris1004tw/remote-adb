@@ -27,10 +27,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"os"
 	"sync"
 	"time"
 
+	"github.com/chris1004tw/remote-adb/internal/buildinfo"
 	"github.com/chris1004tw/remote-adb/internal/proxy"
 	"github.com/chris1004tw/remote-adb/internal/webrtc"
 	"github.com/chris1004tw/remote-adb/pkg/protocol"
@@ -97,13 +97,11 @@ func NewDaemon(cfg Config) *Daemon {
 		cfg.PortEnd = 15655
 	}
 
-	hostname, _ := os.Hostname()
-
 	return &Daemon{
 		config:   cfg,
 		ports:    NewPortAllocator(cfg.PortStart, cfg.PortEnd),
 		bindings: NewBindingTable(),
-		hostname: hostname,
+		hostname: buildinfo.Hostname(),
 		waiters:  make(map[string]chan protocol.Envelope),
 		proxies:  make(map[int]*proxy.Proxy),
 		peers:    make(map[int]*webrtc.PeerManager),

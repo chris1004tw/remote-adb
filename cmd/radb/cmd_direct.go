@@ -25,7 +25,7 @@ func cmdDirectAgent(args []string) {
 	fs := flag.NewFlagSet("direct agent", flag.ExitOnError)
 	port := fs.Int("port", envInt("RADB_DIRECT_PORT", 9000), "TCP 監聽埠")
 	token := fs.String("token", envStr("RADB_DIRECT_TOKEN", ""), "認證 Token")
-	hostID := fs.String("host-id", envStr("RADB_HOST_ID", localHostname()), "主機識別名稱")
+	hostID := fs.String("host-id", envStr("RADB_HOST_ID", buildinfo.Hostname()), "主機識別名稱")
 	adbPort := addADBPortFlag(fs)
 	fs.Parse(args)
 

@@ -15,6 +15,19 @@
 // 方便開發時區分正式版本與開發版本。
 package buildinfo
 
+import (
+	"os"
+	"sync"
+)
+
+// Hostname 回傳本機主機名稱（快取版）。
+// 主機名稱在程式生命週期內不變，使用 sync.OnceValue 避免重複系統呼叫。
+// 各套件統一透過此函式取得主機名稱，取代分散的 os.Hostname() 呼叫。
+var Hostname = sync.OnceValue(func() string {
+	h, _ := os.Hostname()
+	return h
+})
+
 // 建置時注入的版本資訊變數。
 // 由 -ldflags "-X ..." 在編譯期覆寫，未注入時使用預設值。
 var (

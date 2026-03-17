@@ -22,10 +22,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
-	"sync"
 	"time"
 
+	"github.com/chris1004tw/remote-adb/internal/buildinfo"
 	"github.com/chris1004tw/remote-adb/pkg/protocol"
 	"github.com/coder/websocket"
 )
@@ -109,7 +108,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		// 認證失敗：先回傳失敗原因讓對端知道，再關閉連線
 		ack, _ := protocol.NewEnvelope(
 			protocol.MsgTypeAuthAck,
-			hostname(),
+			buildinfo.Hostname(),
 			"signal",
 			env.SourceID,
 			protocol.AuthAckPayload{Success: false, Reason: "authentication failed"},
@@ -126,7 +125,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// 將分配的 ID 回傳給連線端，後續所有訊息都用此 ID 作為身分識別
 	ack, _ := protocol.NewEnvelope(
 		protocol.MsgTypeAuthAck,
-		hostname(),
+		buildinfo.Hostname(),
 		"signal",
 		connID,
 		protocol.AuthAckPayload{Success: true, AssignID: connID},
@@ -229,7 +228,7 @@ func (s *Server) handleRegister(conn *Conn, env protocol.Envelope) {
 	agents := s.hub.Agents()
 	broadcast, _ := protocol.NewEnvelope(
 		protocol.MsgTypeHostListResp,
-		hostname(),
+		buildinfo.Hostname(),
 		"signal",
 		"", // TargetID 為空表示廣播
 		protocol.HostListRespPayload{Hosts: agents},
@@ -253,7 +252,7 @@ func (s *Server) handleDeviceUpdate(conn *Conn, env protocol.Envelope) {
 	// 再將設備變更廣播給所有 Client
 	broadcast, _ := protocol.NewEnvelope(
 		protocol.MsgTypeDeviceUpdate,
-		hostname(),
+		buildinfo.Hostname(),
 		conn.ID(),
 		"", // TargetID 為空表示廣播
 		protocol.DeviceUpdatePayload{
@@ -270,7 +269,7 @@ func (s *Server) handleHostList(conn *Conn) {
 	agents := s.hub.Agents()
 	resp, _ := protocol.NewEnvelope(
 		protocol.MsgTypeHostListResp,
-		hostname(),
+		buildinfo.Hostname(),
 		"signal",
 		conn.ID(), // 僅回覆給查詢者
 		protocol.HostListRespPayload{Hosts: agents},
@@ -283,7 +282,7 @@ func (s *Server) handleHostList(conn *Conn) {
 func (s *Server) sendError(conn *Conn, code int, message string) {
 	errMsg, _ := protocol.NewEnvelope(
 		protocol.MsgTypeError,
-		hostname(),
+		buildinfo.Hostname(),
 		"signal",
 		conn.ID(),
 		protocol.ErrorPayload{Code: code, Message: message},
@@ -301,13 +300,6 @@ func generateID(role protocol.Role) string {
 	rand.Read(b)
 	return fmt.Sprintf("%s-%s", role, hex.EncodeToString(b))
 }
-
-// hostname 取得本機主機名稱，用於填入訊息的 Hostname 欄位。
-// 使用 sync.OnceValue 快取結果，避免每次呼叫都執行系統呼叫。
-var hostname = sync.OnceValue(func() string {
-	h, _ := os.Hostname()
-	return h
-})
 
 // parseJSON 將原始位元組解析為指定的結構體。
 func parseJSON(data []byte, v any) error {
