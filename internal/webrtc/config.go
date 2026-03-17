@@ -19,9 +19,14 @@ import (
 //     所有流量透過 TURN server 中繼轉發，能穿透任何 NAT 但需要自建伺服器承擔頻寬。
 //
 // 一般情境只需 STUN 即可；若雙方皆在嚴格 NAT（如企業防火牆）後方，才需啟用 TURN。
+//
+// RelayOnly 為 true 時，ICETransportPolicy 設為 relay，
+// 僅收集 TURN relay candidate，跳過 STUN 直連嘗試。
+// 適用於已知 STUN 必定失敗的網路環境（對稱 NAT），可省去等待 STUN 超時的時間。
 type ICEConfig struct {
 	STUNServers []string     // STUN 伺服器 URI 列表，格式如 "stun:host:port"
 	TURNServers []TURNServer // TURN 伺服器列表，需提供帳號密碼驗證
+	RelayOnly   bool         // true 時強制僅中繼（ICETransportPolicy=relay）
 }
 
 // TURNServer 定義單一 TURN 伺服器的連線資訊。
@@ -70,7 +75,14 @@ func (c ICEConfig) toWebRTCConfig() pionwebrtc.Configuration {
 		})
 	}
 
-	return pionwebrtc.Configuration{
+	cfg := pionwebrtc.Configuration{
 		ICEServers: iceServers,
 	}
+
+	// 僅中繼模式：只收集 relay candidate，跳過 host/srflx 直連嘗試
+	if c.RelayOnly {
+		cfg.ICETransportPolicy = pionwebrtc.ICETransportPolicyRelay
+	}
+
+	return cfg
 }
