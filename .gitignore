@@ -27,6 +27,9 @@ radb_logs/
 # Config (runtime-generated)
 radb.toml
 
+# ADB platform-tools (auto-downloaded)
+platform-tools/
+
 # Claude Code
 .claude/
 CLAUDE.md
