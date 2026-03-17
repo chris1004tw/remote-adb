@@ -74,6 +74,12 @@ cd remote-adb
 go build -trimpath -o radb ./cmd/radb
 ```
 
+On Windows with Go 1.26+, prefer the bundled build script:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
+```
+
 ### go install
 
 ```bash
@@ -147,9 +153,10 @@ radb p2p agent <offer-token>
 # Client pastes answer → P2P connection established
 # → Each device gets its own port (starting from 5555), auto adb connect
 
-# Uses Cloudflare free TURN by default, switch with --turn-mode:
-radb p2p connect --turn-mode none      # STUN only, no TURN
-radb p2p connect --turn-mode custom    # Use custom TURN server
+# Uses Cloudflare free TURN by default, switch with --conn-mode / --turn-mode:
+radb p2p connect --conn-mode direct-only   # STUN only, no TURN relay
+radb p2p connect --conn-mode relay-only    # TURN relay only
+radb p2p connect --turn-mode custom        # Use custom TURN server
 ```
 
 ### Direct Mode (LAN Direct, No Server Required)
@@ -232,7 +239,9 @@ radb
 ### Features
 
 - **Per-device Proxy Port**: Each remote device gets its own port (starting from 5555), so `scrcpy` / UIAutomator can target a specific device via `adb -s 127.0.0.1:<port>`
+- **Device Model Display**: Device list shows model names (e.g., "Pixel 10 Pro XL (SN123) → 127.0.0.1:5555") for easy identification
 - **Re-add Remote ADB Devices**: One-click `adb connect` button on the P2P client page -- no need to rebuild the P2P connection when tools like Scrcpy GUI accidentally disconnect ADB
+- **Refresh Remote Devices**: Request the agent to rescan ADB devices without rebuilding the connection
 - **Quick Offer**: "Generate offer now" button for faster ICE gathering (may lack some candidates)
 - **Offer Pre-generation**: Automatically pre-generates offer in the background when entering client mode, ready instantly on click
 - **Connection Progress**: Multi-stage progress display (Preparing TURN → Creating components → Gathering candidates → Encoding)
@@ -244,11 +253,12 @@ radb
 Click the gear icon (bottom-right) to manage:
 
 - ADB Port, Proxy Port, Direct Port
-- STUN Server
-- TURN mode (Cloudflare free / disabled / custom URL + credentials)
+- Connection mode (Direct-first / Direct-only / Relay-only)
+- NAT discovery server (STUN)
+- Relay server mode (Cloudflare free / custom URL + credentials)
 - Language switch, manual update check
 
-TURN defaults to free Cloudflare credentials (auto-fetched, works out of the box). Settings are persisted in TOML at `%APPDATA%/radb/radb.toml` (Windows) or `~/.config/radb/radb.toml` (Linux/macOS).
+TURN defaults to free Cloudflare credentials (auto-fetched, works out of the box). Settings are persisted in TOML at `radb.toml` in the same directory as the executable.
 
 ---
 
@@ -259,7 +269,8 @@ TURN defaults to free Cloudflare credentials (auto-fetched, works out of the box
 | `RADB_TOKEN` | (required) | PSK authentication token |
 | `RADB_SERVER_URL` | `ws://localhost:8080` | Server URL |
 | `RADB_STUN_URLS` | `stun:stun.l.google.com:19302` | STUN Server |
-| `RADB_TURN_MODE` | `cloudflare` | TURN mode (`cloudflare` / `custom` / `none`) |
+| `RADB_CONN_MODE` | `direct-first` | Connection mode (`direct-first` / `direct-only` / `relay-only`) |
+| `RADB_TURN_MODE` | `cloudflare` | TURN mode (`cloudflare` / `custom`) |
 | `RADB_TURN_URL` | (empty) | Custom TURN Server URL (used with `--turn-mode custom`) |
 | `RADB_DIRECT_PORT` | (empty) | Agent Direct TCP listen port |
 | `RADB_DIRECT_TOKEN` | (empty) | Direct connection token |
@@ -274,11 +285,11 @@ See [Configuration Guide](docs/configuration.md) for the full reference.
 ```
 remote-adb/
 ├── cmd/
-│   └── radb/              # Unified entry point (p2p/direct/relay modules + update/version + GUI)
+│   └── radb/              # Unified entry point (p2p/direct/relay modules + update/version + GUI + auto-relocation/migration)
 ├── internal/
-│   ├── adb/               # ADB protocol, device management, auto-download platform-tools
+│   ├── adb/               # ADB protocol, device management, auto-download platform-tools (exe-relative)
 │   ├── agent/             # Remote agent core logic
-│   ├── buildinfo/         # Build-time version info (Version/Commit/Date)
+│   ├── buildinfo/         # Build-time version info (Version/Commit/Date) + hostname cache
 │   ├── cli/               # bubbletea interactive bind menu
 │   ├── daemon/            # Background service, port allocation, binding table, IPC
 │   ├── bridge/            # Shared GUI/CLI logic (SDP codec, ADB transport, forward management)
@@ -286,7 +297,7 @@ remote-adb/
 │   ├── gui/               # Gio GUI (Easy Connect/LAN Direct/Relay tabs + settings + i18n + Cloudflare TURN + TURN prefetch cache)
 │   ├── ioutil/            # Shared I/O utilities (ChunkedCopy: chunked copy + short write protection + sync.Pool buffer reuse, BiCopy: bidirectional copy + dual Close + ctx cancel)
 │   ├── proxy/             # TCP proxy (16KB chunking, single-connection replacement)
-│   ├── signal/            # WebSocket signaling hub, PSK auth
+│   ├── signal/            # WebSocket signaling hub, PSK auth, shared ConnectAndAuth
 │   ├── updater/           # Auto-update (GitHub Releases download + cross-platform binary replacement)
 │   └── webrtc/            # PeerConnection and DataChannel management (detach mode + relay detection + Cloudflare TURN)
 ├── pkg/protocol/          # Shared signaling JSON format (Envelope + Payload types)
@@ -294,7 +305,7 @@ remote-adb/
 ├── macos/                 # macOS .app bundle metadata (Info.plist)
 ├── configs/               # Configuration examples
 ├── docs/                  # Design documents
-├── scripts/               # Platform helper scripts (build-dmg.sh, scrcpy setup)
+├── scripts/               # Platform helper scripts (build-dmg.sh, build-windows.ps1: Windows local build)
 ├── test/e2e/              # End-to-end integration tests
 ├── go.mod
 └── README.md
@@ -314,6 +325,8 @@ go test ./...
 # Lint
 golangci-lint run
 ```
+
+For local Windows builds on Go 1.26+, use `scripts/build-windows.ps1` so `GOEXPERIMENT=nogreenteagc` is applied automatically.
 
 See [Development Guide](docs/development.md) for details.
 

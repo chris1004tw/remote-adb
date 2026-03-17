@@ -28,11 +28,23 @@ go build ./cmd/...
 go build -o radb ./cmd/radb
 ```
 
+Windows 使用 Go 1.26+ 時，建議改用專案內建腳本自動加入 `GOEXPERIMENT=nogreenteagc`：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
+```
+
+若目標 `radb.exe` 正在執行，可加上 `-ForceKillRunning` 先自動終止同一路徑的執行中 process 再覆寫：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1 -ForceKillRunning
+```
+
 ### 交叉編譯
 
 ```bash
 # Windows
-GOOS=windows GOARCH=amd64 go build -o radb.exe ./cmd/radb
+GOOS=windows GOARCH=amd64 GOEXPERIMENT=nogreenteagc go build -o radb.exe ./cmd/radb
 
 # Linux
 GOOS=linux GOARCH=amd64 go build -o radb ./cmd/radb
@@ -160,3 +172,5 @@ clean:
 
 all: lint test build
 ```
+
+若要在 Windows 本機建置，優先使用 `scripts/build-windows.ps1`，避免 Go 1.26+ 預設 Green Tea GC 在 Windows 上帶來額外風險。

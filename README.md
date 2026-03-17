@@ -74,6 +74,12 @@ cd remote-adb
 go build -trimpath -o radb ./cmd/radb
 ```
 
+Windows 上若使用 Go 1.26 以上版本，建議改用：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
+```
+
 ### go install
 
 ```bash
@@ -147,9 +153,10 @@ radb p2p agent <邀請碼>
 # 主控端貼上回應碼 → P2P 連線建立
 # → 每台設備分配獨立 port（從 5555 起），自動 adb connect
 
-# 預設使用 Cloudflare 免費 TURN，可用 --turn-mode 切換：
-radb p2p connect --turn-mode none      # 僅 STUN，不使用 TURN
-radb p2p connect --turn-mode custom    # 使用自訂 TURN Server
+# 預設使用 Cloudflare 免費 TURN，可用 --conn-mode / --turn-mode 切換：
+radb p2p connect --conn-mode direct-only   # 僅 STUN 直連，不使用 TURN 中繼
+radb p2p connect --conn-mode relay-only    # 僅走 TURN 中繼
+radb p2p connect --turn-mode custom        # 使用自訂 TURN Server
 ```
 
 ### Direct 模式（區網直連，無需 Server）
@@ -232,7 +239,9 @@ radb
 ### 功能特色
 
 - **Per-device Proxy Port**：每台遠端設備分配獨立 port（從 5555 起遞增），`scrcpy` / UIAutomator 可直接以 `adb -s 127.0.0.1:<port>` 操作特定設備
+- **設備機型名稱顯示**：設備列表顯示機型名稱（如 "Pixel 10 Pro XL (SN123) → 127.0.0.1:5555"），一目了然
 - **重新添加遠端 ADB 設備**：P2P 主控端提供一鍵重新 `adb connect` 按鈕，Scrcpy GUI 等工具誤斷 ADB 時不需重建 P2P 連線
+- **重新偵測被控端設備**：P2P 主控端可請求被控端重新掃描 ADB 設備，不需重建連線
 - **快速邀請碼**：P2P 分頁提供「立即產生邀請碼」按鈕，犧牲部分候選換取速度
 - **邀請碼預產生**：切入主控模式時自動在背景預產生邀請碼，點擊時可秒出結果
 - **連線進度顯示**：多階段進度回報（準備 TURN → 建立元件 → 蒐集候選 → 壓縮）
@@ -244,11 +253,12 @@ radb
 點擊右下角齒輪圖示開啟，可管理：
 
 - ADB Port、Proxy Port、Direct Port
-- STUN Server
-- TURN 模式（Cloudflare 免費 / 停用 / 自訂 URL + 帳號密碼）
+- 連線方式（優先直連 / 僅直連 / 僅中繼）
+- NAT 探測伺服器（STUN）
+- 中繼伺服器模式（Cloudflare 免費 / 自訂 URL + 帳號密碼）
 - 語言切換、手動檢查更新
 
-TURN 預設使用 Cloudflare 免費憑證（自動取得，開箱即用）。設定以 TOML 格式持久化於 `%APPDATA%/radb/radb.toml`（Windows）或 `~/.config/radb/radb.toml`（Linux/macOS）。
+TURN 預設使用 Cloudflare 免費憑證（自動取得，開箱即用）。設定以 TOML 格式持久化於 exe 同目錄的 `radb.toml`。
 
 ---
 
@@ -259,7 +269,8 @@ TURN 預設使用 Cloudflare 免費憑證（自動取得，開箱即用）。設
 | `RADB_TOKEN` | (必填) | PSK 驗證 Token |
 | `RADB_SERVER_URL` | `ws://localhost:8080` | Server 位址 |
 | `RADB_STUN_URLS` | `stun:stun.l.google.com:19302` | STUN Server |
-| `RADB_TURN_MODE` | `cloudflare` | TURN 模式（`cloudflare` / `custom` / `none`） |
+| `RADB_CONN_MODE` | `direct-first` | 連線方式（`direct-first` / `direct-only` / `relay-only`） |
+| `RADB_TURN_MODE` | `cloudflare` | TURN 模式（`cloudflare` / `custom`） |
 | `RADB_TURN_URL` | (空) | 自訂 TURN Server URL（`--turn-mode custom` 時使用） |
 | `RADB_DIRECT_PORT` | (空) | 被控端 Direct TCP 監聽埠 |
 | `RADB_DIRECT_TOKEN` | (空) | Direct 連線 Token |
@@ -274,11 +285,11 @@ TURN 預設使用 Cloudflare 免費憑證（自動取得，開箱即用）。設
 ```
 remote-adb/
 ├── cmd/
-│   └── radb/              # 統一入口（p2p/direct/relay 三模組 + update/version + GUI）
+│   └── radb/              # 統一入口（p2p/direct/relay 三模組 + update/version + GUI + 自動搬遷/遷移）
 ├── internal/
-│   ├── adb/               # ADB 協定、設備管理、自動下載 platform-tools
+│   ├── adb/               # ADB 協定、設備管理、自動下載 platform-tools（exe 同目錄）
 │   ├── agent/             # 遠端代理端核心邏輯
-│   ├── buildinfo/         # 編譯時注入的版本資訊（Version/Commit/Date）
+│   ├── buildinfo/         # 編譯時注入的版本資訊（Version/Commit/Date）+ 主機名稱快取
 │   ├── cli/               # bubbletea 互動式 bind 選單
 │   ├── daemon/            # 背景服務、Port 分配、Binding Table、IPC
 │   ├── bridge/            # GUI/CLI 共用邏輯（SDP 編解碼、ADB transport、forward 管理）
@@ -286,7 +297,7 @@ remote-adb/
 │   ├── gui/               # Gio GUI 介面（設定面板 + i18n 多語系 + Cloudflare TURN + TURN 預取快取）
 │   ├── ioutil/            # 共用 I/O 工具（ChunkedCopy：分塊複製 + short write 保護 + sync.Pool buffer reuse、BiCopy：雙向複製 + 雙向 Close + ctx 取消）
 │   ├── proxy/             # TCP 代理（16KB chunking、單連線替換設計）
-│   ├── signal/            # WebSocket 信令 hub、PSK 認證
+│   ├── signal/            # WebSocket 信令 hub、PSK 認證、客戶端 ConnectAndAuth 共用
 │   ├── updater/           # 自動更新（GitHub Releases 下載 + 跨平台 binary 替換）
 │   └── webrtc/            # PeerConnection 與 DataChannel 管理（detach 模式 + relay 偵測 + Cloudflare TURN 取得）
 ├── pkg/protocol/          # 共用信令 JSON 格式（Envelope + Payload types）
@@ -294,7 +305,7 @@ remote-adb/
 ├── macos/                 # macOS .app bundle metadata（Info.plist）
 ├── configs/               # 設定檔範例
 ├── docs/                  # 詳細設計文件
-├── scripts/               # 平台輔助腳本（build-dmg.sh、scrcpy 快速設定）
+├── scripts/               # 平台輔助腳本（build-dmg.sh、build-windows.ps1：Windows 本地建置入口）
 ├── test/e2e/              # 端對端整合測試
 ├── go.mod
 └── README.md
@@ -314,6 +325,8 @@ go test ./...
 # Lint
 golangci-lint run
 ```
+
+Windows 本機建置時，若 Go 版本為 1.26+，請改用 `scripts/build-windows.ps1` 以自動套用 `GOEXPERIMENT=nogreenteagc`。
 
 詳細請參閱 [開發者指南](docs/development.md)。
 
