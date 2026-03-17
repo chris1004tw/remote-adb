@@ -133,7 +133,7 @@ type Envelope struct {
 func NewEnvelope(msgType MessageType, hostname, sourceID, targetID string, payload any) (Envelope, error) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
-		return Envelope{}, fmt.Errorf("序列化 payload 失敗: %w", err)
+		return Envelope{}, fmt.Errorf("failed to marshal payload: %w", err)
 	}
 	return Envelope{
 		Type:      msgType,

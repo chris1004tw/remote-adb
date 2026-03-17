@@ -35,20 +35,20 @@ func ExtractArchive(archivePath, destDir string) ([]string, error) {
 	if strings.HasSuffix(archivePath, ".zip") {
 		return extractZip(archivePath, destDir)
 	}
-	return nil, fmt.Errorf("不支援的 archive 格式: %s", archivePath)
+	return nil, fmt.Errorf("unsupported archive format: %s", archivePath)
 }
 
 // extractTarGz 解壓 .tar.gz 格式的 archive，從中提取白名單內的 binary。
 func extractTarGz(archivePath, destDir string) ([]string, error) {
 	f, err := os.Open(archivePath)
 	if err != nil {
-		return nil, fmt.Errorf("開啟 archive 失敗: %w", err)
+		return nil, fmt.Errorf("failed to open archive: %w", err)
 	}
 	defer f.Close()
 
 	gz, err := gzip.NewReader(f)
 	if err != nil {
-		return nil, fmt.Errorf("建立 gzip reader 失敗: %w", err)
+		return nil, fmt.Errorf("failed to create gzip reader: %w", err)
 	}
 	defer gz.Close()
 
@@ -61,7 +61,7 @@ func extractTarGz(archivePath, destDir string) ([]string, error) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("讀取 tar entry 失敗: %w", err)
+			return nil, fmt.Errorf("failed to read tar entry: %w", err)
 		}
 
 		// 只處理一般檔案（跳過目錄、symlink 等）
@@ -98,7 +98,7 @@ func extractTarGz(archivePath, destDir string) ([]string, error) {
 func extractZip(archivePath, destDir string) ([]string, error) {
 	zr, err := zip.OpenReader(archivePath)
 	if err != nil {
-		return nil, fmt.Errorf("開啟 zip 失敗: %w", err)
+		return nil, fmt.Errorf("failed to open zip: %w", err)
 	}
 	defer zr.Close()
 
@@ -125,7 +125,7 @@ func extractZip(archivePath, destDir string) ([]string, error) {
 
 		rc, err := zf.Open()
 		if err != nil {
-			return nil, fmt.Errorf("開啟 zip entry %q 失敗: %w", zf.Name, err)
+			return nil, fmt.Errorf("failed to open zip entry %q: %w", zf.Name, err)
 		}
 
 		destPath := filepath.Join(destDir, name)
@@ -151,12 +151,12 @@ func writeFile(path string, r io.Reader, mode os.FileMode) error {
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
-		return fmt.Errorf("建立檔案 %q 失敗: %w", path, err)
+		return fmt.Errorf("failed to create file %q: %w", path, err)
 	}
 	defer f.Close()
 
 	if _, err := io.Copy(f, r); err != nil {
-		return fmt.Errorf("寫入檔案 %q 失敗: %w", path, err)
+		return fmt.Errorf("failed to write file %q: %w", path, err)
 	}
 	return nil
 }

@@ -69,7 +69,7 @@ func NewPeerManager(config ICEConfig) (*PeerManager, error) {
 	api := pionwebrtc.NewAPI(pionwebrtc.WithSettingEngine(se))
 	pc, err := api.NewPeerConnection(config.toWebRTCConfig())
 	if err != nil {
-		return nil, fmt.Errorf("建立 PeerConnection 失敗: %w", err)
+		return nil, fmt.Errorf("failed to create PeerConnection: %w", err)
 	}
 
 	pm := &PeerManager{
@@ -143,11 +143,11 @@ func NewPeerManager(config ICEConfig) (*PeerManager, error) {
 func (pm *PeerManager) CreateOffer() (string, error) {
 	offer, err := pm.pc.CreateOffer(nil)
 	if err != nil {
-		return "", fmt.Errorf("建立 offer 失敗: %w", err)
+		return "", fmt.Errorf("failed to create offer: %w", err)
 	}
 
 	if err := pm.pc.SetLocalDescription(offer); err != nil {
-		return "", fmt.Errorf("設定 local description 失敗: %w", err)
+		return "", fmt.Errorf("failed to set local description: %w", err)
 	}
 
 	pm.waitGatheringComplete("offer")
@@ -164,11 +164,11 @@ func (pm *PeerManager) CreateOffer() (string, error) {
 func (pm *PeerManager) CreateOfferWithGatherTimeout(timeout time.Duration) (string, error) {
 	offer, err := pm.pc.CreateOffer(nil)
 	if err != nil {
-		return "", fmt.Errorf("建立 offer 失敗: %w", err)
+		return "", fmt.Errorf("failed to create offer: %w", err)
 	}
 
 	if err := pm.pc.SetLocalDescription(offer); err != nil {
-		return "", fmt.Errorf("設定 local description 失敗: %w", err)
+		return "", fmt.Errorf("failed to set local description: %w", err)
 	}
 
 	pm.waitGatheringCompleteWithTimeout("offer", timeout)
@@ -195,16 +195,16 @@ func (pm *PeerManager) HandleOffer(sdp string) (string, error) {
 	}
 
 	if err := pm.pc.SetRemoteDescription(offer); err != nil {
-		return "", fmt.Errorf("設定 remote description 失敗: %w", err)
+		return "", fmt.Errorf("failed to set remote description: %w", err)
 	}
 
 	answer, err := pm.pc.CreateAnswer(nil)
 	if err != nil {
-		return "", fmt.Errorf("建立 answer 失敗: %w", err)
+		return "", fmt.Errorf("failed to create answer: %w", err)
 	}
 
 	if err := pm.pc.SetLocalDescription(answer); err != nil {
-		return "", fmt.Errorf("設定 local description 失敗: %w", err)
+		return "", fmt.Errorf("failed to set local description: %w", err)
 	}
 
 	pm.waitGatheringComplete("answer")
@@ -320,7 +320,7 @@ func (pm *PeerManager) OnICECandidate(handler func(candidate string, sdpMid stri
 func (pm *PeerManager) OpenChannel(label string) (io.ReadWriteCloser, error) {
 	dc, err := pm.pc.CreateDataChannel(label, &pionwebrtc.DataChannelInit{})
 	if err != nil {
-		return nil, fmt.Errorf("建立 DataChannel 失敗: %w", err)
+		return nil, fmt.Errorf("failed to create DataChannel: %w", err)
 	}
 
 	// 建立 pendingChannel 包裝，readyCh 用於同步等待 DataChannel 開啟，

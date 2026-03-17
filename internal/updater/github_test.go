@@ -92,7 +92,7 @@ func TestGitHubSource_LatestRelease_NoMatchingAsset(t *testing.T) {
 	if err == nil {
 		t.Fatal("預期應回傳錯誤，但沒有")
 	}
-	if !strings.Contains(err.Error(), "找不到") {
+	if !strings.Contains(err.Error(), "no release asset found") {
 		t.Errorf("錯誤訊息不符預期: %v", err)
 	}
 }
@@ -114,7 +114,7 @@ func TestGitHubSource_LatestRelease_NotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("預期應回傳錯誤，但沒有")
 	}
-	if !strings.Contains(err.Error(), "尚無任何 release") {
+	if !strings.Contains(err.Error(), "no releases found") {
 		t.Errorf("錯誤訊息不符預期: %v", err)
 	}
 }

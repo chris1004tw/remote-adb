@@ -82,7 +82,7 @@ func New(cfg Config) *Server {
 func (s *Server) Serve(ctx context.Context, addr string) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("監聽 %s 失敗: %w", addr, err)
+		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
 	slog.Info("direct server started", "addr", ln.Addr())
 
@@ -114,7 +114,7 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener) error {
 			if ctx.Err() != nil {
 				return nil
 			}
-			return fmt.Errorf("accept 失敗: %w", err)
+			return fmt.Errorf("failed to accept connection: %w", err)
 		}
 		// 每個 Client 連線在獨立 goroutine 中處理，支援並行存取
 		go s.handleConn(ctx, conn)

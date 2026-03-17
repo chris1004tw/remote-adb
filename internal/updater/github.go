@@ -83,27 +83,27 @@ func (g *GitHubSource) LatestRelease(ctx context.Context) (*ReleaseInfo, error) 
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("建立請求失敗: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	// 使用 GitHub API v3 推薦的 Accept header
 	req.Header.Set("Accept", "application/vnd.github+json")
 
 	resp, err := g.HTTPClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("請求 GitHub API 失敗: %w", err)
+		return nil, fmt.Errorf("failed to request GitHub API: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("尚無任何 release")
+		return nil, fmt.Errorf("no releases found")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub API 回應 %d", resp.StatusCode)
+		return nil, fmt.Errorf("GitHub API responded with status %d", resp.StatusCode)
 	}
 
 	var release githubRelease
 	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return nil, fmt.Errorf("解析 release 回應失敗: %w", err)
+		return nil, fmt.Errorf("failed to parse release response: %w", err)
 	}
 
 	info := &ReleaseInfo{TagName: release.TagName}
@@ -139,7 +139,7 @@ func (g *GitHubSource) LatestRelease(ctx context.Context) (*ReleaseInfo, error) 
 	}
 
 	if info.AssetURL == "" {
-		return nil, fmt.Errorf("找不到 %s/%s 平台的 release asset", goos, goarch)
+		return nil, fmt.Errorf("no release asset found for %s/%s", goos, goarch)
 	}
 
 	return info, nil
@@ -151,21 +151,21 @@ func (g *GitHubSource) LatestRelease(ctx context.Context) (*ReleaseInfo, error) 
 func (g *GitHubSource) DownloadAsset(ctx context.Context, url string, dest io.Writer) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return fmt.Errorf("建立下載請求失敗: %w", err)
+		return fmt.Errorf("failed to create download request: %w", err)
 	}
 
 	resp, err := g.HTTPClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("下載失敗: %w", err)
+		return fmt.Errorf("failed to download: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("下載回應 %d", resp.StatusCode)
+		return fmt.Errorf("download responded with status %d", resp.StatusCode)
 	}
 
 	if _, err := io.Copy(dest, resp.Body); err != nil {
-		return fmt.Errorf("寫入檔案失敗: %w", err)
+		return fmt.Errorf("failed to write file: %w", err)
 	}
 	return nil
 }

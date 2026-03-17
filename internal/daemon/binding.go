@@ -40,7 +40,7 @@ func (bt *BindingTable) Add(b Binding) error {
 	bt.mu.Lock()
 	defer bt.mu.Unlock()
 	if _, exists := bt.bindings[b.LocalPort]; exists {
-		return fmt.Errorf("port %d 已被綁定", b.LocalPort)
+		return fmt.Errorf("port %d already bound", b.LocalPort)
 	}
 	bt.bindings[b.LocalPort] = &b
 	return nil

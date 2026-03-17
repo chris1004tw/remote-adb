@@ -74,7 +74,7 @@ func (u *Updater) Check(ctx context.Context) (*CheckResult, error) {
 func (u *Updater) Update(ctx context.Context) (*CheckResult, error) {
 	info, err := u.Source.LatestRelease(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("取得最新版本失敗: %w", err)
+		return nil, fmt.Errorf("failed to get latest release: %w", err)
 	}
 
 	current := buildinfo.Version
@@ -95,14 +95,14 @@ func (u *Updater) Update(ctx context.Context) (*CheckResult, error) {
 	// 在系統暫存區建立獨立目錄，完成後自動清除
 	tmpDir, err := os.MkdirTemp("", "radb-update-*")
 	if err != nil {
-		return nil, fmt.Errorf("建立暫存目錄失敗: %w", err)
+		return nil, fmt.Errorf("failed to create temp directory: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
 	archivePath := filepath.Join(tmpDir, info.AssetName)
 	archiveFile, err := os.Create(archivePath)
 	if err != nil {
-		return nil, fmt.Errorf("建立暫存檔案失敗: %w", err)
+		return nil, fmt.Errorf("failed to create temp file: %w", err)
 	}
 
 	// 使用 io.MultiWriter 讓下載的位元組同時寫入檔案和 SHA256 雜湊計算，
@@ -112,7 +112,7 @@ func (u *Updater) Update(ctx context.Context) (*CheckResult, error) {
 
 	if err := u.Source.DownloadAsset(ctx, info.AssetURL, writer); err != nil {
 		archiveFile.Close()
-		return nil, fmt.Errorf("下載失敗: %w", err)
+		return nil, fmt.Errorf("failed to download: %w", err)
 	}
 	archiveFile.Close()
 
@@ -127,26 +127,26 @@ func (u *Updater) Update(ctx context.Context) (*CheckResult, error) {
 	// === 階段 3: Extract ===
 	extractDir := filepath.Join(tmpDir, "extracted")
 	if err := os.MkdirAll(extractDir, 0755); err != nil {
-		return nil, fmt.Errorf("建立解壓目錄失敗: %w", err)
+		return nil, fmt.Errorf("failed to create extract directory: %w", err)
 	}
 
 	extracted, err := ExtractArchive(archivePath, extractDir)
 	if err != nil {
-		return nil, fmt.Errorf("解壓失敗: %w", err)
+		return nil, fmt.Errorf("failed to extract archive: %w", err)
 	}
 	if len(extracted) == 0 {
-		return nil, fmt.Errorf("archive 中沒有找到任何 radb binary")
+		return nil, fmt.Errorf("no radb binary found in archive")
 	}
 
 	// === 階段 4: Replace ===
 	// 解析目前執行檔的真實路徑（跟隨 symlink），直接替換當前正在運行的檔案。
 	selfPath, err := os.Executable()
 	if err != nil {
-		return nil, fmt.Errorf("取得執行檔路徑失敗: %w", err)
+		return nil, fmt.Errorf("failed to get executable path: %w", err)
 	}
 	selfPath, err = filepath.EvalSymlinks(selfPath)
 	if err != nil {
-		return nil, fmt.Errorf("解析執行檔路徑失敗: %w", err)
+		return nil, fmt.Errorf("failed to resolve executable path: %w", err)
 	}
 
 	newBin, err := pickExtractedBinaryForSelf(extracted, selfPath)
@@ -155,7 +155,7 @@ func (u *Updater) Update(ctx context.Context) (*CheckResult, error) {
 	}
 
 	if err := ReplaceBinary(selfPath, newBin); err != nil {
-		return nil, fmt.Errorf("替換執行檔失敗 (%s): %w", filepath.Base(selfPath), err)
+		return nil, fmt.Errorf("failed to replace binary (%s): %w", filepath.Base(selfPath), err)
 	}
 
 	return result, nil
@@ -164,7 +164,7 @@ func (u *Updater) Update(ctx context.Context) (*CheckResult, error) {
 // pickExtractedBinaryForSelf 從解壓結果中挑選可用於替換目前執行檔的 binary。
 func pickExtractedBinaryForSelf(extracted []string, selfPath string) (string, error) {
 	if len(extracted) == 0 {
-		return "", fmt.Errorf("archive 中沒有可替換的 binary")
+		return "", fmt.Errorf("no replaceable binary found in archive")
 	}
 	selfExt := strings.ToLower(filepath.Ext(selfPath))
 	if len(extracted) == 1 {
@@ -173,7 +173,7 @@ func pickExtractedBinaryForSelf(extracted []string, selfPath string) (string, er
 			return cand, nil
 		}
 		return "", fmt.Errorf(
-			"解壓 binary 與目前執行檔副檔名不相容 (self=%s, bin=%s)",
+			"extracted binary extension incompatible with current executable (self=%s, bin=%s)",
 			filepath.Base(selfPath),
 			filepath.Base(cand),
 		)
@@ -185,7 +185,7 @@ func pickExtractedBinaryForSelf(extracted []string, selfPath string) (string, er
 		}
 	}
 
-	return "", fmt.Errorf("找不到可替換目前執行檔的 binary (self=%s)", filepath.Base(selfPath))
+	return "", fmt.Errorf("no binary found to replace current executable (self=%s)", filepath.Base(selfPath))
 }
 
 // verifyChecksum 下載 checksums.txt 並驗證 archive 的 SHA256 雜湊值。
@@ -202,7 +202,7 @@ func pickExtractedBinaryForSelf(extracted []string, selfPath string) (string, er
 func (u *Updater) verifyChecksum(ctx context.Context, info *ReleaseInfo, actualHash string) error {
 	var buf strings.Builder
 	if err := u.Source.DownloadAsset(ctx, info.ChecksumURL, &buf); err != nil {
-		return fmt.Errorf("下載 checksums.txt 失敗: %w", err)
+		return fmt.Errorf("failed to download checksums.txt: %w", err)
 	}
 
 	for _, line := range strings.Split(buf.String(), "\n") {
@@ -213,7 +213,7 @@ func (u *Updater) verifyChecksum(ctx context.Context, info *ReleaseInfo, actualH
 		// fields[0] = SHA256 hex, fields[1] = 檔名
 		if fields[1] == info.AssetName {
 			if fields[0] != actualHash {
-				return fmt.Errorf("checksum 驗證失敗: 預期 %s, 實際 %s", fields[0], actualHash)
+				return fmt.Errorf("checksum mismatch: expected %s, got %s", fields[0], actualHash)
 			}
 			return nil
 		}

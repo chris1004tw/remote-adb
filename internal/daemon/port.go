@@ -46,7 +46,7 @@ func (pa *PortAllocator) AllocateListener() (net.Listener, int, error) {
 		pa.used[port] = true
 		return ln, port, nil
 	}
-	return nil, 0, fmt.Errorf("無可用的 port（範圍 %d-%d 已滿）", pa.start, pa.end)
+	return nil, 0, fmt.Errorf("no available port (range %d-%d exhausted)", pa.start, pa.end)
 }
 
 // Allocate 分配一個空閒的 Port。

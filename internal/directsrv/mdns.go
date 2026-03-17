@@ -144,13 +144,13 @@ func StartMDNS(hostname string, port int, token string) (shutdown func(), err er
 		txtRecords,      // TXT records：攜帶版本與 token 等元資料
 	)
 	if err != nil {
-		return nil, fmt.Errorf("建立 mDNS 服務描述失敗: %w", err)
+		return nil, fmt.Errorf("failed to create mDNS service entry: %w", err)
 	}
 
 	// 啟動 mDNS server，開始持續回應區域網路內的 mDNS 查詢
 	server, err := mdns.NewServer(&mdns.Config{Zone: service})
 	if err != nil {
-		return nil, fmt.Errorf("啟動 mDNS server 失敗: %w", err)
+		return nil, fmt.Errorf("failed to start mDNS server: %w", err)
 	}
 
 	slog.Info("mDNS broadcast started", "hostname", hostname, "port", port, "service", mdnsServiceType, "ip_count", len(advertiseIPs))

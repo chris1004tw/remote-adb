@@ -35,11 +35,11 @@ func ReplaceBinary(targetPath, newPath string) error {
 func replaceUnix(targetPath, newPath string) error {
 	// 確保新檔案有執行權限（0755 = rwxr-xr-x）
 	if err := os.Chmod(newPath, 0755); err != nil {
-		return fmt.Errorf("設定權限失敗: %w", err)
+		return fmt.Errorf("failed to set permissions: %w", err)
 	}
 	// moveFile 先嘗試 os.Rename（原子操作），失敗時 fallback 到 copy+remove
 	if err := moveFile(newPath, targetPath); err != nil {
-		return fmt.Errorf("替換 %s 失敗: %w", targetPath, err)
+		return fmt.Errorf("failed to replace %s: %w", targetPath, err)
 	}
 	return nil
 }
@@ -64,7 +64,7 @@ func replaceWindows(targetPath, newPath string) error {
 	// 將目前的 binary 重命名為 .old（Windows 允許重命名運行中的 exe）
 	if _, err := os.Stat(targetPath); err == nil {
 		if err := os.Rename(targetPath, oldPath); err != nil {
-			return fmt.Errorf("備份 %s 失敗: %w", targetPath, err)
+			return fmt.Errorf("failed to backup %s: %w", targetPath, err)
 		}
 	}
 
@@ -72,7 +72,7 @@ func replaceWindows(targetPath, newPath string) error {
 	if err := moveFile(newPath, targetPath); err != nil {
 		// 移入失敗，嘗試將 .old 回滾到原始路徑以恢復原狀
 		os.Rename(oldPath, targetPath)
-		return fmt.Errorf("替換 %s 失敗: %w", targetPath, err)
+		return fmt.Errorf("failed to replace %s: %w", targetPath, err)
 	}
 	return nil
 }
@@ -92,23 +92,23 @@ func moveFile(src, dst string) error {
 	// fallback: 以 copy + remove 實現跨磁碟機/檔案系統移動
 	in, err := os.Open(src)
 	if err != nil {
-		return fmt.Errorf("開啟來源檔案失敗: %w", err)
+		return fmt.Errorf("failed to open source file: %w", err)
 	}
 	defer in.Close()
 
 	out, err := os.Create(dst)
 	if err != nil {
-		return fmt.Errorf("建立目標檔案失敗: %w", err)
+		return fmt.Errorf("failed to create destination file: %w", err)
 	}
 
 	if _, err := io.Copy(out, in); err != nil {
 		out.Close()
 		os.Remove(dst)
-		return fmt.Errorf("複製檔案失敗: %w", err)
+		return fmt.Errorf("failed to copy file: %w", err)
 	}
 	if err := out.Close(); err != nil {
 		os.Remove(dst)
-		return fmt.Errorf("關閉目標檔案失敗: %w", err)
+		return fmt.Errorf("failed to close destination file: %w", err)
 	}
 
 	// 複製成功後才移除來源

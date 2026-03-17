@@ -62,7 +62,7 @@ type Proxy struct {
 func New(listenPort int, channel io.ReadWriteCloser) (*Proxy, error) {
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", listenPort))
 	if err != nil {
-		return nil, fmt.Errorf("監聽 port %d 失敗: %w", listenPort, err)
+		return nil, fmt.Errorf("failed to listen on port %d: %w", listenPort, err)
 	}
 	return NewWithListener(listener, channel), nil
 }
