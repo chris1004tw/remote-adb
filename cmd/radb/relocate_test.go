@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"syscall"
 	"testing"
 )
 
@@ -166,7 +165,7 @@ func TestExecutablePath_FallbackOnErrnoAccessDenied(t *testing.T) {
 	want := filepath.Join("C:", "temp", "radb.exe")
 	osExecutable = func() (string, error) { return want, nil }
 	evalSymlinks = func(string) (string, error) {
-		return "", syscall.ERROR_ACCESS_DENIED
+		return "", windowsAccessDeniedErrno
 	}
 
 	got, err := executablePath()
