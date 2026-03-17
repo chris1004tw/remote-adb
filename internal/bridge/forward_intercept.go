@@ -289,7 +289,7 @@ func (fm *ForwardManager) ListReverseForwards() string {
 func HandleADBForwardConn(ctx context.Context, rwc io.ReadWriteCloser, adbAddr, serial, remoteSpec string) {
 	defer rwc.Close()
 
-	conn, err := adb.NewDialer(adbAddr).DialService(serial, remoteSpec)
+	conn, err := adb.NewDialer(adbAddr).DialServiceWithRetry(ctx, serial, remoteSpec)
 	if err != nil {
 		slog.Debug("forward: DialService failed", "serial", serial, "remoteSpec", remoteSpec, "error", err)
 		return

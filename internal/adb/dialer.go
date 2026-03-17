@@ -1,11 +1,36 @@
 package adb
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"time"
 )
+
+// autoConnectRetryDelays 是 AutoConnect 在 ADB server 不可達時的重試退避排程。
+// 總等待時間約 90 秒，涵蓋使用者稍後啟動 scrcpy/uiauto.dev 等工具才帶起 ADB server 的場景。
+var autoConnectRetryDelays = []time.Duration{
+	1 * time.Second, 2 * time.Second, 4 * time.Second,
+	8 * time.Second, 15 * time.Second, 30 * time.Second, 30 * time.Second,
+}
+
+// scrcpyLocalAbstractRetryDelays 是 scrcpy localabstract socket 尚未 ready 時的短暫重試排程。
+// 背景：scrcpy server 啟動後，control/video/audio socket 常晚於 shell process 幾百毫秒才建立。
+// 若第一次 DialService 命中 "ADB FAIL: closed"，在同一條 DataChannel 內短暫重試可避免
+// 客戶端連續重建多條短命 DataChannel，降低 SCTP/GC 壓力。
+var scrcpyLocalAbstractRetryDelays = []time.Duration{
+	40 * time.Millisecond,
+	80 * time.Millisecond,
+	120 * time.Millisecond,
+	160 * time.Millisecond,
+	200 * time.Millisecond,
+	250 * time.Millisecond,
+	250 * time.Millisecond,
+	250 * time.Millisecond,
+}
 
 // Dialer 負責透過本機 ADB server 建立與指定設備的 TCP 連線。
 //
@@ -64,6 +89,58 @@ func (d *Dialer) DialService(serial string, service string) (net.Conn, error) {
 	return conn, nil
 }
 
+// DialServiceWithRetry 連線到指定設備服務，必要時對 scrcpy localabstract 啟動競態做短暫重試。
+//
+// 目前僅在 service 為 "localabstract:scrcpy_*" 且 ADB 回覆 "FAIL closed" 時重試。
+// 這代表 scrcpy server process 已啟動，但 socket 尚未 ready；在同一條 DataChannel 內等待
+// 幾百毫秒通常就能成功，可大幅減少短命 DataChannel 重建風暴。
+func (d *Dialer) DialServiceWithRetry(ctx context.Context, serial string, service string) (net.Conn, error) {
+	conn, err := d.DialService(serial, service)
+	if !shouldRetryDialService(service, err) {
+		return conn, err
+	}
+
+	start := time.Now()
+	for attempt, delay := range scrcpyLocalAbstractRetryDelays {
+		retryTimer := time.NewTimer(delay)
+		select {
+		case <-retryTimer.C:
+		case <-ctx.Done():
+			retryTimer.Stop()
+			return nil, ctx.Err()
+		}
+
+		conn, err = d.DialService(serial, service)
+		if err == nil {
+			slog.Debug("DialService retry succeeded",
+				"serial", serial,
+				"service", service,
+				"attempt", attempt+2,
+				"elapsed_ms", time.Since(start).Milliseconds(),
+			)
+			return conn, nil
+		}
+		if !shouldRetryDialService(service, err) {
+			return nil, err
+		}
+	}
+
+	slog.Debug("DialService retry exhausted",
+		"serial", serial,
+		"service", service,
+		"attempts", len(scrcpyLocalAbstractRetryDelays)+1,
+		"elapsed_ms", time.Since(start).Milliseconds(),
+		"error", err,
+	)
+	return nil, err
+}
+
+func shouldRetryDialService(service string, err error) bool {
+	return err != nil &&
+		strings.HasPrefix(service, "localabstract:scrcpy_") &&
+		strings.Contains(err.Error(), "ADB FAIL: closed")
+}
+
 // Addr 回傳 ADB server 地址。
 func (d *Dialer) Addr() string {
 	return d.addr
@@ -101,23 +178,69 @@ func (d *Dialer) Disconnect(target string) error {
 	return ReadStatus(conn)
 }
 
-// AutoConnect 等待指定延遲後嘗試 adb connect。
-// 失敗時僅記錄 debug 日誌，不回傳錯誤。適合在背景 goroutine 中呼叫。
+// AutoConnect 等待指定延遲後嘗試 adb connect，失敗時以指數退避重試。
+// 僅在 ADB server 不可達（net.Dial 失敗）時重試，協定層錯誤（FAIL 回應）不重試。
+// 適合在背景 goroutine 中呼叫，context 取消時立即停止重試。
 //
 // 參數：
+//   - ctx: 控制重試生命週期的 context（設備移除或連線斷開時取消）
 //   - adbAddr: ADB server 地址（空字串使用預設 127.0.0.1:5037）
 //   - target: 連線目標，格式為 "host:port"
 //   - delay: 連線前等待時間（讓 proxy listener 就緒）
-func AutoConnect(adbAddr, target string, delay time.Duration) {
+func AutoConnect(ctx context.Context, adbAddr, target string, delay time.Duration) {
 	if delay > 0 {
-		time.Sleep(delay)
+		delayTimer := time.NewTimer(delay)
+		select {
+		case <-delayTimer.C:
+		case <-ctx.Done():
+			delayTimer.Stop()
+			return
+		}
 	}
+
 	dialer := NewDialer(adbAddr)
-	if err := dialer.Connect(target); err != nil {
-		slog.Debug("auto adb connect failed", "target", target, "error", err)
-	} else {
-		slog.Debug("auto adb connect succeeded", "target", target)
+
+	for attempt := 0; attempt <= len(autoConnectRetryDelays); attempt++ {
+		err := dialer.Connect(target)
+		if err == nil {
+			if attempt > 0 {
+				slog.Info("auto adb connect succeeded after retry",
+					"target", target, "attempts", attempt+1)
+			} else {
+				slog.Debug("auto adb connect succeeded", "target", target)
+			}
+			return
+		}
+
+		slog.Debug("auto adb connect failed",
+			"target", target, "attempt", attempt+1, "error", err)
+
+		// 僅在 ADB server 不可達時重試（connection refused 等網路錯誤）。
+		// 若 ADB server 有回應但回傳 FAIL（如 already connected），不重試。
+		if !isDialError(err) {
+			return
+		}
+
+		// 最後一次嘗試失敗，不再重試
+		if attempt >= len(autoConnectRetryDelays) {
+			return
+		}
+
+		retryTimer := time.NewTimer(autoConnectRetryDelays[attempt])
+		select {
+		case <-retryTimer.C:
+		case <-ctx.Done():
+			retryTimer.Stop()
+			return
+		}
 	}
+}
+
+// isDialError 判斷錯誤是否為 TCP 連線層錯誤（ADB server 不可達）。
+// 用於區分「ADB server 未啟動」（應重試）和「ADB server 回應 FAIL」（不重試）。
+func isDialError(err error) bool {
+	var opErr *net.OpError
+	return errors.As(err, &opErr)
 }
 
 // AutoDisconnect 嘗試 adb disconnect。失敗時靜默忽略。適合在背景 goroutine 中呼叫。
@@ -129,4 +252,3 @@ func AutoDisconnect(adbAddr, target string) {
 	dialer := NewDialer(adbAddr)
 	dialer.Disconnect(target)
 }
-

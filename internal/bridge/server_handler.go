@@ -96,7 +96,7 @@ func (h *ServerHandler) HandleADBStreamConn(ctx context.Context, rwc io.ReadWrit
 
 	slog.Debug("stream: start handling", "serial", serial, "service", service)
 
-	conn, err := adb.NewDialer(h.ADBAddr).DialService(serial, service)
+	conn, err := adb.NewDialer(h.ADBAddr).DialServiceWithRetry(ctx, serial, service)
 	if err != nil {
 		slog.Debug("stream: DialService failed", "serial", serial, "service", service, "error", err)
 		rwc.Write([]byte{0})
