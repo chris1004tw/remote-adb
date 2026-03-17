@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"strings"
@@ -16,6 +17,11 @@ var autoConnectRetryDelays = []time.Duration{
 	1 * time.Second, 2 * time.Second, 4 * time.Second,
 	8 * time.Second, 15 * time.Second, 30 * time.Second, 30 * time.Second,
 }
+
+var (
+	isADBServerRunningFunc = IsADBServerRunning
+	ensureADBFunc          = EnsureADB
+)
 
 // scrcpyLocalAbstractRetryDelays 是 scrcpy localabstract socket 尚未 ready 時的短暫重試排程。
 // 背景：scrcpy server 啟動後，control/video/audio socket 常晚於 shell process 幾百毫秒才建立。
@@ -178,6 +184,36 @@ func (d *Dialer) Disconnect(target string) error {
 	return ReadStatus(conn)
 }
 
+// KillServer 要求本機 ADB server 立刻結束。
+// ADB server 在收到 host:kill 後可能先回 OKAY，也可能直接關閉連線；
+// 後者屬於預期行為，因此將 EOF/connection reset 視為成功。
+func (d *Dialer) KillServer() error {
+	conn, err := net.Dial("tcp", d.addr)
+	if err != nil {
+		return fmt.Errorf("connect to ADB server: %w", err)
+	}
+	defer conn.Close()
+
+	if err := SendCommand(conn, "host:kill"); err != nil {
+		return fmt.Errorf("send kill command: %w", err)
+	}
+	if err := ReadStatus(conn); err != nil && !isExpectedKillServerError(err) {
+		return err
+	}
+	return nil
+}
+
+func isExpectedKillServerError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var opErr *net.OpError
+	return errors.As(err, &opErr)
+}
+
 // AutoConnect 等待指定延遲後嘗試 adb connect，失敗時以指數退避重試。
 // 僅在 ADB server 不可達（net.Dial 失敗）時重試，協定層錯誤（FAIL 回應）不重試。
 // 適合在背景 goroutine 中呼叫，context 取消時立即停止重試。
@@ -251,4 +287,97 @@ func isDialError(err error) bool {
 func AutoDisconnect(adbAddr, target string) {
 	dialer := NewDialer(adbAddr)
 	dialer.Disconnect(target)
+}
+
+// reconnectDelay 是 Reconnect 中 disconnect 後等待 ADB server 清理 transport 的時間。
+const reconnectDelay = 200 * time.Millisecond
+
+const adbServerRestartTimeout = 5 * time.Second
+
+// Reconnect 先中斷再重新連線，確保清除 ADB server 中的陳舊 transport。
+//
+// 背景：當 ADB server 已有既存 transport 時，adb connect 只會回應 "already connected"
+// 而不建立新連線。若既存 transport 實際已失效（如遠端 DataChannel 斷開），
+// 設備會一直處於不可用狀態。先 disconnect 清除陳舊 transport，再 connect 建立
+// 全新連線可解決此問題。
+//
+// 參數：
+//   - ctx: 控制生命週期的 context（DPM 關閉時取消）
+//   - adbAddr: ADB server 地址（空字串使用預設 127.0.0.1:5037）
+//   - target: 連線目標，格式為 "host:port"
+func Reconnect(ctx context.Context, adbAddr, target string) {
+	dialer := NewDialer(adbAddr)
+
+	// 先中斷（忽略錯誤：目標可能本就未連線）
+	_ = dialer.Disconnect(target)
+
+	// 短暫等待讓 ADB server 完成 transport 清理
+	delayTimer := time.NewTimer(reconnectDelay)
+	select {
+	case <-delayTimer.C:
+	case <-ctx.Done():
+		delayTimer.Stop()
+		return
+	}
+
+	// 重新連線
+	if err := dialer.Connect(target); err != nil {
+		slog.Debug("reconnect failed", "target", target, "error", err)
+	} else {
+		slog.Debug("reconnect succeeded", "target", target)
+	}
+}
+
+// RestartServer 重啟本機 ADB server，清除所有現有 transport。
+// 適合用於 UI 工具卡住、出現殘留裝置項目時的手動清場。
+func RestartServer(ctx context.Context, adbAddr string) error {
+	dialer := NewDialer(adbAddr)
+
+	if isADBServerRunningFunc(dialer.addr) {
+		if err := dialer.KillServer(); err != nil {
+			return err
+		}
+
+		deadline := time.NewTimer(adbServerRestartTimeout)
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer deadline.Stop()
+		defer ticker.Stop()
+
+		for isADBServerRunningFunc(dialer.addr) {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-deadline.C:
+				return fmt.Errorf("ADB server did not stop within %v", adbServerRestartTimeout)
+			case <-ticker.C:
+			}
+		}
+	}
+
+	return ensureADBFunc(ctx, dialer.addr, nil)
+}
+
+// RefreshServerAndReconnect 先重啟本機 ADB server，再將指定 targets 重新掛回。
+// 用於 GUI 的「重新添加遠端 ADB 設備到本機」按鈕，專門處理卡住或殘留 transport。
+func RefreshServerAndReconnect(ctx context.Context, adbAddr string, targets []string) error {
+	if err := RestartServer(ctx, adbAddr); err != nil {
+		return err
+	}
+
+	dialer := NewDialer(adbAddr)
+	var firstErr error
+	for _, target := range targets {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err := dialer.Connect(target); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			slog.Debug("refresh reconnect failed", "target", target, "error", err)
+			continue
+		}
+		slog.Debug("refresh reconnect succeeded", "target", target)
+	}
+	return firstErr
 }

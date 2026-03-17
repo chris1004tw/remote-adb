@@ -130,6 +130,33 @@ func TestDisconnect_Success(t *testing.T) {
 	}
 }
 
+func TestKillServer_SendsCorrectCommand(t *testing.T) {
+	var mu sync.Mutex
+	var received []string
+
+	addr, cleanup := mockADBServer(t, func(cmd string) []byte {
+		mu.Lock()
+		received = append(received, cmd)
+		mu.Unlock()
+		return []byte("OKAY")
+	})
+	defer cleanup()
+
+	d := NewDialer(addr)
+	if err := d.KillServer(); err != nil {
+		t.Fatalf("KillServer error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(received))
+	}
+	if received[0] != "host:kill" {
+		t.Fatalf("command: got %q, want %q", received[0], "host:kill")
+	}
+}
+
 func TestConnect_ServerFail(t *testing.T) {
 	addr, cleanup := mockADBServer(t, func(cmd string) []byte {
 		msg := "connection refused"
@@ -465,5 +492,242 @@ func TestAutoDisconnect_SendsCorrectCommand(t *testing.T) {
 	want := "host:disconnect:127.0.0.1:5555"
 	if received[0] != want {
 		t.Errorf("command: got %q, want %q", received[0], want)
+	}
+}
+
+func TestReconnect_DisconnectThenConnect(t *testing.T) {
+	// Reconnect 應先發送 disconnect 再發送 connect，確保清除陳舊 transport
+	var mu sync.Mutex
+	var received []string
+
+	addr, cleanup := mockADBServer(t, func(cmd string) []byte {
+		mu.Lock()
+		received = append(received, cmd)
+		mu.Unlock()
+		return []byte("OKAY")
+	})
+	defer cleanup()
+
+	Reconnect(context.Background(), addr, "127.0.0.1:5555")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != 2 {
+		t.Fatalf("expected 2 commands (disconnect + connect), got %d: %v", len(received), received)
+	}
+	wantDisconnect := "host:disconnect:127.0.0.1:5555"
+	if received[0] != wantDisconnect {
+		t.Errorf("first command: got %q, want %q", received[0], wantDisconnect)
+	}
+	wantConnect := "host:connect:127.0.0.1:5555"
+	if received[1] != wantConnect {
+		t.Errorf("second command: got %q, want %q", received[1], wantConnect)
+	}
+}
+
+func TestReconnect_DisconnectBeforeConnect_Order(t *testing.T) {
+	// 驗證 disconnect 一定在 connect 之前完成（有 delay 間隔）
+	var mu sync.Mutex
+	var timestamps []time.Time
+
+	addr, cleanup := mockADBServer(t, func(cmd string) []byte {
+		mu.Lock()
+		timestamps = append(timestamps, time.Now())
+		mu.Unlock()
+		return []byte("OKAY")
+	})
+	defer cleanup()
+
+	Reconnect(context.Background(), addr, "127.0.0.1:5555")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(timestamps) != 2 {
+		t.Fatalf("expected 2 timestamps, got %d", len(timestamps))
+	}
+	gap := timestamps[1].Sub(timestamps[0])
+	// reconnectDelay 為 200ms，允許 150ms 的容差
+	if gap < 150*time.Millisecond {
+		t.Errorf("gap between disconnect and connect too short: %v, expected >= 150ms", gap)
+	}
+}
+
+func TestReconnect_Cancellation(t *testing.T) {
+	// context 在 disconnect 後、connect 前的 delay 階段取消時應迅速返回
+	var mu sync.Mutex
+	var received []string
+
+	addr, cleanup := mockADBServer(t, func(cmd string) []byte {
+		mu.Lock()
+		received = append(received, cmd)
+		mu.Unlock()
+		return []byte("OKAY")
+	})
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// 50ms 後取消（在 200ms delay 期間）
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	Reconnect(ctx, addr, "127.0.0.1:5555")
+	elapsed := time.Since(start)
+
+	// 應在 delay 被取消後迅速返回（遠小於 200ms delay）
+	if elapsed > 150*time.Millisecond {
+		t.Errorf("Reconnect did not stop promptly after cancel: %v", elapsed)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	// 應只有 disconnect，connect 不應執行
+	if len(received) != 1 {
+		t.Fatalf("expected 1 command (disconnect only), got %d: %v", len(received), received)
+	}
+	if received[0] != "host:disconnect:127.0.0.1:5555" {
+		t.Errorf("command: got %q, want disconnect", received[0])
+	}
+}
+
+func TestReconnect_DisconnectFailStillConnects(t *testing.T) {
+	// disconnect 失敗（如目標未連線）不影響後續 connect
+	var mu sync.Mutex
+	var received []string
+
+	addr, cleanup := mockADBServer(t, func(cmd string) []byte {
+		mu.Lock()
+		received = append(received, cmd)
+		mu.Unlock()
+		if cmd == "host:disconnect:127.0.0.1:5555" {
+			msg := "no such device"
+			return []byte(fmt.Sprintf("FAIL%04x%s", len(msg), msg))
+		}
+		return []byte("OKAY")
+	})
+	defer cleanup()
+
+	Reconnect(context.Background(), addr, "127.0.0.1:5555")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != 2 {
+		t.Fatalf("expected 2 commands, got %d: %v", len(received), received)
+	}
+	// disconnect 失敗後仍應嘗試 connect
+	if received[1] != "host:connect:127.0.0.1:5555" {
+		t.Errorf("second command: got %q, want connect", received[1])
+	}
+}
+
+func TestRestartServer_KillsThenEnsuresADB(t *testing.T) {
+	origRunning := isADBServerRunningFunc
+	origEnsure := ensureADBFunc
+	defer func() {
+		isADBServerRunningFunc = origRunning
+		ensureADBFunc = origEnsure
+	}()
+
+	var mu sync.Mutex
+	var received []string
+	serverRunning := true
+
+	addr, cleanup := mockADBServer(t, func(cmd string) []byte {
+		mu.Lock()
+		received = append(received, cmd)
+		if cmd == "host:kill" {
+			serverRunning = false
+		}
+		mu.Unlock()
+		return []byte("OKAY")
+	})
+	defer cleanup()
+
+	isADBServerRunningFunc = func(testAddr string) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return testAddr == addr && serverRunning
+	}
+
+	ensureCalled := false
+	ensureADBFunc = func(ctx context.Context, testAddr string, progressFn func(string)) error {
+		ensureCalled = true
+		if testAddr != addr {
+			t.Fatalf("ensureADBFunc addr = %q, want %q", testAddr, addr)
+		}
+		return nil
+	}
+
+	if err := RestartServer(context.Background(), addr); err != nil {
+		t.Fatalf("RestartServer error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != 1 || received[0] != "host:kill" {
+		t.Fatalf("commands = %v, want [host:kill]", received)
+	}
+	if !ensureCalled {
+		t.Fatal("expected EnsureADB to be called after kill")
+	}
+}
+
+func TestRefreshServerAndReconnect_KillThenReconnectTargets(t *testing.T) {
+	origRunning := isADBServerRunningFunc
+	origEnsure := ensureADBFunc
+	defer func() {
+		isADBServerRunningFunc = origRunning
+		ensureADBFunc = origEnsure
+	}()
+
+	var mu sync.Mutex
+	var received []string
+	serverRunning := true
+
+	addr, cleanup := mockADBServer(t, func(cmd string) []byte {
+		mu.Lock()
+		received = append(received, cmd)
+		if cmd == "host:kill" {
+			serverRunning = false
+		}
+		mu.Unlock()
+		return []byte("OKAY")
+	})
+	defer cleanup()
+
+	isADBServerRunningFunc = func(testAddr string) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return testAddr == addr && serverRunning
+	}
+
+	ensureADBFunc = func(ctx context.Context, testAddr string, progressFn func(string)) error {
+		if testAddr != addr {
+			t.Fatalf("ensureADBFunc addr = %q, want %q", testAddr, addr)
+		}
+		return nil
+	}
+
+	targets := []string{"127.0.0.1:5555", "127.0.0.1:5556"}
+	if err := RefreshServerAndReconnect(context.Background(), addr, targets); err != nil {
+		t.Fatalf("RefreshServerAndReconnect error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{
+		"host:kill",
+		"host:connect:127.0.0.1:5555",
+		"host:connect:127.0.0.1:5556",
+	}
+	if len(received) != len(want) {
+		t.Fatalf("expected %d commands, got %d: %v", len(want), len(received), received)
+	}
+	for i := range want {
+		if received[i] != want[i] {
+			t.Fatalf("command %d: got %q, want %q", i, received[i], want[i])
+		}
 	}
 }

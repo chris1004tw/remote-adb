@@ -38,6 +38,20 @@ func platformToolsURL() string {
 	)
 }
 
+const (
+	defaultADBServerPort  = "5037"
+	adbServerStopTimeout  = 5 * time.Second
+	adbServerStartTimeout = 5 * time.Second
+)
+
+var (
+	findADBBinaryFunc         = FindADBBinary
+	downloadPlatformToolsFunc = downloadPlatformTools
+	startADBServerFunc        = StartADBServer
+	killADBServerFunc         = KillADBServer
+	ensureADBMu               sync.Mutex
+)
+
 // exeDir 快取 exe 所在目錄路徑，避免重複呼叫 os.Executable()。
 var exeDir = sync.OnceValue(func() string {
 	p, err := os.Executable()
@@ -78,9 +92,32 @@ func FindADBBinary() string {
 	return ""
 }
 
+func adbServerPort(addr string) string {
+	if addr == "" {
+		return defaultADBServerPort
+	}
+	if !strings.Contains(addr, ":") {
+		return addr
+	}
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" {
+		return defaultADBServerPort
+	}
+	return port
+}
+
+func adbServerCommandArgs(addr, subcommand string) []string {
+	port := adbServerPort(addr)
+	if port == "" || port == defaultADBServerPort {
+		return []string{subcommand}
+	}
+	return []string{"-P", port, subcommand}
+}
+
 // StartADBServer 用指定的 adb 二進位啟動 adb server。
-func StartADBServer(adbPath string) error {
-	cmd := exec.Command(adbPath, "start-server")
+func StartADBServer(adbPath, addr string) error {
+	cmd := exec.Command(adbPath, adbServerCommandArgs(addr, "start-server")...)
+	configureCommandWindow(cmd)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if err := cmd.Run(); err != nil {
@@ -89,11 +126,46 @@ func StartADBServer(adbPath string) error {
 	return nil
 }
 
-// EnsureADB 確保 ADB 可用。依序嘗試：
-//  1. 檢查 ADB server 是否已在運行
-//  2. 在 PATH 或本地快取中尋找 adb 二進位
-//  3. 從 Google 下載 platform-tools
-//  4. 啟動 adb server
+// KillADBServer 用指定的 adb 二進位停止 adb server。
+func KillADBServer(adbPath, addr string) error {
+	cmd := exec.Command(adbPath, adbServerCommandArgs(addr, "kill-server")...)
+	configureCommandWindow(cmd)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("kill ADB server: %w", err)
+	}
+	return nil
+}
+
+func waitADBServerState(ctx context.Context, addr string, wantRunning bool, timeout time.Duration) error {
+	deadline := time.NewTimer(timeout)
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer deadline.Stop()
+	defer ticker.Stop()
+
+	for {
+		if isADBServerRunningFunc(addr) == wantRunning {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			state := "stop"
+			if wantRunning {
+				state = "start"
+			}
+			return fmt.Errorf("ADB server did not %s within %v", state, timeout)
+		case <-ticker.C:
+		}
+	}
+}
+
+// EnsureADB 確保 radb 自帶的 ADB 可用。依序執行：
+//  1. 尋找或下載 bundled platform-tools
+//  2. 一律先停止目前的 ADB server
+//  3. 用 bundled adb 重新啟動 server
 //
 // progressFn 回呼用於通知呼叫端目前狀態（可為 nil）。
 func EnsureADB(ctx context.Context, addr string, progressFn func(string)) error {
@@ -103,37 +175,60 @@ func EnsureADB(ctx context.Context, addr string, progressFn func(string)) error 
 		}
 	}
 
-	// 1. ADB server 已在運行
-	if IsADBServerRunning(addr) {
-		return nil
+	ensureADBMu.Lock()
+	defer ensureADBMu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
-	// 2. 尋找 adb 二進位
+	// 1. 尋找 bundled adb 二進位
 	report("尋找 ADB...")
-	adbPath := FindADBBinary()
+	adbPath := findADBBinaryFunc()
 
-	// 3. 找不到 → 下載
+	// 2. 找不到 → 下載 platform-tools
 	if adbPath == "" {
 		dir, err := adbDataDir()
 		if err != nil {
 			return err
 		}
-		if err := downloadPlatformTools(ctx, dir, report); err != nil {
+		if err := downloadPlatformToolsFunc(ctx, dir, report); err != nil {
 			return err
 		}
-		adbPath = filepath.Join(dir, adbBinaryName())
+		adbPath = findADBBinaryFunc()
+		if adbPath == "" {
+			adbPath = filepath.Join(dir, adbBinaryName())
+		}
 	}
 
-	// 4. 啟動 adb server
-	report("啟動 ADB server...")
-	if err := StartADBServer(adbPath); err != nil {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	// 確認啟動成功
-	time.Sleep(500 * time.Millisecond)
-	if !IsADBServerRunning(addr) {
-		return fmt.Errorf("ADB server started but not reachable")
+	// 3. 一律先停止目前的 server，清掉既有 transport / 殘留狀態。
+	report("停止現有 ADB server...")
+	wasRunning := isADBServerRunningFunc(addr)
+	if err := killADBServerFunc(adbPath, addr); err != nil && isADBServerRunningFunc(addr) {
+		return err
+	}
+	if wasRunning {
+		if err := waitADBServerState(ctx, addr, false, adbServerStopTimeout); err != nil {
+			return err
+		}
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	// 4. 用 bundled adb 啟動 server。
+	report("啟動 ADB server...")
+	if err := startADBServerFunc(adbPath, addr); err != nil {
+		return err
+	}
+
+	if err := waitADBServerState(ctx, addr, true, adbServerStartTimeout); err != nil {
+		return err
 	}
 
 	return nil
