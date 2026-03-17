@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 env:
-  GO_VERSION: "1.25.0"
+  GO_VERSION: "1.26.1"
 
 jobs:
   test:
@@ -95,6 +95,7 @@ jobs:
             EXT=".exe"
           fi
           echo "EXT=$EXT" >> "$GITHUB_ENV"
+          echo "BIN_NAME=radb-${TAG}${EXT}" >> "$GITHUB_ENV"
 
           # Linux arm64 交叉編譯器設定
           if [ "${{ matrix.goos }}" = "linux" ] && [ "${{ matrix.goarch }}" = "arm64" ]; then
@@ -169,7 +170,14 @@ jobs:
           SHA="${GITHUB_SHA::8}"
           DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           LDFLAGS="-s -w -X github.com/chris1004tw/remote-adb/internal/buildinfo.Version=${TAG} -X github.com/chris1004tw/remote-adb/internal/buildinfo.Commit=${SHA} -X github.com/chris1004tw/remote-adb/internal/buildinfo.Date=${DATE}"
-          go build -trimpath -ldflags="${LDFLAGS}" -o "dist/radb${EXT}" ./cmd/radb
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            GO_MINOR="${GO_VERSION#1.}"
+            GO_MINOR="${GO_MINOR%%.*}"
+            if [ "$GO_MINOR" -ge 26 ]; then
+              export GOEXPERIMENT=nogreenteagc
+            fi
+          fi
+          go build -trimpath -ldflags="${LDFLAGS}" -o "dist/${BIN_NAME}" ./cmd/radb
 
       # Windows ZIP 先打包（未壓 UPX 的乾淨 binary，避免防毒誤判）
       - name: 打包 Windows (zip)
@@ -185,14 +193,14 @@ jobs:
           curl -sL "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_linux.tar.xz" | tar -xJ
           UPX="./upx-${UPX_VERSION}-amd64_linux/upx"
 
-          echo "壓縮前: $(du -h dist/radb${EXT} | cut -f1)"
-          $UPX --best "dist/radb${EXT}"
-          echo "壓縮後: $(du -h dist/radb${EXT} | cut -f1)"
+          echo "壓縮前: $(du -h dist/${BIN_NAME} | cut -f1)"
+          $UPX --best "dist/${BIN_NAME}"
+          echo "壓縮後: $(du -h dist/${BIN_NAME} | cut -f1)"
 
       # 獨立 exe 和 Linux tar.gz 使用 UPX 壓縮後的 binary
       - name: 複製 Windows 獨立執行檔
         if: matrix.goos == 'windows'
-        run: cp "dist/radb.exe" "${{ env.ARCHIVE_NAME }}.exe"
+        run: cp "dist/${{ env.BIN_NAME }}" "${{ env.ARCHIVE_NAME }}.exe"
 
       - name: 打包 Linux (tar.gz)
         if: matrix.goos == 'linux'
