@@ -117,7 +117,7 @@ func (t *lanTab) layoutConnect(gtx layout.Context, th *material.Theme) []layout.
 		}
 		btn := material.Button(th, &t.connectBtn, label)
 		if connected {
-			btn.Background = color.NRGBA{R: 244, G: 67, B: 54, A: 255}
+			btn.Background = colorBtnStop
 		}
 		return btn.Layout(gtx)
 	}))
@@ -126,7 +126,7 @@ func (t *lanTab) layoutConnect(gtx layout.Context, th *material.Theme) []layout.
 	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 		c := colorPanelHint
 		if connected {
-			c = color.NRGBA{R: 76, G: 175, B: 80, A: 255}
+			c = colorStatusOnline
 		}
 		return layout.Inset{Top: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return statusText(gtx, th, msg().Common.StatusPrefix+status, c)

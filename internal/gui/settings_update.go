@@ -40,12 +40,16 @@ func (p *settingsPanel) startCheckUpdate() {
 	p.invalidateAll()
 
 	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
 		u := updater.NewUpdater()
-		result, err := u.Check(context.Background())
+		result, err := u.Check(ctx)
 
 		p.mu.Lock()
 		p.checking = false
 		if err != nil {
+			slog.Warn("check update failed", "error", err)
 			p.updateStatus = fmt.Sprintf(msg().Settings.StatusCheckFailFmt, err)
 		} else {
 			p.latestVersion = result.LatestVersion
@@ -93,7 +97,7 @@ func (p *settingsPanel) restartSelf() {
 func (p *settingsPanel) bannerVisible() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.hasUpdate && !p.bannerDismissed
+	return (p.hasUpdate || p.pendingRestart) && !p.bannerDismissed
 }
 
 // layoutBanner 繪製主畫面底部的更新通知橫幅。
@@ -106,10 +110,25 @@ func (p *settingsPanel) layoutBanner(gtx layout.Context, th *material.Theme) lay
 	dismissed := p.bannerDismissed
 	latestVer := p.latestVersion
 	updateStatus := p.updateStatus
+	pendingRestart := p.pendingRestart
 	p.mu.Unlock()
 
-	// 不顯示橫幅的條件：無更新、已關閉
-	if !hasUpdate || dismissed {
+	// 更新已下載，等待連線結束：每幀檢查，全部斷開後自動重啟
+	if pendingRestart && p.isAnyConnected != nil && !p.isAnyConnected() {
+		p.mu.Lock()
+		p.pendingRestart = false
+		p.hasUpdate = false
+		p.updateStatus = fmt.Sprintf(msg().Settings.StatusUpdatedFmt, latestVer)
+		p.mu.Unlock()
+		p.invalidateAll()
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			p.restartSelf()
+		}()
+	}
+
+	// 不顯示橫幅的條件：無更新且無待重啟、已關閉
+	if (!hasUpdate && !pendingRestart) || dismissed {
 		return layout.Dimensions{}
 	}
 
@@ -134,7 +153,7 @@ func (p *settingsPanel) layoutBanner(gtx layout.Context, th *material.Theme) lay
 				paint.FillShape(gtx.Ops, bannerBg, clip.Rect{Max: sz}.Op())
 				// 頂部橘色邊線
 				lineH := gtx.Dp(unit.Dp(2))
-				paint.FillShape(gtx.Ops, color.NRGBA{R: 255, G: 152, B: 0, A: 255},
+				paint.FillShape(gtx.Ops, colorWarning,
 					clip.Rect{Max: image.Pt(sz.X, lineH)}.Op())
 				return layout.Dimensions{Size: sz}
 			},
@@ -203,14 +222,29 @@ func (p *settingsPanel) startUpdate() {
 	p.invalidateAll()
 
 	go func() {
+		// 下載更新檔案可能較大，給予 5 分鐘逾時
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+
 		u := updater.NewUpdater()
-		result, err := u.Update(context.Background())
+		result, err := u.Update(ctx)
 
 		p.mu.Lock()
 		p.updating = false
 		if err != nil {
 			p.updateStatus = fmt.Sprintf(msg().Settings.StatusUpdateFailFmt, err)
 		} else if result.HasUpdate {
+			// 有活動連線時不強制重啟，設定 pendingRestart 旗標，
+			// layoutBanner 每幀檢查連線狀態，全部斷開後自動重啟
+			if p.isAnyConnected != nil && p.isAnyConnected() {
+				p.pendingRestart = true
+				p.updateStatus = msg().Settings.StatusUpdatePendingRestart
+				slog.Info("update downloaded but active connections exist, deferring restart")
+				p.mu.Unlock()
+				p.invalidateAll()
+				return
+			}
+
 			p.hasUpdate = false
 			p.updateStatus = fmt.Sprintf(msg().Settings.StatusUpdatedFmt, result.LatestVersion)
 			p.mu.Unlock()

@@ -43,8 +43,6 @@ type stunPreset struct {
 // 下拉選單最後一個選項「自訂」允許使用者輸入自訂位址。
 var defaultStunPresets = []stunPreset{
 	{"stun.l.google.com:19302", "stun:stun.l.google.com:19302"},
-	{"stun1.l.google.com:19302", "stun:stun1.l.google.com:19302"},
-	{"stun2.l.google.com:19302", "stun:stun2.l.google.com:19302"},
 	{"stun.cloudflare.com:3478", "stun:stun.cloudflare.com:3478"},
 	{"stun.nextcloud.com:443", "stun:stun.nextcloud.com:443"},
 }
@@ -65,14 +63,18 @@ type settingsPanel struct {
 	checkUpdateBtn   widget.Clickable
 	doUpdateBtn      widget.Clickable
 
-	// STUN 下拉選單
-	stunDrop     dropdownState    // 下拉選單 UI 狀態
-	stunSelected int              // 0~len(presets)-1=preset, len(presets)=自訂
-	stunEditor   widget.Editor    // 自訂 STUN 輸入框
+	// 連線方式下拉選單
+	connModeDrop     dropdownState // 下拉選單 UI 狀態
+	connModeSelected int           // 0=直連優先, 1=僅直連, 2=僅中繼
 
-	// TURN 模式下拉選單
-	turnDrop     dropdownState    // 下拉選單 UI 狀態
-	turnSelected int              // 0=Cloudflare, 1=停用, 2=自訂
+	// STUN 下拉選單（連線方式為「直連優先」或「僅直連」時顯示）
+	stunDrop     dropdownState // 下拉選單 UI 狀態
+	stunSelected int           // 0~len(presets)-1=preset, len(presets)=自訂
+	stunEditor   widget.Editor // 自訂 STUN 輸入框
+
+	// TURN 模式下拉選單（連線方式為「直連優先」或「僅中繼」時顯示）
+	turnDrop     dropdownState // 下拉選單 UI 狀態
+	turnSelected int           // 0=Cloudflare, 1=自訂
 
 	// TURN 自訂模式輸入框（自訂被選中時才顯示）
 	turnEditor     widget.Editor // TURN URL 輸入框
@@ -103,6 +105,12 @@ type settingsPanel struct {
 	bannerUpdateBtn  widget.Clickable // 橫幅「立即更新」按鈕
 	bannerDismissBtn widget.Clickable // 橫幅「稍後再說」按鈕
 
+	// 連線狀態查詢（供更新重啟時判斷是否有活動連線）
+	isAnyConnected func() bool
+
+	// 更新已下載但因活動連線而延遲重啟（layoutBanner 每幀檢查，連線清空後自動重啟）
+	pendingRestart bool
+
 	// 捲動
 	list widget.List
 }
@@ -129,6 +137,9 @@ func newSettingsPanel(w *app.Window) *settingsPanel {
 	p.proxyPortEditor.SingleLine = true
 	p.directPortEditor.SingleLine = true
 
+	// 初始化連線方式下拉選單（3 選項：直連優先/僅直連/僅中繼）
+	p.connModeDrop.optBtns = make([]widget.Clickable, 3)
+
 	// 初始化 STUN 下拉選單
 	p.stunDrop.optBtns = make([]widget.Clickable, len(defaultStunPresets)+1)
 	p.stunEditor.SingleLine = true
@@ -152,6 +163,16 @@ func (p *settingsPanel) syncEditorsFromConfig() {
 	p.proxyPortEditor.SetText(strconv.Itoa(p.config.ProxyPort))
 	p.directPortEditor.SetText(strconv.Itoa(p.config.DirectPort))
 
+	// 連線方式下拉選單（0=直連優先, 1=僅直連, 2=僅中繼）
+	switch p.config.ConnectionMode {
+	case ConnModeDirectOnly:
+		p.connModeSelected = 1
+	case ConnModeRelayOnly:
+		p.connModeSelected = 2
+	default: // "direct-first" 或空字串
+		p.connModeSelected = 0
+	}
+
 	// 比對 STUN 設定值是否為預設選項
 	p.stunSelected = len(defaultStunPresets) // 預設選「自訂」
 	for i, preset := range defaultStunPresets {
@@ -165,14 +186,12 @@ func (p *settingsPanel) syncEditorsFromConfig() {
 		p.stunEditor.SetText(p.config.STUNServer)
 	}
 
-	// TURN 模式下拉選單（0=Cloudflare, 1=停用, 2=自訂）
+	// TURN 模式下拉選單（0=Cloudflare, 1=自訂）
 	switch p.config.TURNMode {
-	case TURNModeCloudflare:
-		p.turnSelected = 0
 	case TURNModeCustom:
-		p.turnSelected = 2
-	default: // "none" 或空字串 → 停用
 		p.turnSelected = 1
+	default: // cloudflare 或其他
+		p.turnSelected = 0
 	}
 
 	// TURN 自訂模式輸入框
@@ -214,6 +233,7 @@ func (p *settingsPanel) openWindow() {
 	p.mu.Unlock()
 
 	p.syncEditorsFromConfig()
+	p.connModeDrop.expanded = false
 	p.stunDrop.expanded = false
 	p.turnDrop.expanded = false
 	p.langDrop.expanded = false
@@ -318,6 +338,16 @@ func (p *settingsPanel) save() bool {
 	p.config.ProxyPort = parsePort(p.proxyPortEditor.Text(), 5555)
 	p.config.DirectPort = parsePort(p.directPortEditor.Text(), 15555)
 
+	// 連線方式（0=直連優先, 1=僅直連, 2=僅中繼）
+	switch p.connModeSelected {
+	case 1:
+		p.config.ConnectionMode = ConnModeDirectOnly
+	case 2:
+		p.config.ConnectionMode = ConnModeRelayOnly
+	default:
+		p.config.ConnectionMode = ConnModeDirectFirst
+	}
+
 	// 根據下拉選單選取結果決定 STUN 值
 	if p.stunSelected < len(defaultStunPresets) {
 		p.config.STUNServer = defaultStunPresets[p.stunSelected].value
@@ -325,14 +355,12 @@ func (p *settingsPanel) save() bool {
 		p.config.STUNServer = p.stunEditor.Text()
 	}
 
-	// TURN 模式與自訂設定（0=Cloudflare, 1=停用, 2=自訂）
+	// TURN 模式與自訂設定（0=Cloudflare, 1=自訂）
 	switch p.turnSelected {
-	case 0:
-		p.config.TURNMode = TURNModeCloudflare
-	case 2:
+	case 1:
 		p.config.TURNMode = TURNModeCustom
 	default:
-		p.config.TURNMode = TURNModeNone
+		p.config.TURNMode = TURNModeCloudflare
 	}
 	p.config.TURNServer = p.turnEditor.Text()
 	p.config.TURNUser = p.turnUserEditor.Text()
@@ -400,17 +428,39 @@ func (p *settingsPanel) layoutContent(gtx layout.Context, th *material.Theme) la
 		}),
 		layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
 
-		// STUN Server（下拉選單）
+		// 連線方式（直連優先/僅直連/僅中繼）
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return p.layoutStunDropdown(gtx, th)
+			return p.layoutConnModeDropdown(gtx, th)
 		}),
 		layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
 
-		// TURN Server（URL 有值時才顯示帳號/密碼）
+		// NAT 探測伺服器（連線方式為「直連優先」或「僅直連」時顯示）
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			if p.connModeSelected == 2 { // 僅中繼 → 隱藏 STUN
+				return layout.Dimensions{}
+			}
+			return p.layoutStunDropdown(gtx, th)
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			if p.connModeSelected == 2 {
+				return layout.Dimensions{}
+			}
+			return layout.Spacer{Height: unit.Dp(8)}.Layout(gtx)
+		}),
+
+		// 中繼伺服器（連線方式為「直連優先」或「僅中繼」時顯示）
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			if p.connModeSelected == 1 { // 僅直連 → 隱藏 TURN
+				return layout.Dimensions{}
+			}
 			return p.layoutTurnFields(gtx, th)
 		}),
-		layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			if p.connModeSelected == 1 {
+				return layout.Dimensions{}
+			}
+			return layout.Spacer{Height: unit.Dp(8)}.Layout(gtx)
+		}),
 
 		// 語言（下拉選單）
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -469,7 +519,7 @@ func (p *settingsPanel) layoutContent(gtx layout.Context, th *material.Theme) la
 			}
 			c := colorPanelHint
 			if hasUpdate {
-				c = color.NRGBA{R: 255, G: 152, B: 0, A: 255} // 橘色提示（暗色面板上更亮）
+				c = colorWarning // 橘色提示（暗色面板上更亮）
 			}
 			return statusText(gtx, th, updateStatus, c)
 		}),
@@ -507,7 +557,22 @@ func (p *settingsPanel) layoutContent(gtx layout.Context, th *material.Theme) la
 	)
 }
 
-// layoutStunDropdown 繪製 STUN 伺服器下拉選單。
+// layoutConnModeDropdown 繪製連線方式下拉選單。
+// 三個選項：直連優先（預設）/ 僅直連 / 僅中繼，控制 ICE candidate 收集策略。
+func (p *settingsPanel) layoutConnModeDropdown(gtx layout.Context, th *material.Theme) layout.Dimensions {
+	opts := []dropdownOption{
+		{Label: msg().Settings.ConnModeDirectFirst, Selected: p.connModeSelected == 0},
+		{Label: msg().Settings.ConnModeDirectOnly, Selected: p.connModeSelected == 1},
+		{Label: msg().Settings.ConnModeRelayOnly, Selected: p.connModeSelected == 2},
+	}
+	currentLabel := opts[p.connModeSelected].Label
+
+	return p.connModeDrop.layoutDropdown(gtx, th, msg().Settings.ConnModeLabel, currentLabel, opts, func(idx int) {
+		p.connModeSelected = idx
+	})
+}
+
+// layoutStunDropdown 繪製 NAT 探測伺服器（STUN）下拉選單。
 // 包含預設公共 STUN 伺服器清單，最後一個選項「自訂」允許使用者輸入自訂位址。
 func (p *settingsPanel) layoutStunDropdown(gtx layout.Context, th *material.Theme) layout.Dimensions {
 	totalOpts := len(defaultStunPresets) + 1
@@ -538,26 +603,25 @@ func (p *settingsPanel) layoutStunDropdown(gtx layout.Context, th *material.Them
 		}
 	}
 
-	return p.stunDrop.layoutDropdown(gtx, th, "STUN Server", currentLabel, opts, func(idx int) {
+	return p.stunDrop.layoutDropdown(gtx, th, msg().Settings.STUNLabel, currentLabel, opts, func(idx int) {
 		p.stunSelected = idx
 	}, extra...)
 }
 
-// layoutTurnFields 繪製 TURN 伺服器下拉選單與自訂輸入框。
-// 下拉選單提供三個選項：Cloudflare（免費）、停用、自訂。
+// layoutTurnFields 繪製中繼伺服器（TURN）下拉選單與自訂輸入框。
+// 下拉選單提供兩個選項：Cloudflare（免費）、自訂。
 // 選擇自訂時顯示 URL、帳號、密碼輸入框。
 func (p *settingsPanel) layoutTurnFields(gtx layout.Context, th *material.Theme) layout.Dimensions {
 	opts := []dropdownOption{
 		{Label: msg().Settings.TURNModeCloudflare, Selected: p.turnSelected == 0},
-		{Label: msg().Settings.TURNModeNone, Selected: p.turnSelected == 1},
-		{Label: msg().Settings.TURNModeCustom, Selected: p.turnSelected == 2},
+		{Label: msg().Settings.TURNModeCustom, Selected: p.turnSelected == 1},
 	}
 
 	currentLabel := opts[p.turnSelected].Label
 
-	// 自訂模式被選中時（索引 2）：收合狀態下附加 URL/帳號/密碼輸入框
+	// 自訂模式被選中時（索引 1）：收合狀態下附加 URL/帳號/密碼輸入框
 	var extra []layout.FlexChild
-	if p.turnSelected == 2 {
+	if p.turnSelected == 1 {
 		extra = []layout.FlexChild{
 			layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {

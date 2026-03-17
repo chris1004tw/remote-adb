@@ -5,7 +5,6 @@ package gui
 import (
 	"context"
 	"fmt"
-	"image/color"
 	"io"
 	"log/slog"
 	"strings"
@@ -71,7 +70,7 @@ func (t *pairTab) layoutServerWidgets(gtx layout.Context, th *material.Theme) []
 		widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Top: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				btn := material.Button(th, &t.disconnectBtn, msg().Pair.DisconnectBtn)
-				btn.Background = color.NRGBA{R: 244, G: 67, B: 54, A: 255}
+				btn.Background = colorBtnStop
 				return btn.Layout(gtx)
 			})
 		})
@@ -274,7 +273,11 @@ func (t *pairTab) serverProcessOffer() {
 				// DataChannel 開啟 = P2P 真正連上，此時才切換到已連線 UI
 				t.mu.Lock()
 				t.connected = true
-				t.status = msg().Pair.StatusP2PWaiting
+				if t.relayed {
+					t.status = msg().Pair.StatusRelayWaiting
+				} else {
+					t.status = msg().Pair.StatusP2PWaiting
+				}
 				t.mu.Unlock()
 				t.window.Invalidate()
 				// 客戶端的 control channel → 啟動設備推送
@@ -313,12 +316,14 @@ func (t *pairTab) serverProcessOffer() {
 
 		pm.OnConnected(func(relayed bool) {
 			t.mu.Lock()
-			t.relayed = relayed
-			t.mu.Unlock()
+			t.connected = true
 			if relayed {
-				slog.Info("P2P connection is relayed through TURN server")
+				t.status = msg().Pair.StatusRelayConnected
+			} else {
+				t.status = msg().Pair.StatusP2PConnected
 			}
-			t.window.Invalidate()
+			t.mu.Unlock()
+			t.onConnectedHandler(relayed)
 		})
 
 		// 處理 Offer 並生成 Answer
@@ -348,7 +353,8 @@ func (t *pairTab) serverProcessOffer() {
 		t.window.Invalidate()
 
 		stepStarted = time.Now()
-		answerToken, err := bridge.EncodeToken(bridge.SDPToCompact(answerSDP))
+		compact := bridge.SDPToCompact(answerSDP)
+		answerToken, err := bridge.EncodeToken(compact)
 		slog.Debug("pair answer step", "step", "encode_answer", "elapsed_ms", time.Since(stepStarted).Milliseconds())
 		if err != nil {
 			slog.Warn("pair answer failed", "step", "encode_answer", "elapsed_ms", time.Since(startedAt).Milliseconds(), "error", err)
@@ -371,7 +377,9 @@ func (t *pairTab) serverProcessOffer() {
 		t.status = msg().Pair.StatusAnswerReady
 		t.mu.Unlock()
 		t.window.Invalidate()
-		slog.Info("answer code generated", "elapsed_ms", time.Since(startedAt).Milliseconds(), "token_len", len(answerToken))
+		host, srflx, relay := compact.CandidateStats()
+		slog.Info("answer code generated", "elapsed_ms", time.Since(startedAt).Milliseconds(), "token_len", len(answerToken),
+			"candidates_host", host, "candidates_srflx", srflx, "candidates_relay", relay)
 
 		// 啟動 RTT 延遲輪詢
 		go t.rttPollLoop(ctx, pm)
@@ -392,9 +400,17 @@ func (t *pairTab) devicePushLoop(ctx context.Context, controlCh io.ReadWriteClos
 			}
 		}
 		if online > 0 {
-			t.status = fmt.Sprintf(msg().Pair.StatusP2PDevicesFmt, online)
+			if t.relayed {
+				t.status = fmt.Sprintf(msg().Pair.StatusRelayDevicesFmt, online)
+			} else {
+				t.status = fmt.Sprintf(msg().Pair.StatusP2PDevicesFmt, online)
+			}
 		} else {
-			t.status = msg().Pair.StatusP2PWaiting
+			if t.relayed {
+				t.status = msg().Pair.StatusRelayWaiting
+			} else {
+				t.status = msg().Pair.StatusP2PWaiting
+			}
 		}
 		t.mu.Unlock()
 		t.window.Invalidate()

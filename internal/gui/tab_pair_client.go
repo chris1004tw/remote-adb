@@ -21,9 +21,15 @@ import (
 )
 
 const (
-	quickTurnCacheWaitTimeout   = 300 * time.Millisecond
-	quickOfferGatherTimeout     = 1500 * time.Millisecond
-	prewarmTurnCacheTimeout     = 10 * time.Second // 預產生邀請碼的 TURN 快取等待上限，避免 goroutine 永久阻塞
+	// 快速模式：犧牲部分 candidate 換取速度，但仍等待 TURN 避免純 STUN 對稱 NAT 必敗
+	quickTurnCacheWaitTimeout = 2 * time.Second
+	quickOfferGatherTimeout   = 5 * time.Second
+
+	// 一般模式即時產生（prewarm 不可用時）的 TURN 快取等待上限
+	normalTurnCacheWaitTimeout = 15 * time.Second
+
+	// 預產生邀請碼的 TURN 快取等待上限
+	prewarmTurnCacheTimeout = 10 * time.Second
 )
 
 // layoutClientWidgets 繪製主控模式的 UI 元件。
@@ -49,10 +55,20 @@ func (t *pairTab) layoutClientWidgets(gtx layout.Context, th *material.Theme) []
 		// 重新添加遠端 ADB 設備到本機（不小心在 Scrcpy GUI 等工具按了 disconnect 時使用）
 		for t.reconnectADBBtn.Clicked(gtx) {
 			if dpm != nil {
+				dpmCtx := dpm.Ctx()
 				for _, e := range dpm.Entries() {
 					target := fmt.Sprintf("127.0.0.1:%d", e.Port)
-					go adb.AutoConnect("", target, 0)
+					go adb.AutoConnect(dpmCtx, "", target, 0)
 				}
+			}
+		}
+		// 重新整理被控端設備清單
+		for t.refreshDevicesBtn.Clicked(gtx) {
+			t.mu.Lock()
+			ch := t.controlCh
+			t.mu.Unlock()
+			if ch != nil {
+				go bridge.SendCtrlRefresh(ch)
 			}
 		}
 
@@ -117,11 +133,20 @@ func (t *pairTab) layoutClientWidgets(gtx layout.Context, th *material.Theme) []
 			})
 		}
 
+		// 重新整理被控端設備按鈕（灰色，已連線時總是顯示）
+		widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				btn := material.Button(th, &t.refreshDevicesBtn, msg().Pair.RefreshDevices)
+				btn.Background = colorTabInactive
+				return btn.Layout(gtx)
+			})
+		})
+
 		// 結束連線按鈕
 		widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Top: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				btn := material.Button(th, &t.disconnectBtn, msg().Pair.DisconnectBtn)
-				btn.Background = color.NRGBA{R: 244, G: 67, B: 54, A: 255}
+				btn.Background = colorBtnStop
 				return btn.Layout(gtx)
 			})
 		})
@@ -158,7 +183,7 @@ func (t *pairTab) layoutClientWidgets(gtx layout.Context, th *material.Theme) []
 		func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				btn := material.Button(th, &t.cliGenOfferFastBtn, msg().Pair.GenerateOfferFast)
-				btn.Background = color.NRGBA{R: 255, G: 152, B: 0, A: 255}
+				btn.Background = colorWarning
 				return btn.Layout(gtx)
 			})
 		},
@@ -236,7 +261,8 @@ func (t *pairTab) maybeStartOfferPrewarm() {
 			return
 		}
 
-		offerToken, err := bridge.EncodeToken(bridge.SDPToCompact(offerSDP))
+		compact := bridge.SDPToCompact(offerSDP)
+		offerToken, err := bridge.EncodeToken(compact)
 		if err != nil {
 			slog.Warn("prewarm offer failed", "step", "encode_offer", "elapsed_ms", time.Since(startedAt).Milliseconds(), "error", err)
 			pm.Close()
@@ -270,7 +296,9 @@ func (t *pairTab) maybeStartOfferPrewarm() {
 		if oldControl != nil {
 			oldControl.Close()
 		}
-		slog.Info("invite code prewarmed", "elapsed_ms", time.Since(startedAt).Milliseconds(), "token_len", len(offerToken))
+		host, srflx, relay := compact.CandidateStats()
+		slog.Info("invite code prewarmed", "elapsed_ms", time.Since(startedAt).Milliseconds(), "token_len", len(offerToken),
+			"candidates_host", host, "candidates_srflx", srflx, "candidates_relay", relay)
 	}(done)
 }
 
@@ -374,7 +402,7 @@ func (t *pairTab) clientGenerateOffer(quick bool) {
 			t.window.Invalidate()
 		}
 		turnStart := time.Now()
-		waitTimeout := time.Duration(0)
+		waitTimeout := normalTurnCacheWaitTimeout
 		if quick {
 			waitTimeout = quickTurnCacheWaitTimeout
 		}
@@ -448,10 +476,13 @@ func (t *pairTab) clientGenerateOffer(quick bool) {
 		t.window.Invalidate()
 
 		stepStarted = time.Now()
-		offerToken, err := bridge.EncodeToken(bridge.SDPToCompact(offerSDP))
+		compact := bridge.SDPToCompact(offerSDP)
+		offerToken, err := bridge.EncodeToken(compact)
 		slog.Debug("pair offer step", "step", "encode_offer", "elapsed_ms", time.Since(stepStarted).Milliseconds())
 		if err != nil {
 			slog.Warn("pair offer failed", "step", "encode_offer", "elapsed_ms", time.Since(startedAt).Milliseconds(), "error", err)
+			pm.Close()
+			controlCh.Close()
 			t.mu.Lock()
 			t.status = fmt.Sprintf(msg().Pair.ErrEncodeOfferFmt, err)
 			t.mu.Unlock()
@@ -467,7 +498,9 @@ func (t *pairTab) clientGenerateOffer(quick bool) {
 		t.status = msg().Pair.StatusOfferReady
 		t.mu.Unlock()
 		t.window.Invalidate()
-		slog.Info("invite code generated", "mode", mode, "elapsed_ms", time.Since(startedAt).Milliseconds(), "token_len", len(offerToken))
+		host, srflx, relay := compact.CandidateStats()
+		slog.Info("invite code generated", "mode", mode, "elapsed_ms", time.Since(startedAt).Milliseconds(), "token_len", len(offerToken),
+			"candidates_host", host, "candidates_srflx", srflx, "candidates_relay", relay)
 	}()
 }
 
@@ -546,30 +579,8 @@ func (t *pairTab) clientApplyAnswer() {
 			t.window.Invalidate()
 		})
 
-		pm.OnConnected(func(relayed bool) {
-			t.mu.Lock()
-			t.relayed = relayed
-			t.mu.Unlock()
-			if relayed {
-				slog.Info("P2P connection is relayed through TURN server")
-			}
-			t.window.Invalidate()
-		})
-
-		if err := pm.HandleAnswer(bridge.CompactToSDP(answer)); err != nil {
-			cancel()
-			pm.Close() // 清理 ICE agent、DTLS transport、UDP socket
-			t.mu.Lock()
-			t.pm = nil
-			t.controlCh = nil
-			t.cancel = nil
-			t.status = fmt.Sprintf(msg().Pair.ErrHandleAnswerFmt, err)
-			t.mu.Unlock()
-			t.window.Invalidate()
-			return
-		}
-
-		// 建立 per-device proxy 管理器（每台設備獨立 port）
+		// 建立 per-device proxy 管理器（每台設備獨立 port）——
+		// 在 HandleAnswer 之前建立，確保 OnConnected 觸發時 dpm 已就緒
 		onReady, onRemoved := guiDeviceProxyCallbacks(t.window, "device proxy")
 		dpm := bridge.NewDeviceProxyManager(bridge.DeviceProxyConfig{
 			PortStart: proxyPort,
@@ -580,10 +591,41 @@ func (t *pairTab) clientApplyAnswer() {
 		})
 
 		t.mu.Lock()
-		t.connected = true
-		// t.cancel 已在 HandleAnswer 前存入，此處不需重複設定
 		t.dpm = dpm
-		t.status = msg().Pair.StatusP2PConnected
+		t.mu.Unlock()
+
+		// OnConnected：ICE 連線真正建立後才標記 connected = true
+		pm.OnConnected(func(relayed bool) {
+			t.mu.Lock()
+			t.connected = true
+			if relayed {
+				t.status = msg().Pair.StatusRelayConnected
+			} else {
+				t.status = msg().Pair.StatusP2PConnected
+			}
+			t.mu.Unlock()
+			t.onConnectedHandler(relayed)
+		})
+
+		// HandleAnswer 設定 remote SDP，觸發 ICE 連接嘗試
+		if err := pm.HandleAnswer(bridge.CompactToSDP(answer)); err != nil {
+			cancel()
+			dpm.Close()
+			pm.Close() // 清理 ICE agent、DTLS transport、UDP socket
+			t.mu.Lock()
+			t.pm = nil
+			t.dpm = nil
+			t.controlCh = nil
+			t.cancel = nil
+			t.status = fmt.Sprintf(msg().Pair.ErrHandleAnswerFmt, err)
+			t.mu.Unlock()
+			t.window.Invalidate()
+			return
+		}
+
+		// HandleAnswer 成功 → ICE 連接嘗試中，尚未真正連上
+		t.mu.Lock()
+		t.status = msg().Pair.StatusP2PConnecting
 		t.mu.Unlock()
 		t.window.Invalidate()
 
@@ -627,7 +669,19 @@ func (t *pairTab) controlReadLoop(ctx context.Context, controlCh io.ReadWriteClo
 				}
 			}
 			t.mu.Lock()
-			t.status = fmt.Sprintf(msg().Pair.StatusP2PDevicesFmt, count)
+			if count == 0 {
+				if t.relayed {
+					t.status = msg().Pair.StatusRelayWaiting
+				} else {
+					t.status = msg().Pair.StatusP2PWaiting
+				}
+			} else {
+				if t.relayed {
+					t.status = fmt.Sprintf(msg().Pair.StatusRelayDevicesFmt, count)
+				} else {
+					t.status = fmt.Sprintf(msg().Pair.StatusP2PDevicesFmt, count)
+				}
+			}
 			t.mu.Unlock()
 			t.window.Invalidate()
 		}

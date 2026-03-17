@@ -72,6 +72,7 @@ type pairMsg struct {
 	ClearBtn          string // "清除邀請碼 / 回應碼"
 	DisconnectBtn     string // "結束連線"
 	ReconnectADB      string // "重新添加遠端 ADB 設備到本機"
+	RefreshDevices    string // "重新偵測被控端 ADB 設備"
 
 	// 標籤 / Hint
 	OfferOutLabel  string // "邀請碼（已複製到剪貼簿，僅限使用一次）:"
@@ -100,12 +101,16 @@ type pairMsg struct {
 	StatusCreatingAnswer  string // "正在尋找最佳連線路徑，請稍候..."
 	StatusEncodingAnswer  string // "正在產生回應碼..."
 	StatusAnswerReady     string // "回應碼已產生（已複製到剪貼簿）"
-	StatusP2PConnected    string // "P2P 已連線"
-	StatusP2PDisconnected string // "P2P 已斷線"
-	StatusP2PProxyFmt     string // "P2P 已連線，ADB Proxy: 127.0.0.1:%d"
-	StatusP2PDevicesProxy string // "P2P 已連線，遠端 %d 個設備（ADB Proxy: 127.0.0.1:%d）"
-	StatusP2PWaiting      string // "P2P 已連線，等待設備..."
-	StatusP2PDevicesFmt   string // "P2P 已連線，%d 個設備"
+	StatusP2PConnecting   string // "正在嘗試與對方建立連線..."
+	StatusP2PConnected      string // "點對點直連，已連線"
+	StatusRelayConnected    string // "透過中繼伺服器已連線"
+	StatusP2PDisconnected   string // "點對點直連，已斷線"
+	StatusP2PProxyFmt       string // "點對點直連，已連線，ADB Proxy: 127.0.0.1:%d"
+	StatusP2PDevicesProxy   string // "點對點直連，已連線，遠端 %d 個設備（ADB Proxy: 127.0.0.1:%d）"
+	StatusP2PWaiting        string // "點對點直連，已連線，被控端無設備"
+	StatusRelayWaiting      string // "透過中繼伺服器，已連線，被控端無設備"
+	StatusP2PDevicesFmt     string // "點對點直連，已連線，%d 個設備"
+	StatusRelayDevicesFmt   string // "透過中繼伺服器，已連線，%d 個設備"
 	StatusControlClosed   string // "control channel 已關閉"
 
 	// 錯誤（格式字串，用 fmt.Sprintf 填入）
@@ -203,16 +208,20 @@ type settingsMsg struct {
 	UpdateNow          string // "立即更新"
 	BannerNewVerFmt    string // "新版本 %s 可用"
 	BannerDismiss      string // "稍後再說"
+	ConnModeLabel      string // "連線方式"
+	ConnModeDirectFirst string // "直連優先（預設）"
+	ConnModeDirectOnly string // "僅直連"
+	ConnModeRelayOnly  string // "僅中繼"
+	STUNLabel          string // "NAT 探測伺服器"
 	CustomStun         string // "自訂"
 	CustomStunOption   string // "自訂..."
-	TURNModeLabel      string // "TURN 伺服器"
+	TURNModeLabel      string // "中繼伺服器"
 	TURNModeCloudflare string // "Cloudflare（免費）"
-	TURNModeNone       string // "停用"
 	TURNModeCustom     string // "自訂"
-	TURNLabel          string // "TURN 位址"
+	TURNLabel          string // "中繼位址"
 	TURNHint           string // "turn:your.server.com:3478"
-	TURNUserLabel      string // "TURN 帳號"
-	TURNPassLabel      string // "TURN 密碼"
+	TURNUserLabel      string // "中繼帳號"
+	TURNPassLabel      string // "中繼密碼"
 	LanguageLabel      string // "語言"
 	LanguageAuto       string // "自動"
 
@@ -222,9 +231,10 @@ type settingsMsg struct {
 	StatusUpdateAvailFmt string // "有新版本可用：%s → %s"
 	StatusUpToDate       string // "已是最新版本"
 	StatusDownloading    string // "正在下載更新..."
-	StatusUpdateFailFmt  string // "更新失敗：%v"
-	StatusUpdatedFmt     string // "已更新至 %s，正在重新啟動..."
-	StatusRestartFailFmt string // "重啟失敗：%v"
+	StatusUpdateFailFmt      string // "更新失敗：%v"
+	StatusUpdatedFmt         string // "已更新至 %s，正在重新啟動..."
+	StatusRestartFailFmt     string // "重啟失敗：%v"
+	StatusUpdatePendingRestart string // "更新已下載，結束連線後將自動重啟"
 }
 
 // --- 全域語言狀態 ---
@@ -302,6 +312,7 @@ var messagesZhTW = Messages{
 		ClearBtn:          "清除邀請碼 / 回應碼",
 		DisconnectBtn:     "結束連線",
 		ReconnectADB:      "重新添加遠端 ADB 設備到本機",
+		RefreshDevices:    "重新偵測被控端 ADB 設備",
 
 		OfferOutLabel:  "邀請碼（已複製到剪貼簿，僅限使用一次）:",
 		AnswerInLabel:  "回應碼（貼入後自動連線）:",
@@ -328,12 +339,16 @@ var messagesZhTW = Messages{
 		StatusCreatingAnswer:  "正在尋找最佳連線路徑，請稍候...",
 		StatusEncodingAnswer:  "正在產生回應碼...",
 		StatusAnswerReady:     "回應碼已產生（已複製到剪貼簿）",
-		StatusP2PConnected:    "P2P 已連線",
-		StatusP2PDisconnected: "P2P 已斷線",
-		StatusP2PProxyFmt:     "P2P 已連線，ADB Proxy: 127.0.0.1:%d",
-		StatusP2PDevicesProxy: "P2P 已連線，遠端 %d 個設備（ADB Proxy: 127.0.0.1:%d）",
-		StatusP2PWaiting:      "P2P 已連線，等待設備...",
-		StatusP2PDevicesFmt:   "P2P 已連線，%d 個設備",
+		StatusP2PConnecting:   "正在嘗試與對方建立連線...",
+		StatusP2PConnected:    "點對點直連，已連線",
+		StatusRelayConnected:  "透過中繼伺服器，已連線",
+		StatusP2PDisconnected: "點對點直連，已斷線",
+		StatusP2PProxyFmt:     "點對點直連，已連線，ADB Proxy: 127.0.0.1:%d",
+		StatusP2PDevicesProxy: "點對點直連，已連線，遠端 %d 個設備（ADB Proxy: 127.0.0.1:%d）",
+		StatusP2PWaiting:      "點對點直連，已連線，被控端無設備",
+		StatusRelayWaiting:    "透過中繼伺服器，已連線，被控端無設備",
+		StatusP2PDevicesFmt:   "點對點直連，已連線，%d 個設備",
+		StatusRelayDevicesFmt: "透過中繼伺服器，已連線，%d 個設備",
 		StatusControlClosed:   "control channel 已關閉",
 
 		ErrCreatePCFmt:      "建立 PeerConnection 失敗: %v",
@@ -416,16 +431,20 @@ var messagesZhTW = Messages{
 		UpdateNow:          "立即更新",
 		BannerNewVerFmt:    "新版本 %s 可用",
 		BannerDismiss:      "稍後再說",
+		ConnModeLabel:       "連線方式",
+		ConnModeDirectFirst: "直連優先（預設）",
+		ConnModeDirectOnly: "僅直連",
+		ConnModeRelayOnly:  "僅中繼",
+		STUNLabel:          "NAT 探測伺服器",
 		CustomStun:         "自訂",
 		CustomStunOption:   "自訂...",
-		TURNModeLabel:      "TURN 伺服器",
+		TURNModeLabel:      "中繼伺服器",
 		TURNModeCloudflare: "Cloudflare（免費）",
-		TURNModeNone:       "停用",
 		TURNModeCustom:     "自訂...",
-		TURNLabel:          "TURN 位址",
+		TURNLabel:          "中繼位址",
 		TURNHint:           "turn:your.server.com:3478",
-		TURNUserLabel:      "TURN 帳號",
-		TURNPassLabel:      "TURN 密碼",
+		TURNUserLabel:      "中繼帳號",
+		TURNPassLabel:      "中繼密碼",
 		LanguageLabel:      "語言",
 		LanguageAuto:       "自動",
 
@@ -436,7 +455,8 @@ var messagesZhTW = Messages{
 		StatusDownloading:    "正在下載更新...",
 		StatusUpdateFailFmt:  "更新失敗：%v",
 		StatusUpdatedFmt:     "已更新至 %s，正在重新啟動...",
-		StatusRestartFailFmt: "重啟失敗：%v",
+		StatusRestartFailFmt:       "重啟失敗：%v",
+		StatusUpdatePendingRestart: "更新已下載，結束連線後將自動重啟",
 	},
 }
 
@@ -477,6 +497,7 @@ var messagesEN = Messages{
 		ClearBtn:          "Clear Codes",
 		DisconnectBtn:     "Disconnect",
 		ReconnectADB:      "Reconnect Remote ADB Devices",
+		RefreshDevices:    "Re-detect Remote ADB Devices",
 
 		OfferOutLabel:  "Invite code (copied to clipboard, single use):",
 		AnswerInLabel:  "Response code (auto-connect on paste):",
@@ -503,12 +524,16 @@ var messagesEN = Messages{
 		StatusCreatingAnswer:  "Finding the best connection path, please wait...",
 		StatusEncodingAnswer:  "Generating response code...",
 		StatusAnswerReady:     "Response code generated (copied to clipboard)",
+		StatusP2PConnecting:   "Connecting to remote peer...",
 		StatusP2PConnected:    "P2P connected",
+		StatusRelayConnected:  "Connected via relay server",
 		StatusP2PDisconnected: "P2P disconnected",
 		StatusP2PProxyFmt:     "P2P connected, ADB Proxy: 127.0.0.1:%d",
 		StatusP2PDevicesProxy: "P2P connected, %d remote device(s) (ADB Proxy: 127.0.0.1:%d)",
-		StatusP2PWaiting:      "P2P connected, waiting for devices...",
+		StatusP2PWaiting:      "P2P connected, no devices on agent",
+		StatusRelayWaiting:    "Connected via relay, no devices on agent",
 		StatusP2PDevicesFmt:   "P2P connected, %d device(s)",
+		StatusRelayDevicesFmt: "Connected via relay, %d device(s)",
 		StatusControlClosed:   "Control channel closed",
 
 		ErrCreatePCFmt:      "Failed to create PeerConnection: %v",
@@ -591,11 +616,15 @@ var messagesEN = Messages{
 		UpdateNow:          "Update Now",
 		BannerNewVerFmt:    "Version %s available",
 		BannerDismiss:      "Later",
+		ConnModeLabel:       "Connection Mode",
+		ConnModeDirectFirst: "Direct First (Default)",
+		ConnModeDirectOnly: "Direct Only",
+		ConnModeRelayOnly:  "Relay Only",
+		STUNLabel:          "STUN Server",
 		CustomStun:         "Custom",
 		CustomStunOption:   "Custom...",
 		TURNModeLabel:      "TURN Server",
 		TURNModeCloudflare: "Cloudflare (Free)",
-		TURNModeNone:       "Disabled",
 		TURNModeCustom:     "Custom...",
 		TURNLabel:          "TURN Address",
 		TURNHint:           "turn:your.server.com:3478",
@@ -611,6 +640,7 @@ var messagesEN = Messages{
 		StatusDownloading:    "Downloading update...",
 		StatusUpdateFailFmt:  "Update failed: %v",
 		StatusUpdatedFmt:     "Updated to %s, restarting...",
-		StatusRestartFailFmt: "Restart failed: %v",
+		StatusRestartFailFmt:       "Restart failed: %v",
+		StatusUpdatePendingRestart: "Update downloaded, will restart after connections are closed",
 	},
 }

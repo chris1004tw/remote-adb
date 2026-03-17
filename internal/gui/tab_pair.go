@@ -26,8 +26,8 @@ package gui
 
 import (
 	"context"
-	"image/color"
 	"io"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -125,10 +125,11 @@ type pairTab struct {
 	// TURN 不可用警告（mutex 保護）
 	turnWarning string
 
-	// 結束連線 / 清除 / 重新加入 ADB 按鈕
-	disconnectBtn   widget.Clickable
-	clearBtn        widget.Clickable
-	reconnectADBBtn widget.Clickable
+	// 結束連線 / 清除 / 重新加入 ADB / 重新整理設備 按鈕
+	disconnectBtn     widget.Clickable
+	clearBtn          widget.Clickable
+	reconnectADBBtn   widget.Clickable
+	refreshDevicesBtn widget.Clickable
 
 	// 捲動清單
 	list widget.List
@@ -250,7 +251,7 @@ func (t *pairTab) layout(gtx layout.Context, th *material.Theme) layout.Dimensio
 				widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
 					c := colorPanelHint
 					if connected {
-						c = color.NRGBA{R: 76, G: 175, B: 80, A: 255}
+						c = colorStatusOnline
 					}
 					return layout.Inset{Top: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 						return statusText(gtx, th, msg().Common.StatusPrefix+status, c)
@@ -261,7 +262,7 @@ func (t *pairTab) layout(gtx layout.Context, th *material.Theme) layout.Dimensio
 				if turnWarning != "" {
 					widgets = append(widgets, func(gtx layout.Context) layout.Dimensions {
 						return layout.Inset{Top: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							return statusText(gtx, th, turnWarning, color.NRGBA{R: 255, G: 152, B: 0, A: 255})
+							return statusText(gtx, th, turnWarning, colorWarning)
 						})
 					})
 				}
@@ -390,4 +391,16 @@ func (t *pairTab) cleanup() {
 			prewarmControl.Close()
 		}
 	}()
+}
+
+// onConnectedHandler 是 pm.OnConnected 的共用回呼，主控端與被控端共用。
+// 記錄 relay 狀態並通知 UI 刷新。
+func (t *pairTab) onConnectedHandler(relayed bool) {
+	t.mu.Lock()
+	t.relayed = relayed
+	t.mu.Unlock()
+	if relayed {
+		slog.Info("P2P connection is relayed through TURN server")
+	}
+	t.window.Invalidate()
 }

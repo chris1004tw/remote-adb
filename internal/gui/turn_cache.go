@@ -40,7 +40,10 @@ func newTURNCache() *turnCache {
 // 取得結果（成功或失敗）存入快取，完成後 close(done) 通知等待者。
 func (tc *turnCache) startFetch() {
 	go func() {
-		servers, err := webrtc.FetchCloudflareTURN(context.Background(), nil)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		servers, err := webrtc.FetchCloudflareTURN(ctx, nil)
 		tc.mu.Lock()
 		tc.servers = servers
 		tc.err = err

@@ -8,8 +8,8 @@
 package gui
 
 import (
+	"context"
 	"fmt"
-	"image/color"
 	"log/slog"
 	"time"
 
@@ -32,11 +32,11 @@ const guiAutoConnectDelay = 300 * time.Millisecond
 //   - 背景 goroutine 自動 adb connect/disconnect
 //
 // logPrefix 範例："device proxy"（P2P 分頁）、"LAN device proxy"（區網直連分頁）
-func guiDeviceProxyCallbacks(win *app.Window, logPrefix string) (onReady func(string, int), onRemoved func(string, int)) {
-	onReady = func(serial string, port int) {
+func guiDeviceProxyCallbacks(win *app.Window, logPrefix string) (onReady func(context.Context, string, int), onRemoved func(string, int)) {
+	onReady = func(ctx context.Context, serial string, port int) {
 		slog.Info(logPrefix+" ready", "serial", serial, "port", port)
 		win.Invalidate()
-		go adb.AutoConnect("", fmt.Sprintf("127.0.0.1:%d", port), guiAutoConnectDelay)
+		go adb.AutoConnect(ctx, "", fmt.Sprintf("127.0.0.1:%d", port), guiAutoConnectDelay)
 	}
 	onRemoved = func(serial string, port int) {
 		slog.Info(logPrefix+" removed", "serial", serial, "port", port)
@@ -62,11 +62,16 @@ func layoutDeviceEntries(gtx layout.Context, th *material.Theme, entries []bridg
 		}),
 	}
 	for _, e := range entries {
-		text := fmt.Sprintf("    %s [device] → 127.0.0.1:%d", e.Serial, e.Port)
+		var text string
+		if e.Model != "" {
+			text = fmt.Sprintf("    %s (%s) → 127.0.0.1:%d", e.Model, e.Serial, e.Port)
+		} else {
+			text = fmt.Sprintf("    %s [device] → 127.0.0.1:%d", e.Serial, e.Port)
+		}
 		items = append(items, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Left: unit.Dp(16), Top: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				lbl := material.Body2(th, text)
-				lbl.Color = color.NRGBA{R: 76, G: 175, B: 80, A: 255}
+				lbl.Color = colorStatusOnline
 				return lbl.Layout(gtx)
 			})
 		}))

@@ -69,15 +69,56 @@ func Run() {
 	app.Main()
 }
 
-// loadCJKFaces 從候選路徑列表載入第一個可用的 CJK 字型，回傳解析出的字型面。
+// cachedCJKFaces 儲存預先載入的 CJK 字型面（在 setupLog 之前讀取，避免 handle 干擾）。
+// PreloadCJKFonts 寫入，newThemeWithCJK 讀取。
+var cachedCJKFaces []font.FontFace
+var cjkPreloaded bool
+
+// PreloadCJKFonts 在 setupLog 之前呼叫，預先讀取並解析 CJK 字型。
+//
+// 必須在 setupLog / debug.SetCrashOutput 之前執行：
+// Windows 上 SetCrashOutput 可能操作 fd 2（stderr）的底層 handle，
+// 導致後續 os.ReadFile 建立的 file handle 偶發性失效（"The handle is invalid"）。
+// 將字型讀取提前到 log 初始化之前，完全避開此問題。
 //
 // 解析大型 TTC 字型（如 msjh.ttc ~21MB）會大量分配記憶體，觸發 GC stop-the-world。
 // Go 1.26 在 Windows 上的 preemptM 有已知問題，GC 搶占可能導致 runtime.throw crash。
 // 因此在 ParseCollection 期間暫時停用 GC，解析完成後恢復並手動觸發一次回收。
+func PreloadCJKFonts() {
+	var fontPaths []string
+	switch runtime.GOOS {
+	case "darwin":
+		fontPaths = []string{
+			"/System/Library/Fonts/PingFang.ttc",
+		}
+	case "windows":
+		winDir := os.Getenv("WINDIR")
+		if winDir == "" {
+			winDir = `C:\Windows`
+		}
+		fontPaths = []string{
+			winDir + `\Fonts\msjh.ttc`,
+		}
+	default:
+		fontPaths = []string{
+			"/usr/share/fonts/opentype/noto/NotoSansCJKTC-Regular.otf",
+			"/usr/share/fonts/noto-cjk/NotoSansCJKTC-Regular.otf",
+			"/usr/share/fonts/google-noto-cjk-tc/NotoSansCJKTC-Regular.otf",
+			"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+			"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+		}
+	}
+
+	cachedCJKFaces = loadCJKFaces(fontPaths)
+	cjkPreloaded = true
+}
+
+// loadCJKFaces 從候選路徑列表載入第一個可用的 CJK 字型，回傳解析出的字型面。
 func loadCJKFaces(fontPaths []string) []font.FontFace {
 	for _, p := range fontPaths {
 		data, err := os.ReadFile(p)
 		if err != nil {
+			// setupLog 之前 slog 尚未初始化，此處的 log 會在初始化後被讀到
 			slog.Debug("CJK font file not found", "path", p, "error", err)
 			continue
 		}
@@ -121,32 +162,8 @@ func loadCJKFaces(fontPaths []string) []font.FontFace {
 func newThemeWithCJK() *material.Theme {
 	th := material.NewTheme()
 
-	var fontPaths []string
-	switch runtime.GOOS {
-	case "darwin":
-		fontPaths = []string{
-			"/System/Library/Fonts/PingFang.ttc",
-		}
-	case "windows":
-		winDir := os.Getenv("WINDIR")
-		if winDir == "" {
-			winDir = `C:\Windows`
-		}
-		fontPaths = []string{
-			winDir + `\Fonts\msjh.ttc`,
-		}
-	default: // Linux
-		// 優先使用 Noto Sans CJK TC（繁體中文）OTF，找不到才 fallback 到通用 TTC
-		fontPaths = []string{
-			"/usr/share/fonts/opentype/noto/NotoSansCJKTC-Regular.otf",
-			"/usr/share/fonts/noto-cjk/NotoSansCJKTC-Regular.otf",
-			"/usr/share/fonts/google-noto-cjk-tc/NotoSansCJKTC-Regular.otf",
-			"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-			"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-		}
-	}
-
-	cjkFaces := loadCJKFaces(fontPaths)
+	// 使用 PreloadCJKFonts 預先載入的快取結果（避免重複讀取 21MB 字型檔）
+	cjkFaces := cachedCJKFaces
 
 	if len(cjkFaces) > 0 {
 		// CJK 字型放前面優先使用，Go 內建字型作為 fallback
@@ -199,6 +216,31 @@ func eventLoop(w *app.Window) error {
 			{title: msg().App.TabLAN, layoutFn: lt.layout},
 			{title: msg().App.TabSignal, layoutFn: st.layout},
 		},
+	}
+
+	// 設定連線狀態查詢函式（更新重啟時需檢查是否有活動連線）
+	sp.isAnyConnected = func() bool {
+		pt.mu.Lock()
+		p2p := pt.connected
+		pt.mu.Unlock()
+
+		lt.srvMu.Lock()
+		lanSrv := lt.srvRunning
+		lt.srvMu.Unlock()
+
+		lt.cliMu.Lock()
+		lanCli := lt.connected
+		lt.cliMu.Unlock()
+
+		st.srvMu.Lock()
+		relaySrv := st.srvRunning
+		st.srvMu.Unlock()
+
+		st.clientMu.Lock()
+		relayCli := st.clientRunning
+		st.clientMu.Unlock()
+
+		return p2p || lanSrv || lanCli || relaySrv || relayCli
 	}
 
 	// 啟動時自動檢查更新（背景 goroutine，不阻塞 UI）
@@ -305,6 +347,9 @@ var (
 	colorPanelText    = color.NRGBA{R: 240, G: 240, B: 240, A: 255} // 面板主要文字
 	colorPanelHint    = color.NRGBA{R: 200, G: 200, B: 200, A: 255} // 面板次要文字 / 區塊標題
 	colorPanelDivider = color.NRGBA{R: 80, G: 80, B: 80, A: 255}    // 面板分隔線
+	colorBtnStop      = color.NRGBA{R: 244, G: 67, B: 54, A: 255}   // 紅色（停止/斷線按鈕）Material Red 500
+	colorStatusOnline = color.NRGBA{R: 76, G: 175, B: 80, A: 255}   // 綠色（在線/執行中狀態）Material Green 500
+	colorWarning      = color.NRGBA{R: 255, G: 152, B: 0, A: 255}   // 橘色（警告/TURN 提示）Material Orange 500
 )
 
 func (t *tabBar) layout(gtx layout.Context, th *material.Theme) layout.Dimensions {
@@ -452,7 +497,7 @@ func statusText(gtx layout.Context, th *material.Theme, text string, c color.NRG
 func relayBanner(th *material.Theme) layout.Widget {
 	return func(gtx layout.Context) layout.Dimensions {
 		return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			bgColor := color.NRGBA{R: 255, G: 152, B: 0, A: 255} // Material Orange 500
+			bgColor := colorWarning
 			return layout.Stack{}.Layout(gtx,
 				layout.Expanded(func(gtx layout.Context) layout.Dimensions {
 					size := image.Pt(gtx.Constraints.Min.X, gtx.Constraints.Min.Y)
@@ -498,6 +543,10 @@ func generateToken() string {
 // tab_signal.go、tab_pair_client.go、tab_pair_server.go 共用此邏輯。
 func resolveICEWithTURN(config *AppConfig, tc *turnCache, timeout time.Duration) (webrtc.ICEConfig, string) {
 	iceConfig := parseICEConfig(config)
+	// 僅直連模式：parseICEConfig 已跳過 TURN，不需要查詢快取
+	if config.ConnectionMode == ConnModeDirectOnly {
+		return iceConfig, ""
+	}
 	if config.TURNMode == TURNModeCloudflare {
 		servers, warning := tc.getServers(timeout)
 		if warning != "" {
@@ -510,12 +559,30 @@ func resolveICEWithTURN(config *AppConfig, tc *turnCache, timeout time.Duration)
 
 // parseICEConfig 根據 AppConfig 的 STUN/TURN 設定建構 ICEConfig。
 // STUN 設定為逗號分隔的 URL 字串；自訂 TURN 設定包含 URL、帳號、密碼三個欄位。
+// ConnectionMode 控制 ICE candidate 收集策略：
+//   - direct-first（預設）：收集所有 candidate（STUN + TURN），優先嘗試直連
+//   - direct-only：僅使用 STUN，不加入 TURN 伺服器
+//   - relay-only：設定 RelayOnly=true（ICETransportPolicy=relay），跳過直連嘗試
+//
 // 注意：此函式僅處理 custom 模式的 TURN，Cloudflare 模式請用 resolveICEWithTURN。
 func parseICEConfig(cfg *AppConfig) webrtc.ICEConfig {
 	ice := webrtc.ICEConfig{}
+
+	// 僅中繼模式：設定 RelayOnly，STUN 伺服器不需要（relay-only 不收集 srflx candidate）
+	if cfg.ConnectionMode == ConnModeRelayOnly {
+		ice.RelayOnly = true
+	}
+
+	// STUN 伺服器（直連優先和僅直連模式需要）
 	if cfg.STUNServer != "" {
 		ice.STUNServers = strings.Split(cfg.STUNServer, ",")
 	}
+
+	// 僅直連模式：不加入 TURN 伺服器
+	if cfg.ConnectionMode == ConnModeDirectOnly {
+		return ice
+	}
+
 	if cfg.TURNMode == TURNModeCustom && cfg.TURNServer != "" {
 		ice.TURNServers = []webrtc.TURNServer{
 			{URL: cfg.TURNServer, Username: cfg.TURNUser, Credential: cfg.TURNPass},
@@ -535,8 +602,14 @@ func parseICEConfig(cfg *AppConfig) webrtc.ICEConfig {
 //   - ""（空）：不使用 TURN，僅 STUN
 func resolveICEConfig(ctx context.Context, cfg *AppConfig) (webrtc.ICEConfig, error) {
 	ice := webrtc.ICEConfig{}
+	if cfg.ConnectionMode == ConnModeRelayOnly {
+		ice.RelayOnly = true
+	}
 	if cfg.STUNServer != "" {
 		ice.STUNServers = strings.Split(cfg.STUNServer, ",")
+	}
+	if cfg.ConnectionMode == ConnModeDirectOnly {
+		return ice, nil
 	}
 
 	switch cfg.TURNMode {

@@ -24,7 +24,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 
@@ -36,6 +35,7 @@ import (
 
 	"github.com/chris1004tw/remote-adb/internal/adb"
 	"github.com/chris1004tw/remote-adb/internal/agent"
+	"github.com/chris1004tw/remote-adb/internal/buildinfo"
 	"github.com/chris1004tw/remote-adb/internal/daemon"
 	"github.com/chris1004tw/remote-adb/internal/signal"
 	"github.com/chris1004tw/remote-adb/pkg/protocol"
@@ -126,7 +126,7 @@ func newSignalTab(w *app.Window, config *AppConfig, tc *turnCache) *signalTab {
 	t.agentURLEditor.SetText("ws://localhost:8080")
 	t.agentTokenEditor.SingleLine = true
 	t.agentHostEditor.SingleLine = true
-	if h, _ := os.Hostname(); h != "" {
+	if h := buildinfo.Hostname(); h != "" {
 		t.agentHostEditor.SetText(h)
 	} else {
 		t.agentHostEditor.SetText("radb-gui")
@@ -251,7 +251,7 @@ func (t *signalTab) layoutServer(gtx layout.Context, th *material.Theme) []layou
 			}
 			btn := material.Button(th, &t.srvStartBtn, label)
 			if running {
-				btn.Background = color.NRGBA{R: 244, G: 67, B: 54, A: 255}
+				btn.Background = colorBtnStop
 			}
 			return btn.Layout(gtx)
 		}),
@@ -259,7 +259,7 @@ func (t *signalTab) layoutServer(gtx layout.Context, th *material.Theme) []layou
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			c := colorPanelHint
 			if running {
-				c = color.NRGBA{R: 76, G: 175, B: 80, A: 255}
+				c = colorStatusOnline
 			}
 			return layout.Inset{Top: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				return statusText(gtx, th, msg().Common.StatusPrefix+status, c)
@@ -310,10 +310,12 @@ func (t *signalTab) startSignalServer() {
 		}
 	}()
 
-	// 監聽 cancel 來關閉 httpServer
+	// 監聽 cancel 來關閉 httpServer（5 秒逾時保護，避免 Shutdown 永久阻塞）
 	go func() {
 		<-ctx.Done()
-		t.httpServer.Shutdown(context.Background())
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		t.httpServer.Shutdown(shutdownCtx)
 	}()
 }
 
@@ -381,7 +383,7 @@ func (t *signalTab) layoutAgent(gtx layout.Context, th *material.Theme) []layout
 			}
 			btn := material.Button(th, &t.agentStartBtn, label)
 			if running {
-				btn.Background = color.NRGBA{R: 244, G: 67, B: 54, A: 255}
+				btn.Background = colorBtnStop
 			}
 			return btn.Layout(gtx)
 		}),
@@ -389,7 +391,7 @@ func (t *signalTab) layoutAgent(gtx layout.Context, th *material.Theme) []layout
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			c := colorPanelHint
 			if running {
-				c = color.NRGBA{R: 76, G: 175, B: 80, A: 255}
+				c = colorStatusOnline
 			}
 			return layout.Inset{Top: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				return statusText(gtx, th, msg().Common.StatusPrefix+status, c)
@@ -652,7 +654,7 @@ func (t *signalTab) layoutClient(gtx layout.Context, th *material.Theme) []layou
 		}
 		btn := material.Button(th, &t.clientConnectBtn, label)
 		if running {
-			btn.Background = color.NRGBA{R: 244, G: 67, B: 54, A: 255}
+			btn.Background = colorBtnStop
 		}
 		return btn.Layout(gtx)
 	}))
@@ -661,7 +663,7 @@ func (t *signalTab) layoutClient(gtx layout.Context, th *material.Theme) []layou
 	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 		c := colorPanelHint
 		if running {
-			c = color.NRGBA{R: 76, G: 175, B: 80, A: 255}
+			c = colorStatusOnline
 		}
 		return layout.Inset{Top: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return statusText(gtx, th, msg().Common.StatusPrefix+status, c)

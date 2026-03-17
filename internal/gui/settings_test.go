@@ -37,18 +37,19 @@ func TestSettingsEventLoopDefer_OnlyClearsOwnWindow(t *testing.T) {
 	}
 }
 
-// TestSyncEditorsFromConfig_TURNModeNone 驗證 syncEditorsFromConfig 將
-// TURNModeNone（"none"）和空字串（""）正確映射到「停用」選項（索引 1）。
-func TestSyncEditorsFromConfig_TURNModeNone(t *testing.T) {
+// TestSyncEditorsFromConfig_TURNMode 驗證 syncEditorsFromConfig 將
+// TURNMode 正確映射到下拉選單索引（0=Cloudflare, 1=自訂）。
+// "none" 和空字串因為是舊設定，映射到 Cloudflare（索引 0）。
+func TestSyncEditorsFromConfig_TURNMode(t *testing.T) {
 	tests := []struct {
 		name     string
 		turnMode string
 		wantIdx  int
 	}{
-		{"none 字串", TURNModeNone, 1},
-		{"空字串", "", 1},
+		{"none 字串（舊設定相容）", TURNModeNone, 0},
+		{"空字串（舊設定相容）", "", 0},
 		{"cloudflare", TURNModeCloudflare, 0},
-		{"custom", TURNModeCustom, 2},
+		{"custom", TURNModeCustom, 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -63,16 +64,15 @@ func TestSyncEditorsFromConfig_TURNModeNone(t *testing.T) {
 	}
 }
 
-// TestSave_TURNModeNone 驗證 save() 在「停用」選項（索引 1）時將 TURNMode 設為 TURNModeNone。
-func TestSave_TURNModeNone(t *testing.T) {
+// TestSave_TURNMode 驗證 save() 根據下拉選單索引正確寫入 TURNMode（0=Cloudflare, 1=自訂）。
+func TestSave_TURNMode(t *testing.T) {
 	tests := []struct {
 		name     string
 		selected int
 		wantMode string
 	}{
 		{"Cloudflare", 0, TURNModeCloudflare},
-		{"停用", 1, TURNModeNone},
-		{"自訂", 2, TURNModeCustom},
+		{"自訂", 1, TURNModeCustom},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -85,6 +85,59 @@ func TestSave_TURNModeNone(t *testing.T) {
 			p.save()
 			if p.config.TURNMode != tt.wantMode {
 				t.Errorf("TURNMode = %q, want %q", p.config.TURNMode, tt.wantMode)
+			}
+		})
+	}
+}
+
+// TestSyncEditorsFromConfig_ConnMode 驗證 syncEditorsFromConfig 將
+// ConnectionMode 正確映射到下拉選單索引（0=直連優先, 1=僅直連, 2=僅中繼）。
+func TestSyncEditorsFromConfig_ConnMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		connMode string
+		wantIdx  int
+	}{
+		{"direct-first", ConnModeDirectFirst, 0},
+		{"空字串（預設）", "", 0},
+		{"direct-only", ConnModeDirectOnly, 1},
+		{"relay-only", ConnModeRelayOnly, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &settingsPanel{
+				config: &AppConfig{ConnectionMode: tt.connMode},
+			}
+			p.syncEditorsFromConfig()
+			if p.connModeSelected != tt.wantIdx {
+				t.Errorf("connModeSelected = %d, want %d (ConnectionMode=%q)", p.connModeSelected, tt.wantIdx, tt.connMode)
+			}
+		})
+	}
+}
+
+// TestSave_ConnMode 驗證 save() 根據下拉選單索引正確寫入 ConnectionMode。
+func TestSave_ConnMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		selected int
+		wantMode string
+	}{
+		{"直連優先", 0, ConnModeDirectFirst},
+		{"僅直連", 1, ConnModeDirectOnly},
+		{"僅中繼", 2, ConnModeRelayOnly},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			p := &settingsPanel{
+				config:     &AppConfig{ADBPort: 5037, ProxyPort: 5555, DirectPort: 15555},
+				configPath: dir + "/radb.toml",
+			}
+			p.connModeSelected = tt.selected
+			p.save()
+			if p.config.ConnectionMode != tt.wantMode {
+				t.Errorf("ConnectionMode = %q, want %q", p.config.ConnectionMode, tt.wantMode)
 			}
 		})
 	}

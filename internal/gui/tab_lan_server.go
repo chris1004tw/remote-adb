@@ -7,9 +7,7 @@ package gui
 import (
 	"context"
 	"fmt"
-	"image/color"
 	"net"
-	"os"
 	"time"
 
 	"gioui.org/layout"
@@ -18,6 +16,7 @@ import (
 
 	"github.com/chris1004tw/remote-adb/internal/adb"
 	"github.com/chris1004tw/remote-adb/internal/agent"
+	"github.com/chris1004tw/remote-adb/internal/buildinfo"
 	"github.com/chris1004tw/remote-adb/internal/directsrv"
 )
 
@@ -53,7 +52,7 @@ func (t *lanTab) layoutServer(gtx layout.Context, th *material.Theme) []layout.F
 		}
 		btn := material.Button(th, &t.srvStartBtn, label)
 		if running {
-			btn.Background = color.NRGBA{R: 244, G: 67, B: 54, A: 255}
+			btn.Background = colorBtnStop
 		}
 		return btn.Layout(gtx)
 	}))
@@ -61,7 +60,7 @@ func (t *lanTab) layoutServer(gtx layout.Context, th *material.Theme) []layout.F
 	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 		c := colorPanelHint
 		if running {
-			c = color.NRGBA{R: 76, G: 175, B: 80, A: 255}
+			c = colorStatusOnline
 		}
 		return layout.Inset{Top: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return statusText(gtx, th, msg().Common.StatusPrefix+status, c)
@@ -136,7 +135,7 @@ func (t *lanTab) startServer() {
 			return
 		}
 
-		hostname, _ := os.Hostname()
+		hostname := buildinfo.Hostname()
 		if hostname == "" {
 			hostname = "radb-gui"
 		}
