@@ -18,10 +18,16 @@ Thumbs.db
 # Go
 vendor/
 *.syso
+.gocache/
 
 # Logs
 *.log
+radb_logs/
+
+# Config (runtime-generated)
+radb.toml
 
 # Claude Code
 .claude/
+CLAUDE.md
 OPTIMIZATION_PLAN.md
