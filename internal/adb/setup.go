@@ -1,8 +1,8 @@
 // setup.go 提供 ADB 環境的自動偵測、下載與啟動功能。
 //
 // 目的：讓使用者不需手動安裝 Android Platform Tools，radb 會自動處理。
-// 下載的 ADB 會快取在 ~/.radb/platform-tools/ 目錄下，避免重複下載。
-// 此功能主要供 GUI 模式使用（CLI 使用者通常已有 ADB 環境）。
+// 下載的 ADB 會快取在 exe 同目錄的 platform-tools/ 下，避免重複下載。
+// 不搜尋系統 PATH，確保使用 radb 自帶的 ADB，避免版本不一致問題。
 
 package adb
 
@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -37,13 +38,19 @@ func platformToolsURL() string {
 	)
 }
 
-// adbDataDir 回傳 ~/.radb/platform-tools/ 路徑。
-func adbDataDir() (string, error) {
-	home, err := os.UserHomeDir()
+// exeDir 快取 exe 所在目錄路徑，避免重複呼叫 os.Executable()。
+var exeDir = sync.OnceValue(func() string {
+	p, err := os.Executable()
 	if err != nil {
-		return "", fmt.Errorf("get home directory: %w", err)
+		return "."
 	}
-	return filepath.Join(home, ".radb", "platform-tools"), nil
+	return filepath.Dir(p)
+})
+
+// adbDataDir 回傳 exe 同目錄下的 platform-tools/ 路徑。
+// 所有 ADB 工具集中在 exe 旁邊，實現自包含可攜部署。
+func adbDataDir() (string, error) {
+	return filepath.Join(exeDir(), "platform-tools"), nil
 }
 
 // IsADBServerRunning 嘗試連線 ADB server 確認是否運行中。
@@ -56,26 +63,18 @@ func IsADBServerRunning(addr string) bool {
 	return true
 }
 
-// FindADBBinary 在 PATH 和本地快取目錄中尋找 adb 二進位檔。
+// FindADBBinary 在 exe 同目錄的 platform-tools/ 中尋找 adb 二進位檔。
+// 不搜尋系統 PATH，確保使用 radb 自帶的 ADB。
 // 找到時回傳完整路徑，找不到回傳空字串。
 func FindADBBinary() string {
-	name := adbBinaryName()
-
-	// 先查 PATH
-	if p, err := exec.LookPath(name); err == nil {
-		return p
-	}
-
-	// 再查本地快取目錄
 	dir, err := adbDataDir()
 	if err != nil {
 		return ""
 	}
-	localPath := filepath.Join(dir, name)
+	localPath := filepath.Join(dir, adbBinaryName())
 	if _, err := os.Stat(localPath); err == nil {
 		return localPath
 	}
-
 	return ""
 }
 

@@ -34,10 +34,11 @@ func TestAdbDataDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	home, _ := os.UserHomeDir()
-	expected := filepath.Join(home, ".radb", "platform-tools")
+	// adbDataDir 應回傳 exe 同目錄下的 platform-tools/（自包含可攜部署）
+	exePath, _ := os.Executable()
+	expected := filepath.Join(filepath.Dir(exePath), "platform-tools")
 	if dir != expected {
-		t.Errorf("預期 %q，得到 %q", expected, dir)
+		t.Errorf("expected %q, got %q", expected, dir)
 	}
 }
 
