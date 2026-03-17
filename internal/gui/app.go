@@ -45,6 +45,7 @@ import (
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 
+	"github.com/chris1004tw/remote-adb/internal/adb"
 	"github.com/chris1004tw/remote-adb/internal/buildinfo"
 	"github.com/chris1004tw/remote-adb/internal/gui/icons"
 	"github.com/chris1004tw/remote-adb/internal/webrtc"
@@ -245,6 +246,19 @@ func eventLoop(w *app.Window) error {
 
 	// 啟動時自動檢查更新（背景 goroutine，不阻塞 UI）
 	sp.startCheckUpdate()
+
+	// 啟動時背景預熱 bundled ADB，統一本機 server 來源，避免混用其他 adb.exe。
+	go func(adbPort int) {
+		adbAddr := fmt.Sprintf("127.0.0.1:%d", adbPort)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
+		if err := adb.EnsureADB(ctx, adbAddr, nil); err != nil {
+			slog.Warn("adb warmup failed", "addr", adbAddr, "error", err)
+			return
+		}
+		slog.Info("adb warmup complete", "addr", adbAddr)
+	}(sp.config.ADBPort)
 
 	// 齒輪按鈕（右下角）
 	var gearBtn widget.Clickable

@@ -53,13 +53,23 @@ func (t *pairTab) layoutClientWidgets(gtx layout.Context, th *material.Theme) []
 			t.disconnect()
 		}
 		// 重新添加遠端 ADB 設備到本機（不小心在 Scrcpy GUI 等工具按了 disconnect 時使用）
+		// 除了逐一重新 connect 之外，也會先重啟一次本機 ADB server，
+		// 清掉卡住或殘留的 transport（例如 Scrcpy GUI 中多出的幽靈項目），
+		// 再把目前這批 per-device proxy 重新掛回。
 		for t.reconnectADBBtn.Clicked(gtx) {
 			if dpm != nil {
 				dpmCtx := dpm.Ctx()
-				for _, e := range dpm.Entries() {
-					target := fmt.Sprintf("127.0.0.1:%d", e.Port)
-					go adb.AutoConnect(dpmCtx, "", target, 0)
+				entries := dpm.Entries()
+				targets := make([]string, 0, len(entries))
+				for _, e := range entries {
+					targets = append(targets, fmt.Sprintf("127.0.0.1:%d", e.Port))
 				}
+				adbAddr := fmt.Sprintf("127.0.0.1:%d", t.config.ADBPort)
+				go func() {
+					if err := adb.RefreshServerAndReconnect(dpmCtx, adbAddr, targets); err != nil && dpmCtx.Err() == nil {
+						slog.Warn("refresh remote ADB devices failed", "error", err, "targets", len(targets))
+					}
+				}()
 			}
 		}
 		// 重新整理被控端設備清單
