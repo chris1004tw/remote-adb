@@ -32,7 +32,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -44,14 +43,32 @@ import (
 )
 
 func main() {
+	// 降低 GC 頻率：Go 1.25/1.26 Windows runtime 的 preemptM 在 GC 掃描
+	// goroutine stack 時有搶占 bug（os_windows.go），高併發 DataChannel 場景
+	// 下容易觸發。GOGC=400 讓記憶體達到 ~5 倍 live heap 才觸發 GC，
+	// 大幅減少 GC 掃描次數以避開此 bug。桌面應用 133MB→660MB 可接受。
+	debug.SetGCPercent(400)
+
+	// 搬遷後清理舊 exe（由 RADB_RELOCATE_CLEANUP 環境變數觸發）
+	cleanupRelocateSource()
+
 	// 清理上次更新留下的 .old 備份檔案
 	if selfPath, err := os.Executable(); err == nil {
 		updater.CleanupOldBinaries(filepath.Dir(selfPath))
 	}
 
 	if len(os.Args) < 2 {
+		// GUI 模式：若 exe 不在 radb/ 資料夾中，自動搬遷並重新啟動
+		if maybeRelocate() {
+			return // 新 instance 已啟動，當前 process 退出
+		}
+		// 遷移舊版路徑資料到 exe 同目錄（搬遷完成後才遷移，確保目標正確）
+		migrateOldData()
 		freeConsole() // Windows: 脫離主控台避免閃爍（非 Windows 為空操作）
-		if f := setupGUILog(); f != nil {
+		// 字型預載必須在 setupLog 之前：SetCrashOutput 會操作 Windows fd 2，
+		// 導致後續 os.ReadFile 偶發 "The handle is invalid" 錯誤
+		gui.PreloadCJKFonts()
+		if f := setupLog(false); f != nil {
 			defer f.Close()
 		}
 		gui.Run() // 無引數 → 啟動 GUI
@@ -59,6 +76,10 @@ func main() {
 	}
 
 	// 有引數 → CLI 模式（console subsystem，stdin/stdout/stderr 正常繼承）
+	migrateOldData() // CLI 也遷移舊路徑資料（冪等操作）
+	if f := setupLog(true); f != nil {
+		defer f.Close()
+	}
 
 	switch os.Args[1] {
 	case "p2p":
@@ -214,33 +235,3 @@ func cmdUpdate(args []string) {
 	}
 }
 
-// setupGUILog 在 GUI 模式下設置 crash log。
-// 將 slog 和 panic 輸出重導到執行檔同目錄的 radb.log。
-func setupGUILog() *os.File {
-	exePath, err := os.Executable()
-	if err != nil {
-		return nil
-	}
-	logPath := filepath.Join(filepath.Dir(exePath), "radb.log")
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return nil
-	}
-
-	// slog 寫入 log 檔
-	slog.SetDefault(slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: slog.LevelDebug})))
-
-	// Go runtime panic 輸出寫入 log 檔
-	if err := debug.SetCrashOutput(f, debug.CrashOptions{}); err != nil {
-		slog.Warn("SetCrashOutput failed", "error", err)
-	}
-
-	// 啟動標記：協助確認主控端是否真的在寫此檔案。
-	slog.Info("GUI log initialized", "log_path", logPath, "pid", os.Getpid())
-	_ = f.Sync()
-
-	// 讓 fmt.Fprintf(os.Stderr, ...) 也寫入 log 檔
-	os.Stderr = f
-
-	return f
-}
