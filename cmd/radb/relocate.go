@@ -23,9 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -36,8 +34,6 @@ var (
 	osExecutable = os.Executable
 	evalSymlinks = filepath.EvalSymlinks
 )
-
-const windowsAccessDeniedErrno = syscall.Errno(5)
 
 // needsRelocate 判斷指定的 exe 目錄是否需要搬遷。
 // 如果目錄名稱已經是 "radb"（不分大小寫），則不需要搬遷。
@@ -132,10 +128,6 @@ func executablePath() (string, error) {
 		return exePath, nil
 	}
 	return "", err
-}
-
-func isWindowsAccessDenied(err error) bool {
-	return runtime.GOOS == "windows" && errors.Is(err, windowsAccessDeniedErrno)
 }
 
 // copyFile 複製檔案從 src 到 dst，保留 0755 執行權限。

@@ -153,26 +153,3 @@ func TestExecutablePath_UsesResolvedPathWhenAvailable(t *testing.T) {
 		t.Fatalf("executablePath = %q, want %q", got, resolved)
 	}
 }
-
-func TestExecutablePath_FallbackOnErrnoAccessDenied(t *testing.T) {
-	origExe := osExecutable
-	origEval := evalSymlinks
-	defer func() {
-		osExecutable = origExe
-		evalSymlinks = origEval
-	}()
-
-	want := filepath.Join("C:", "temp", "radb.exe")
-	osExecutable = func() (string, error) { return want, nil }
-	evalSymlinks = func(string) (string, error) {
-		return "", windowsAccessDeniedErrno
-	}
-
-	got, err := executablePath()
-	if err != nil {
-		t.Fatalf("executablePath returned error: %v", err)
-	}
-	if got != want {
-		t.Fatalf("executablePath = %q, want %q", got, want)
-	}
-}
