@@ -88,6 +88,40 @@ func QueryDeviceFeatures(adbAddr, serial string) (string, error) {
 	return string(data), nil
 }
 
+// QueryDeviceModel 透過 ADB server 查詢指定設備的機型名稱。
+// 使用 host:transport + shell:getprop ro.product.model 取得使用者可讀的設備名稱
+// （如 "Pixel 10 Pro XL"），用於 GUI 設備列表顯示。
+// 查詢失敗時回傳空字串（不影響核心功能）。
+func QueryDeviceModel(adbAddr, serial string) string {
+	conn, err := net.DialTimeout("tcp", adbAddr, 3*time.Second)
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+
+	// 切換到指定設備的 transport
+	if err := adb.SendCommand(conn, fmt.Sprintf("host:transport:%s", serial)); err != nil {
+		return ""
+	}
+	if err := adb.ReadStatus(conn); err != nil {
+		return ""
+	}
+
+	// 開啟 shell 服務查詢 model
+	if err := adb.SendCommand(conn, "shell:getprop ro.product.model"); err != nil {
+		return ""
+	}
+	if err := adb.ReadStatus(conn); err != nil {
+		return ""
+	}
+
+	// 讀取回應（機型名稱，通常一行）
+	buf := make([]byte, 256)
+	n, _ := conn.Read(buf)
+	return strings.TrimSpace(string(buf[:n]))
+}
+
 // --- Forward 命令解析 ---
 // 以下函式解析 ADB server 協定中的 forward 相關命令。
 // ADB 的 forward 命令有多種格式（帶/不帶 serial、帶/不帶 norebind），

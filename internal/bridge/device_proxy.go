@@ -30,6 +30,13 @@ import (
 	"sync/atomic"
 )
 
+// entryWithCtx 用於在鎖外批次呼叫 OnReady callback 時，攜帶 entry context。
+type entryWithCtx struct {
+	ctx    context.Context
+	serial string
+	port   int
+}
+
 // maxPortScanRange 是 port 掃描的最大範圍（從 portStart 起算）。
 const maxPortScanRange = 100
 
@@ -38,13 +45,14 @@ type DeviceProxyConfig struct {
 	PortStart int            // port 分配起始值（如 5555）
 	OpenCh    OpenChannelFunc // 開啟 channel 的函式（WebRTC 或 TCP 直連）
 	ADBAddr   string         // 本機 ADB server 地址（如 "127.0.0.1:5037"，供 callback 使用）
-	OnReady   func(serial string, port int) // 設備 proxy 就緒 callback（可為 nil）
-	OnRemoved func(serial string, port int) // 設備 proxy 移除 callback（可為 nil）
+	OnReady   func(ctx context.Context, serial string, port int) // 設備 proxy 就緒 callback（ctx 於設備移除時取消；可為 nil）
+	OnRemoved func(serial string, port int)                      // 設備 proxy 移除 callback（可為 nil）
 }
 
 // DeviceEntry 單台設備的 proxy 資訊（對外唯讀結構）。
 type DeviceEntry struct {
 	Serial string // 設備序號
+	Model  string // 設備機型名稱（如 "Pixel 10 Pro XL"，可能為空）
 	Port   int    // 分配的 proxy port
 }
 
@@ -59,7 +67,7 @@ type DeviceProxyManager struct {
 	usedPorts map[int]bool            // 已分配的 port（用於掃描時跳過）
 	entries   map[string]*deviceEntry // serial → per-device proxy 狀態
 	openCh    OpenChannelFunc
-	onReady   func(serial string, port int)
+	onReady   func(ctx context.Context, serial string, port int)
 	onRemoved func(serial string, port int)
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -69,6 +77,7 @@ type DeviceProxyManager struct {
 // deviceEntry 單台設備的 proxy 狀態（內部使用）。
 type deviceEntry struct {
 	serial string
+	model  string
 	port   int
 	ln     net.Listener
 	fm     *ForwardManager
@@ -144,7 +153,7 @@ func (m *DeviceProxyManager) UpdateDevices(devices []DeviceInfo) {
 	}
 
 	// 新增設備：分配 port + 建立 listener + 建立 ForwardManager
-	var added []*deviceEntry
+	var added []entryWithCtx
 	for _, d := range toAdd {
 		ln, port, err := m.allocPortLocked()
 		if err != nil {
@@ -159,6 +168,7 @@ func (m *DeviceProxyManager) UpdateDevices(devices []DeviceInfo) {
 		entryCtx, entryCancel := context.WithCancel(m.ctx)
 		entry := &deviceEntry{
 			serial: d.Serial,
+			model:  d.Model,
 			port:   port,
 			ln:     ln,
 			fm:     fm,
@@ -166,7 +176,7 @@ func (m *DeviceProxyManager) UpdateDevices(devices []DeviceInfo) {
 		}
 		m.entries[d.Serial] = entry
 		m.usedPorts[port] = true
-		added = append(added, entry)
+		added = append(added, entryWithCtx{ctx: entryCtx, serial: d.Serial, port: port})
 
 		// 啟動 accept loop
 		go m.acceptLoop(entryCtx, entry)
@@ -185,12 +195,18 @@ func (m *DeviceProxyManager) UpdateDevices(devices []DeviceInfo) {
 		}
 	}
 
-	// 新增設備的 callback
-	for _, entry := range added {
+	// 新增設備的 callback（傳入 entry context，供 AutoConnect 重試時使用）
+	for _, e := range added {
 		if m.onReady != nil {
-			m.onReady(entry.serial, entry.port)
+			m.onReady(e.ctx, e.serial, e.port)
 		}
 	}
+}
+
+// Ctx 回傳 DPM 的根 context。DPM.Close() 時此 context 會被取消。
+// 供外部使用（如重連按鈕的 AutoConnect 重試，在 DPM 關閉時自動停止）。
+func (m *DeviceProxyManager) Ctx() context.Context {
+	return m.ctx
 }
 
 // Entries 回傳目前所有 per-device proxy 的快照（供 GUI/CLI 顯示）。
@@ -203,6 +219,7 @@ func (m *DeviceProxyManager) Entries() []DeviceEntry {
 	for _, entry := range m.entries {
 		result = append(result, DeviceEntry{
 			Serial: entry.serial,
+			Model:  entry.model,
 			Port:   entry.port,
 		})
 	}

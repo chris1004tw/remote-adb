@@ -24,6 +24,7 @@ type DeviceInfo struct {
 	Serial   string `json:"serial"`            // 設備序號（如 "emulator-5554"）
 	State    string `json:"state"`             // 設備狀態："device"、"offline"、"no device"
 	Features string `json:"features,omitempty"` // 逗號分隔的 feature 清單（如 "shell_v2,cmd,stat_v2"）
+	Model    string `json:"model,omitempty"`   // 設備機型名稱（如 "Pixel 10 Pro XL"），由 agent 查詢 ro.product.model
 }
 
 // OpenChannelFunc 是開啟命名 channel 的函式類型。

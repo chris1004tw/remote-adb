@@ -144,6 +144,26 @@ func FilterCandidates(candidates []string) []string {
 	return result
 }
 
+// CandidateStats 統計 CompactSDP 中各類型 ICE candidate 的數量。
+// 回傳 host、srflx、relay 的計數，用於日誌記錄和排查 TURN fallback 問題。
+func (c CompactSDP) CandidateStats() (host, srflx, relay int) {
+	for _, cand := range c.C {
+		parts := strings.SplitN(cand, ",", 6)
+		if len(parts) < 5 {
+			continue
+		}
+		switch parts[4] {
+		case "host":
+			host++
+		case "srflx":
+			srflx++
+		case "relay":
+			relay++
+		}
+	}
+	return
+}
+
 // parseCandidate 將 SDP candidate 行轉為緊湊字串。
 // 輸入: a=candidate:1 1 udp 2130706431 192.168.1.100 54321 typ host
 // 輸出: udp,192.168.1.100,54321,2130706431,host

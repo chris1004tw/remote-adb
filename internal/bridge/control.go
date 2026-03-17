@@ -16,10 +16,10 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
-	"os"
 	"time"
 
 	"github.com/chris1004tw/remote-adb/internal/adb"
+	"github.com/chris1004tw/remote-adb/internal/buildinfo"
 )
 
 // keepaliveInterval 是 control channel keepalive ping 的發送間隔。
@@ -27,11 +27,17 @@ import (
 const keepaliveInterval = 30 * time.Second
 
 // CtrlMessage 是 control channel 的 JSON 訊息格式。
-// Type 可為 "hello"（攜帶主機名稱）或 "devices"（攜帶設備清單）。
+// Type 可為 "hello"/"devices"（被控端→主控端）或 "refresh"（主控端→被控端）。
 type CtrlMessage struct {
-	Type     string       `json:"type"`               // "hello" 或 "devices"
+	Type     string       `json:"type"`               // "hello"、"devices"、"ping"、"refresh"
 	Hostname string       `json:"hostname,omitempty"` // 遠端主機名稱（hello 訊息）
 	Devices  []DeviceInfo `json:"devices,omitempty"`  // 設備清單（devices 訊息）
+}
+
+// SendCtrlRefresh 向被控端發送 refresh 請求，觸發重新推送設備清單。
+// controlCh 須為 control DataChannel 的 Writer 端。
+func SendCtrlRefresh(w io.Writer) error {
+	return json.NewEncoder(w).Encode(CtrlMessage{Type: "refresh"})
 }
 
 // DevicePushLoop 追蹤本機 ADB 設備清單並透過 control channel 推送給客戶端。
@@ -49,15 +55,85 @@ func DevicePushLoop(ctx context.Context, controlCh io.ReadWriteCloser, adbAddr s
 	deviceCh := tracker.Track(ctx)
 	table := adb.NewDeviceTable()
 	enc := json.NewEncoder(controlCh)
-	// features 快取：以設備 serial 為 key，避免每次設備事件都重新查詢 ADB server。
-	// 設備離線時自動清除對應快取條目，確保重新上線時取得最新 features。
+	// features/model 快取：以設備 serial 為 key，避免每次設備事件都重新查詢 ADB server。
+	// 設備離線時自動清除對應快取條目，確保重新上線時取得最新資訊。
 	featuresCache := make(map[string]string)
+	modelCache := make(map[string]string)
 
 	// 先發送主機名稱
-	hostname, _ := os.Hostname()
-	if err := enc.Encode(CtrlMessage{Type: "hello", Hostname: hostname}); err != nil {
+	if err := enc.Encode(CtrlMessage{Type: "hello", Hostname: buildinfo.Hostname()}); err != nil {
 		slog.Debug("failed to send hello", "error", err)
 		return
+	}
+
+	// 讀取主控端發來的訊息（如 refresh 請求）
+	refreshCh := make(chan struct{}, 1)
+	go func() {
+		dec := json.NewDecoder(controlCh)
+		for {
+			var msg CtrlMessage
+			if err := dec.Decode(&msg); err != nil {
+				return
+			}
+			if msg.Type == "refresh" {
+				slog.Debug("received device refresh request from client")
+				select {
+				case refreshCh <- struct{}{}:
+				default: // 已有 pending refresh，不重複排隊
+				}
+			}
+		}
+	}()
+
+	// buildDevices 根據 DeviceTable 當前狀態建構設備清單（含 features 快取查詢）。
+	buildDevices := func() []DeviceInfo {
+		devs := table.List()
+
+		// 清除已離線設備的 features/model 快取
+		online := make(map[string]bool, len(devs))
+		for _, d := range devs {
+			online[d.Serial] = true
+		}
+		for serial := range featuresCache {
+			if !online[serial] {
+				delete(featuresCache, serial)
+				delete(modelCache, serial)
+			}
+		}
+
+		devices := make([]DeviceInfo, len(devs))
+		for i, d := range devs {
+			devices[i] = DeviceInfo{Serial: d.Serial, State: d.State}
+			if d.State == "device" {
+				// features 查詢（含快取）
+				if feat, ok := featuresCache[d.Serial]; ok {
+					devices[i].Features = feat
+				} else if feat, err := QueryDeviceFeatures(adbAddr, d.Serial); err == nil {
+					featuresCache[d.Serial] = feat
+					devices[i].Features = feat
+				}
+				// model 查詢（含快取）
+				if model, ok := modelCache[d.Serial]; ok {
+					devices[i].Model = model
+				} else if model := QueryDeviceModel(adbAddr, d.Serial); model != "" {
+					modelCache[d.Serial] = model
+					devices[i].Model = model
+				}
+			}
+		}
+		return devices
+	}
+
+	// pushDevices 將設備清單推送給主控端並通知上層。
+	pushDevices := func(devices []DeviceInfo) bool {
+		if err := enc.Encode(CtrlMessage{Type: "devices", Devices: devices}); err != nil {
+			slog.Debug("control channel write failed", "error", err)
+			return false
+		}
+		if onUpdate != nil {
+			onUpdate(devices)
+		}
+		return true
 	}
 
 	// keepalive ticker：定期送 ping 訊息，防止 SCTP idle 導致 NAT mapping 失效
@@ -73,46 +149,18 @@ func DevicePushLoop(ctx context.Context, controlCh io.ReadWriteCloser, adbAddr s
 				slog.Debug("control channel keepalive failed", "error", err)
 				return
 			}
+		case <-refreshCh:
+			// 主控端要求重新查詢：重建設備清單並推送
+			if !pushDevices(buildDevices()) {
+				return
+			}
 		case events, ok := <-deviceCh:
 			if !ok {
 				return
 			}
 			table.Update(events)
-			devs := table.List()
-
-			// 清除已離線設備的 features 快取
-			online := make(map[string]bool, len(devs))
-			for _, d := range devs {
-				online[d.Serial] = true
-			}
-			for serial := range featuresCache {
-				if !online[serial] {
-					delete(featuresCache, serial)
-				}
-			}
-
-			devices := make([]DeviceInfo, len(devs))
-			for i, d := range devs {
-				devices[i] = DeviceInfo{Serial: d.Serial, State: d.State}
-				if d.State == "device" {
-					if feat, ok := featuresCache[d.Serial]; ok {
-						devices[i].Features = feat
-					} else if feat, err := QueryDeviceFeatures(adbAddr, d.Serial); err == nil {
-						featuresCache[d.Serial] = feat
-						devices[i].Features = feat
-					}
-				}
-			}
-
-			// 推送給客戶端
-			if err := enc.Encode(CtrlMessage{Type: "devices", Devices: devices}); err != nil {
-				slog.Debug("control channel write failed", "error", err)
+			if !pushDevices(buildDevices()) {
 				return
-			}
-
-			// 通知上層（GUI/CLI）設備清單已變更
-			if onUpdate != nil {
-				onUpdate(devices)
 			}
 		}
 	}

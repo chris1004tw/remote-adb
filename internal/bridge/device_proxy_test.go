@@ -176,7 +176,7 @@ func TestDeviceProxyManager_OnReadyCallback(t *testing.T) {
 	dpm := NewDeviceProxyManager(DeviceProxyConfig{
 		PortStart: port,
 		OpenCh:    mockOpenCh(),
-		OnReady: func(serial string, port int) {
+		OnReady: func(_ context.Context, serial string, port int) {
 			mu.Lock()
 			readyEvents = append(readyEvents, DeviceEntry{Serial: serial, Port: port})
 			mu.Unlock()
@@ -332,7 +332,7 @@ func TestDeviceProxyManager_IdempotentUpdate(t *testing.T) {
 	dpm := NewDeviceProxyManager(DeviceProxyConfig{
 		PortStart: port,
 		OpenCh:    mockOpenCh(),
-		OnReady: func(serial string, port int) {
+		OnReady: func(_ context.Context, serial string, port int) {
 			readyCount++
 		},
 	})
