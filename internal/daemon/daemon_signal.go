@@ -8,49 +8,20 @@ import (
 	"time"
 
 	"github.com/chris1004tw/remote-adb/pkg/protocol"
+	signalpkg "github.com/chris1004tw/remote-adb/internal/signal"
 	ws "github.com/coder/websocket"
 )
 
 // connectServer 連線到 Signal Server 並完成 PSK 認證。
 // 成功後 d.wsConn 與 d.connID 會被設定。
+// 認證流程委派給 signal.ConnectAndAuth 共用實作。
 func (d *Daemon) connectServer(ctx context.Context) error {
-	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	url := d.config.ServerURL + "/ws"
-	conn, _, err := ws.Dial(dialCtx, url, nil)
+	conn, connID, err := signalpkg.ConnectAndAuth(ctx, d.config.ServerURL, d.hostname, d.config.Token, protocol.RoleClient)
 	if err != nil {
-		return fmt.Errorf("連線 Server 失敗: %w", err)
+		return err
 	}
 	d.wsConn = conn
-
-	// 認證
-	authEnv, _ := protocol.NewEnvelope(
-		protocol.MsgTypeAuth, d.hostname, "temp", "",
-		protocol.AuthPayload{Token: d.config.Token, Role: protocol.RoleClient},
-	)
-	if err := d.sendEnvelope(ctx, authEnv); err != nil {
-		return fmt.Errorf("發送認證失敗: %w", err)
-	}
-
-	// 讀取 auth_ack
-	_, data, err := conn.Read(ctx)
-	if err != nil {
-		return fmt.Errorf("讀取認證回應失敗: %w", err)
-	}
-
-	var ack protocol.Envelope
-	if err := json.Unmarshal(data, &ack); err != nil {
-		return fmt.Errorf("解析認證回應失敗: %w", err)
-	}
-
-	var ackPayload protocol.AuthAckPayload
-	if err := ack.DecodePayload(&ackPayload); err != nil || !ackPayload.Success {
-		return fmt.Errorf("認證失敗")
-	}
-
-	d.connID = ackPayload.AssignID
-	slog.Info("server auth succeeded", "conn_id", d.connID)
+	d.connID = connID
 	return nil
 }
 

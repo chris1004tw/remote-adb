@@ -17,12 +17,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"strings"
-	"time"
 
 	"github.com/chris1004tw/remote-adb/internal/adb"
+	"github.com/chris1004tw/remote-adb/internal/buildinfo"
 	"github.com/chris1004tw/remote-adb/internal/ioutil"
+	signalpkg "github.com/chris1004tw/remote-adb/internal/signal"
 	"github.com/chris1004tw/remote-adb/internal/webrtc"
 	"github.com/chris1004tw/remote-adb/pkg/protocol"
 	ws "github.com/coder/websocket"
@@ -55,10 +55,9 @@ type Agent struct {
 // New 建立一個新的 Agent 實例。
 // 此時僅初始化設備表與 ADB 撥號器，尚未連線 Server 或開始追蹤設備。
 func New(cfg Config) *Agent {
-	h, _ := os.Hostname()
 	return &Agent{
 		config:      cfg,
-		hostname:    h,
+		hostname:    buildinfo.Hostname(),
 		deviceTable: adb.NewDeviceTable(),
 		dialer:      adb.NewDialer(cfg.ADBAddr),
 	}
@@ -122,7 +121,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 		case msg, ok := <-msgCh:
 			if !ok {
-				return fmt.Errorf("Server 連線已斷開")
+				return fmt.Errorf("server connection closed")
 			}
 			a.handleServerMessage(ctx, msg)
 		}
@@ -165,41 +164,12 @@ func (a *Agent) RunDirectOnly(ctx context.Context) error {
 //
 // connID 後續作為此 Agent 在信令系統中的唯一識別，用於訊息路由。
 func (a *Agent) connectServer(ctx context.Context) error {
-	dialCtx, dialCancel := context.WithTimeout(ctx, 10*time.Second)
-	defer dialCancel()
-
-	url := a.config.ServerURL + "/ws"
-	conn, _, err := ws.Dial(dialCtx, url, nil)
+	conn, connID, err := signalpkg.ConnectAndAuth(ctx, a.config.ServerURL, a.hostname, a.config.Token, protocol.RoleAgent)
 	if err != nil {
-		return fmt.Errorf("連線 Server 失敗: %w", err)
+		return err
 	}
 	a.wsConn = conn
-
-	// 認證
-	authEnv, _ := protocol.NewEnvelope(
-		protocol.MsgTypeAuth, a.hostname, "temp", "",
-		protocol.AuthPayload{Token: a.config.Token, Role: protocol.RoleAgent},
-	)
-	if err := a.sendEnvelope(ctx, authEnv); err != nil {
-		return fmt.Errorf("發送認證失敗: %w", err)
-	}
-
-	// 接收 auth_ack
-	ack, err := a.readEnvelope(ctx)
-	if err != nil {
-		return fmt.Errorf("讀取認證回應失敗: %w", err)
-	}
-
-	var ackPayload protocol.AuthAckPayload
-	if err := ack.DecodePayload(&ackPayload); err != nil {
-		return fmt.Errorf("解析認證回應失敗: %w", err)
-	}
-	if !ackPayload.Success {
-		return fmt.Errorf("認證失敗: %s", ackPayload.Reason)
-	}
-
-	a.connID = ackPayload.AssignID
-	slog.Info("server auth succeeded", "conn_id", a.connID)
+	a.connID = connID
 	return nil
 }
 
